@@ -73,7 +73,12 @@ async function main() {
 
   // 2. Initialize Media Client (pointing to Flash Peak Media Service on VM or local)
   const mediaUrl = process.env.FLASHPEAK_MEDIA_API_URL || process.env.MEDIA_SERVICE_URL || 'http://127.0.0.1:4189';
-  const mediaSecret = process.env.FLASHPEAK_MEDIA_SECRET || process.env.MEDIA_SERVICE_HMAC_SECRET || 'e56ad9530df7d79427f1e39d089210eddf18c55d136ca4a3cec438eff86dc206';
+  const mediaSecret = process.env.FLASHPEAK_MEDIA_SECRET || process.env.MEDIA_SERVICE_HMAC_SECRET;
+  if (!mediaSecret) {
+    throw new Error(
+      'Media service authentication secret missing: Please configure FLASHPEAK_MEDIA_SECRET or MEDIA_SERVICE_HMAC_SECRET in your environment.'
+    );
+  }
   const mediaClient = new FlashPeakMediaClient({
     apiUrl: mediaUrl,
     secret: mediaSecret,
