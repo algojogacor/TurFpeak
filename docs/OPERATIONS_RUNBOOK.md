@@ -19,7 +19,7 @@ Flash Peak TMS runs as two decoupled, independently supervised services on the V
 │  │ flashpeak-bot           │  │ flashpeak-media     │  │
 │  │ (TMS Core & Baileys WA) │  │ (Media Storage Svc) │  │
 │  │ RAM: max 300MB          │  │ RAM: max 150MB      │  │
-│  │ PM2 ID: 0               │  │ Port: 4188          │  │
+│  │ PM2 ID: 0               │  │ Port: 4189          │  │
 │  └───────────┬─────────────┘  └──────────┬──────────┘  │
 │              │                           │             │
 │              ▼                           ▼             │
@@ -33,7 +33,7 @@ Flash Peak TMS runs as two decoupled, independently supervised services on the V
 | Service Name | Description | Port | Base Path / Storage | Memory Limit |
 | :--- | :--- | :---: | :--- | :---: |
 | `flashpeak-bot` | Main TMS Orchestrator, Baileys WA Socket, Debounce Worker | — | Working dir / `auth_state/` | 300 MB |
-| `flashpeak-media`| Dedicated Evidence Media Service (Verax pattern clone) | **4188** | `/var/lib/flashpeak/media` | 150 MB |
+| `flashpeak-media`| Dedicated Evidence Media Service (Verax pattern clone) | **4189** | `/var/lib/flashpeak/media` | 150 MB |
 
 ---
 

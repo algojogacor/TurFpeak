@@ -21,8 +21,8 @@ module.exports = {
       node_args: '--max-old-space-size=128',
       env: {
         NODE_ENV: 'production',
-        MEDIA_SERVICE_PORT: 4188,
-        MEDIA_STORAGE_PATH: '/var/lib/flashpeak/media',
+        FLASHPEAK_MEDIA_PORT: 4189,
+        FLASHPEAK_MEDIA_STORAGE_ROOT: '/var/lib/flashpeak/media',
       },
       error_file: './logs/media-error.log',
       out_file: './logs/media-out.log',
@@ -43,8 +43,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         LOG_LEVEL: 'info',
-        MEDIA_SERVICE_PORT: 4188,
-        MEDIA_SERVICE_URL: 'http://127.0.0.1:4188',
+        MEDIA_SERVICE_PORT: 4189,
+        MEDIA_SERVICE_URL: 'http://127.0.0.1:4189',
       },
       error_file: './logs/bot-error.log',
       out_file: './logs/bot-out.log',
