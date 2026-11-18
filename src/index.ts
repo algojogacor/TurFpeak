@@ -1217,14 +1217,18 @@ export class FlashPeakApp {
               if (sentKey && res.sessionId) {
                 try {
                   await this.db.execute({
-                    sql: `INSERT OR IGNORE INTO inbound_messages (id, report_session_id, provider_message_key, chat_id, sender_raw_address, sender_normalized_address, address_type, is_from_me, message_type, text_body, message_timestamp, received_at)
-                          VALUES (?, ?, ?, ?, 'bot@s.whatsapp.net', 'bot@s.whatsapp.net', 'JID', 1, 'TEXT', ?, ?, ?)`,
+                    sql: `INSERT OR IGNORE INTO inbound_messages (
+                            id, report_session_id, provider_message_key, chat_id,
+                            sender_raw_address, message_type, text_body,
+                            message_timestamp, received_at, raw_metadata_json, created_at
+                          ) VALUES (?, ?, ?, ?, 'bot@s.whatsapp.net', 'TEXT', ?, ?, ?, '{}', ?)`,
                     args: [
                       randomUUID(),
                       res.sessionId,
                       sentKey,
                       destChat,
                       res.whatsappSummary,
+                      new Date().toISOString(),
                       new Date().toISOString(),
                       new Date().toISOString(),
                     ],
