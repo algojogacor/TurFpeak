@@ -199,10 +199,10 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(res.type).toBe('COMMAND');
       expect(res.commandResult?.success).toBe(false);
       expect(res.replyText).toContain('Format Perintah !manualreport');
-      expect(res.replyText).toContain('!manualreport <fixture_id> <skor_a> <skor_b>');
+      expect(res.replyText).toContain('Format Ringkas');
     });
 
-    it('successfully processes !manualreport with positional arguments and generates draft with MANUAL_ENTRY provenance', async () => {
+    it('(a) successfully processes !manualreport with explicit scorers, stages confirmation, and creates draft only after OK confirmation', async () => {
       const app = createApp({
         db,
         organizerPhone,
@@ -218,14 +218,12 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       const fixtureId = 'fix-manual-01';
       const gameId = 'game-manual-01';
 
-      // Seed tournament
       await db.execute({
         sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
               VALUES (?, 'Manual Cup', 'ACTIVE', 'Asia/Jakarta', '1.0.0', '{}', ?, ?)`,
         args: [tourneyId, now, now],
       });
 
-      // Seed delegates & teams
       await db.execute({
         sql: `INSERT INTO delegates (id, display_name, status, created_at, updated_at)
               VALUES (?, 'Del A', 'ACTIVE', ?, ?), (?, 'Del B', 'ACTIVE', ?, ?)`,
@@ -239,13 +237,13 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
         args: [teamAId, tourneyId, delAId, now, now, teamBId, tourneyId, delBId, now, now],
       });
 
-      // Seed 5 registered active players per team (1 GK, 4 outfield)
+      // Seed players: 1 GK + 4 Outfield for each team
       for (let i = 1; i <= 5; i++) {
         await db.execute({
           sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
           args: [
-            `p-alpha-${i}`, tourneyId, teamAId, `Alpha${i}`, `Alpha${i}`, `alpha${i}`,
+            `p-alpha-${i}`, tourneyId, teamAId, `AVO | Alpha${i}`, `AVO | Alpha${i}`, `alpha${i}`,
             i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
           ],
         });
@@ -253,13 +251,12 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
           sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
           args: [
-            `p-beta-${i}`, tourneyId, teamBId, `Beta${i}`, `Beta${i}`, `beta${i}`,
+            `p-beta-${i}`, tourneyId, teamBId, `HX · Beta${i}`, `HX · Beta${i}`, `beta${i}`,
             i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
           ],
         });
       }
 
-      // Seed fixture & game
       await db.execute({
         sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
               VALUES (?, ?, 'GROUP', ?, ?, ?, 'SCHEDULED', ?, ?)`,
@@ -271,30 +268,367 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
         args: [gameId, fixtureId, now, now],
       });
 
-      // Execute !manualreport
+      // Step 1: Submit command with explicit scorers (using clan tag stripped names "Alpha2", "Alpha3", "Beta2")
+      const commandText = `!manualreport ${fixtureId} 2-1\ngol A: Alpha2, Alpha3\ngol B: Beta2`;
+      const msg = createTextMessage(organizerJid, centralGroupJid, commandText);
+      const res = await app.handleInboundMessage(msg);
+
+      expect(res.handled).toBe(true);
+      expect(res.commandResult?.success).toBe(true);
+      // Verify confirmation prompt is presented with fuzzy matched names
+      expect(res.replyText).toContain('Konfirmasi Pemadanan Nama Pencetak Gol');
+      expect(res.replyText).toContain('AVO | Alpha2');
+      expect(res.replyText).toContain('AVO | Alpha3');
+      expect(res.replyText).toContain('HX · Beta2');
+      expect(res.replyText).toContain('Balas *OK*');
+
+      // Verify draft report is NOT created yet in DB!
+      const initialVerRes = await db.execute({
+        sql: 'SELECT COUNT(*) as cnt FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(Number(initialVerRes.rows[0].cnt)).toBe(0);
+
+      // Step 2: Organizer replies "OK"
+      const confirmMsg = createTextMessage(organizerJid, centralGroupJid, 'OK');
+      const confirmRes = await app.handleInboundMessage(confirmMsg);
+
+      expect(confirmRes.handled).toBe(true);
+      expect(confirmRes.replyText).toContain('PENDING APPROVAL');
+      expect(confirmRes.replyText).toContain('Alpha Team');
+      expect(confirmRes.replyText).toContain('Beta Team');
+      expect(confirmRes.replyText).toContain('2 - 1');
+
+      // Verify draft report NOW exists in DB with MANUAL_ENTRY provenance
+      const finalVerRes = await db.execute({
+        sql: 'SELECT provenance, status FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(finalVerRes.rows.length).toBe(1);
+      expect(finalVerRes.rows[0].provenance).toBe('MANUAL_ENTRY');
+      expect(finalVerRes.rows[0].status).toBe('PENDING_APPROVAL');
+    });
+
+    it('(b) rejects !manualreport when scorer goal count does not match reported score', async () => {
+      const app = createApp({
+        db,
+        organizerPhone,
+        centralGroupJid,
+      });
+
+      const now = new Date().toISOString();
+      const tourneyId = 'tourney-manual-mismatch';
+      const teamAId = 'team-manual-mismatch-a';
+      const teamBId = 'team-manual-mismatch-b';
+      const fixtureId = 'fix-manual-mismatch';
+
+      await db.execute({
+        sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+              VALUES (?, 'Mismatch Cup', 'ACTIVE', 'Asia/Jakarta', '1.0.0', '{}', ?, ?)`,
+        args: [tourneyId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+              VALUES (?, ?, 'Team One', 'VERIFIED', ?, ?), (?, ?, 'Team Two', 'VERIFIED', ?, ?)`,
+        args: [teamAId, tourneyId, now, now, teamBId, tourneyId, now, now],
+      });
+
+      for (let i = 1; i <= 5; i++) {
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-t1-${i}`, tourneyId, teamAId, `PlayerOne${i}`, `PlayerOne${i}`, `playerone${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-t2-${i}`, tourneyId, teamBId, `PlayerTwo${i}`, `PlayerTwo${i}`, `playertwo${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+      }
+
+      await db.execute({
+        sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+              VALUES (?, ?, 'GROUP', ?, ?, ?, 'SCHEDULED', ?, ?)`,
+        args: [fixtureId, tourneyId, teamAId, teamBId, teamAId, now, now],
+      });
+
+      // Reported score is 2-1, but Team A only lists 1 scorer (PlayerOne2)
       const msg = createTextMessage(
         organizerJid,
         centralGroupJid,
-        `!manualreport ${fixtureId} 2 1 Input manual karena kendala AI`
+        `!manualreport ${fixtureId} 2-1 A:PlayerOne2 B:PlayerTwo2`
       );
       const res = await app.handleInboundMessage(msg);
 
       expect(res.handled).toBe(true);
-      expect(res.type).toBe('COMMAND');
-      expect(res.commandResult?.success).toBe(true);
-      expect(res.replyText).toContain('PENDING APPROVAL');
-      expect(res.replyText).toContain('Alpha Team');
-      expect(res.replyText).toContain('Beta Team');
-      expect(res.replyText).toContain('2 - 1');
+      expect(res.commandResult?.success).toBe(false);
+      expect(res.replyText).toContain('tidak cocok dengan skor tim');
+      expect(res.replyText).toContain('Selisih: 1 gol');
 
-      // Verify report_versions in DB
+      // Ensure no draft was created
       const verRes = await db.execute({
-        sql: 'SELECT provenance, status, created_by FROM report_versions WHERE fixture_id = ? ORDER BY version_number DESC LIMIT 1',
+        sql: 'SELECT COUNT(*) as cnt FROM report_versions WHERE fixture_id = ?',
         args: [fixtureId],
       });
-      expect(verRes.rows.length).toBe(1);
-      expect(verRes.rows[0].provenance).toBe('MANUAL_ENTRY');
-      expect(verRes.rows[0].status).toBe('PENDING_APPROVAL');
+      expect(Number(verRes.rows[0].cnt)).toBe(0);
+    });
+
+    it('(c) handles fallback when no scorer list is given (records unassigned with warning, requires confirmation)', async () => {
+      const app = createApp({
+        db,
+        organizerPhone,
+        centralGroupJid,
+      });
+
+      const now = new Date().toISOString();
+      const tourneyId = 'tourney-manual-unassigned';
+      const teamAId = 'team-manual-unassigned-a';
+      const teamBId = 'team-manual-unassigned-b';
+      const fixtureId = 'fix-manual-unassigned';
+      const gameId = 'game-manual-unassigned';
+
+      await db.execute({
+        sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+              VALUES (?, 'Unassigned Cup', 'ACTIVE', 'Asia/Jakarta', '1.0.0', '{}', ?, ?)`,
+        args: [tourneyId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+              VALUES (?, ?, 'Foxes', 'VERIFIED', ?, ?), (?, ?, 'Hounds', 'VERIFIED', ?, ?)`,
+        args: [teamAId, tourneyId, now, now, teamBId, tourneyId, now, now],
+      });
+
+      for (let i = 1; i <= 5; i++) {
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-fox-${i}`, tourneyId, teamAId, `Fox${i}`, `Fox${i}`, `fox${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-hound-${i}`, tourneyId, teamBId, `Hound${i}`, `Hound${i}`, `hound${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+      }
+
+      await db.execute({
+        sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+              VALUES (?, ?, 'GROUP', ?, ?, ?, 'SCHEDULED', ?, ?)`,
+        args: [fixtureId, tourneyId, teamAId, teamBId, teamAId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO games (id, fixture_id, game_number, status, evidence_status, created_at, updated_at)
+              VALUES (?, ?, 1, 'IN_PROGRESS', 'PENDING', ?, ?)`,
+        args: [gameId, fixtureId, now, now],
+      });
+
+      // Organizer provides only fixture and score, no scorer list
+      const msg = createTextMessage(organizerJid, centralGroupJid, `!manualreport ${fixtureId} 2-0 Tanpa daftar nama`);
+      const res = await app.handleInboundMessage(msg);
+
+      expect(res.handled).toBe(true);
+      expect(res.commandResult?.success).toBe(true);
+      expect(res.replyText).toContain('Konfirmasi Draf Manual (Tanpa Rincian Pencetak Gol)');
+      expect(res.replyText).toContain('TIDAK DIKETAHUI / UNASSIGNED');
+      expect(res.replyText).toContain('Balas *OK*');
+
+      // Verify no draft yet
+      const preVer = await db.execute({
+        sql: 'SELECT COUNT(*) as cnt FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(Number(preVer.rows[0].cnt)).toBe(0);
+
+      // Confirm with OK
+      const confirmMsg = createTextMessage(organizerJid, centralGroupJid, 'OK');
+      const confirmRes = await app.handleInboundMessage(confirmMsg);
+
+      expect(confirmRes.handled).toBe(true);
+      expect(confirmRes.replyText).toContain('PENDING APPROVAL');
+      expect(confirmRes.replyText).toContain('belum ditugaskan ke pencetak gol terdata');
+
+      // Verify draft created
+      const postVer = await db.execute({
+        sql: 'SELECT provenance, status FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(postVer.rows.length).toBe(1);
+      expect(postVer.rows[0].provenance).toBe('MANUAL_ENTRY');
+    });
+
+    it('(d) rejects when scorer name fails fuzzy match against team roster', async () => {
+      const app = createApp({
+        db,
+        organizerPhone,
+        centralGroupJid,
+      });
+
+      const now = new Date().toISOString();
+      const tourneyId = 'tourney-manual-notfound';
+      const teamAId = 'team-manual-notfound-a';
+      const teamBId = 'team-manual-notfound-b';
+      const fixtureId = 'fix-manual-notfound';
+
+      await db.execute({
+        sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+              VALUES (?, 'NotFound Cup', 'ACTIVE', 'Asia/Jakarta', '1.0.0', '{}', ?, ?)`,
+        args: [tourneyId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+              VALUES (?, ?, 'Eagles', 'VERIFIED', ?, ?), (?, ?, 'Hawks', 'VERIFIED', ?, ?)`,
+        args: [teamAId, tourneyId, now, now, teamBId, tourneyId, now, now],
+      });
+
+      for (let i = 1; i <= 5; i++) {
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-eagle-${i}`, tourneyId, teamAId, `Eagle${i}`, `Eagle${i}`, `eagle${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-hawk-${i}`, tourneyId, teamBId, `Hawk${i}`, `Hawk${i}`, `hawk${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+      }
+
+      await db.execute({
+        sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+              VALUES (?, ?, 'GROUP', ?, ?, ?, 'SCHEDULED', ?, ?)`,
+        args: [fixtureId, tourneyId, teamAId, teamBId, teamAId, now, now],
+      });
+
+      const msg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        `!manualreport ${fixtureId} 1-0 A: PemainFiktif99`
+      );
+      const res = await app.handleInboundMessage(msg);
+
+      expect(res.handled).toBe(true);
+      expect(res.commandResult?.success).toBe(false);
+      expect(res.replyText).toContain('Tidak ada pemain di roster yang cocok dengan nama "PemainFiktif99"');
+    });
+
+    it('(e) supports organizer sending correction before confirming with OK (draft not created until OK)', async () => {
+      const app = createApp({
+        db,
+        organizerPhone,
+        centralGroupJid,
+      });
+
+      const now = new Date().toISOString();
+      const tourneyId = 'tourney-manual-correction';
+      const teamAId = 'team-manual-corr-a';
+      const teamBId = 'team-manual-corr-b';
+      const fixtureId = 'fix-manual-corr';
+      const gameId = 'game-manual-corr';
+
+      await db.execute({
+        sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+              VALUES (?, 'Correction Cup', 'ACTIVE', 'Asia/Jakarta', '1.0.0', '{}', ?, ?)`,
+        args: [tourneyId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+              VALUES (?, ?, 'Wolves', 'VERIFIED', ?, ?), (?, ?, 'Lions', 'VERIFIED', ?, ?)`,
+        args: [teamAId, tourneyId, now, now, teamBId, tourneyId, now, now],
+      });
+
+      for (let i = 1; i <= 5; i++) {
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-wolf-${i}`, tourneyId, teamAId, `WolfPlayer${i}`, `WolfPlayer${i}`, `wolfplayer${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            `p-lion-${i}`, tourneyId, teamBId, `LionPlayer${i}`, `LionPlayer${i}`, `lionplayer${i}`,
+            i === 1 ? 'GOALKEEPER' : 'OUTFIELD', i, now, now,
+          ],
+        });
+      }
+
+      await db.execute({
+        sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+              VALUES (?, ?, 'GROUP', ?, ?, ?, 'SCHEDULED', ?, ?)`,
+        args: [fixtureId, tourneyId, teamAId, teamBId, teamAId, now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO games (id, fixture_id, game_number, status, evidence_status, created_at, updated_at)
+              VALUES (?, ?, 1, 'IN_PROGRESS', 'PENDING', ?, ?)`,
+        args: [gameId, fixtureId, now, now],
+      });
+
+      // 1. Initial manual report with WolfPlayer4
+      const msg1 = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        `!manualreport ${fixtureId} 2-1 A:WolfPlayer2,WolfPlayer4 B:LionPlayer2`
+      );
+      const res1 = await app.handleInboundMessage(msg1);
+      expect(res1.replyText).toContain('WolfPlayer4');
+      expect(res1.replyText).toContain('Balas *OK*');
+
+      // 2. Organizer sends correction: "bukan WolfPlayer4 tapi WolfPlayer3"
+      const corrMsg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        'bukan WolfPlayer4 tapi WolfPlayer3'
+      );
+      const corrRes = await app.handleInboundMessage(corrMsg);
+
+      expect(corrRes.handled).toBe(true);
+      expect(corrRes.replyText).toContain('WolfPlayer3');
+      expect(corrRes.replyText).not.toContain('WolfPlayer4');
+      expect(corrRes.replyText).toContain('Balas *OK*');
+
+      // Verify draft STILL NOT CREATED yet
+      const preVer = await db.execute({
+        sql: 'SELECT COUNT(*) as cnt FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(Number(preVer.rows[0].cnt)).toBe(0);
+
+      // 3. Organizer confirms with "OK"
+      const confirmMsg = createTextMessage(organizerJid, centralGroupJid, 'OK');
+      const confirmRes = await app.handleInboundMessage(confirmMsg);
+
+      expect(confirmRes.handled).toBe(true);
+      expect(confirmRes.replyText).toContain('PENDING APPROVAL');
+      expect(confirmRes.replyText).toContain('Wolves');
+
+      // Verify draft NOW created in DB
+      const postVer = await db.execute({
+        sql: 'SELECT provenance, status FROM report_versions WHERE fixture_id = ?',
+        args: [fixtureId],
+      });
+      expect(postVer.rows.length).toBe(1);
+      expect(postVer.rows[0].provenance).toBe('MANUAL_ENTRY');
     });
 
     it('successfully processes !manualreport via JSON format with specific player statistics', async () => {

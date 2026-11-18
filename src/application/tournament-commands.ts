@@ -35,10 +35,17 @@ import {
   type CompletedDrawGroup,
   type FixtureScheduleDisplayItem,
 } from '../whatsapp/formatters.js';
+import {
+  parseQuickReport,
+  matchScorerToRoster,
+  buildLineupWithScorers,
+} from '../reports/manual-parser.js';
+import type { ManualReportSessionManager, MatchedScorerDetail, PendingManualReport } from './manual-report-session.js';
 import type {
   ApproverType,
   ApprovalDecision,
   DrawResultGroupAssignment,
+  Player,
   ReportVersion,
   UUID,
 } from '../shared/types/index.js';
@@ -48,6 +55,7 @@ export interface TournamentCommandDeps {
   db: Client;
   identityResolver: IdentityResolver;
   onboardingService: OnboardingService;
+  manualReportSession: ManualReportSessionManager;
   sender?: WhatsAppSender;
   getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
   submitApproval: (
@@ -563,224 +571,378 @@ export function registerTournamentCommands(
     handler: async (ctx: CommandContext) => {
       const trimmed = ctx.rawArgs.trim();
 
-      let fixtureId: string = '';
-      let scoreA: number = 0;
-      let scoreB: number = 0;
-      let notes: string | undefined;
-      let teamAPlayers: RawPlayerMatchStat[] = [];
-      let teamBPlayers: RawPlayerMatchStat[] = [];
-      let gameId: string | undefined;
-
+      // 1. Full JSON Format (No guessing needed, direct execution)
       if (trimmed.startsWith('{')) {
         try {
           const parsed = JSON.parse(trimmed);
-          fixtureId = parsed.fixture_id;
-          gameId = parsed.game_id;
-          scoreA = Number(parsed.team_a_score);
-          scoreB = Number(parsed.team_b_score);
-          notes = parsed.notes;
-          teamAPlayers = parsed.team_a_players || [];
-          teamBPlayers = parsed.team_b_players || [];
+          const fixtureId = parsed.fixture_id;
+          const gameId = parsed.game_id;
+          const scoreA = Number(parsed.team_a_score);
+          const scoreB = Number(parsed.team_b_score);
+          const notes = parsed.notes;
+          const teamAPlayers: RawPlayerMatchStat[] = parsed.team_a_players || [];
+          const teamBPlayers: RawPlayerMatchStat[] = parsed.team_b_players || [];
+
+          if (!fixtureId || isNaN(scoreA) || isNaN(scoreB) || scoreA < 0 || scoreB < 0) {
+            return {
+              success: false,
+              responseText: '⚠️ Parameter JSON tidak valid. Pastikan fixture_id dan skor non-negatif telah diisi.',
+            };
+          }
+
+          const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+          const res = await handleManualReport(db, {
+            organizer_id: organizerId,
+            is_organizer: true,
+            fixture_id: fixtureId,
+            game_id: gameId,
+            team_a_score: scoreA,
+            team_b_score: scoreB,
+            team_a_players: teamAPlayers,
+            team_b_players: teamBPlayers,
+            notes,
+          });
+
+          if (!res.success || !res.version) {
+            return {
+              success: false,
+              responseText: `⚠️ Gagal membuat draf laporan manual:\n${(res.errors || []).join('\n')}`,
+            };
+          }
+
+          // Fetch team names for formatting
+          const fixRes = await db.execute({
+            sql: 'SELECT team_a_id, team_b_id FROM fixtures WHERE id = ?',
+            args: [fixtureId],
+          });
+          const teamAId = String(fixRes.rows[0]?.team_a_id ?? fixRes.rows[0]?.[0]);
+          const teamBId = String(fixRes.rows[0]?.team_b_id ?? fixRes.rows[0]?.[1]);
+
+          const teamsRes = await db.execute({
+            sql: 'SELECT id, team_name FROM teams WHERE id IN (?, ?)',
+            args: [teamAId, teamBId],
+          });
+          const teamAName = String(
+            teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.team_name ??
+            teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.[1] ??
+            'Tim A'
+          );
+          const teamBName = String(
+            teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.team_name ??
+            teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.[1] ??
+            'Tim B'
+          );
+
+          const summaryText = formatMatchReportSummary({
+            status: 'PENDING_APPROVAL',
+            versionNumber: res.version.version_number,
+            fixtureCode: fixtureId,
+            teamAName,
+            teamBName,
+            teamAScore: scoreA,
+            teamBScore: scoreB,
+            teamAPlayers: teamAPlayers.map((p, idx) => ({
+              ordinal: idx + 1,
+              nickname: p.nickname_raw,
+              rating: p.rating,
+              goals: p.goals ?? 0,
+              assists: p.assists ?? 0,
+              passes: p.passes,
+              defense: p.defense_raw,
+              saves: p.goalkeeper_saves,
+            })),
+            teamBPlayers: teamBPlayers.map((p, idx) => ({
+              ordinal: idx + 1,
+              nickname: p.nickname_raw,
+              rating: p.rating,
+              goals: p.goals ?? 0,
+              assists: p.assists ?? 0,
+              passes: p.passes,
+              defense: p.defense_raw,
+              saves: p.goalkeeper_saves,
+            })),
+            pendingApprovers: ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
+          });
+
+          return { success: true, responseText: summaryText };
         } catch (err: any) {
           return {
             success: false,
             responseText: `⚠️ Format JSON tidak valid: ${err.message}`,
           };
         }
-      } else {
-        if (ctx.args.length < 3) {
-          return {
-            success: false,
-            responseText: [
-              `⚠️ *Format Perintah !manualreport (Khusus Organizer)*`,
-              ``,
-              `Gunakan salah satu format berikut:`,
-              `1️⃣ *Format Cepat (skor pertandingan):*`,
-              `\`!manualreport <fixture_id> <skor_a> <skor_b> [catatan]\``,
-              `_Contoh:_ \`!manualreport fix-001 2 1 Laga tunda diinput manual\``,
-              ``,
-              `2️⃣ *Format JSON (rincian statistik pemain):*`,
-              `\`!manualreport {"fixture_id":"fix-001","team_a_score":2,"team_b_score":1,"team_a_players":[...],"team_b_players":[...]}\``,
-            ].join('\n'),
-          };
-        }
-
-        fixtureId = ctx.args[0];
-        scoreA = parseInt(ctx.args[1], 10);
-        scoreB = parseInt(ctx.args[2], 10);
-        notes = ctx.args.slice(3).join(' ') || undefined;
       }
 
-      if (!fixtureId || isNaN(scoreA) || isNaN(scoreB) || scoreA < 0 || scoreB < 0) {
+      // 2. Usage Guide if empty or help
+      if (!trimmed || trimmed === 'help' || ctx.args.length < 2) {
         return {
           success: false,
-          responseText: '⚠️ Parameter tidak valid. Pastikan fixture ID dan skor (angka non-negatif) telah diisi dengan benar.',
+          responseText: [
+            `⚠️ *Format Perintah !manualreport (Khusus Organizer)*`,
+            ``,
+            `1️⃣ *Format Ringkas (Daftar Pencetak Gol):*`,
+            `\`!manualreport <fixture_id> <skor_a>-<skor_b>\``,
+            `\`gol A: <nama1>, <nama2>\``,
+            `\`gol B: <nama3>\``,
+            ``,
+            `_Contoh satu baris:_`,
+            `\`!manualreport fix-001 2-1 A:Bunny,Razorr B:Ikyy\``,
+            ``,
+            `_Contoh jumlah gol > 1:_`,
+            `\`!manualreport fix-001 2-1 A:Bunny(2) B:Ikyy\``,
+            ``,
+            `_Catatan:_ Bot akan mencocokkan nama ke roster tim dan menampilkan ringkasan untuk Anda konfirmasi (balas *OK*) sebelum draf dibuat.`,
+            ``,
+            `2️⃣ *Format Tanpa Rincian Pencetak (Unassigned):*`,
+            `\`!manualreport <fixture_id> <skor_a>-<skor_b> [catatan]\``,
+            `_Gol dicatat sebagai belum ditugaskan dan harus dilengkapi via koreksi sebelum !approve._`,
+            ``,
+            `3️⃣ *Format JSON Lengkap:*`,
+            `\`!manualreport {"fixture_id":"fix-001","team_a_score":2,"team_b_score":1,"team_a_players":[...],"team_b_players":[...]}\``,
+          ].join('\n'),
         };
       }
 
-      // Check fixture
+      // 3. Quick Format Parsing
+      const parsed = parseQuickReport(trimmed);
+      if (!parsed.success || !parsed.data) {
+        return {
+          success: false,
+          responseText: `⚠️ ${parsed.error || 'Format tidak valid.'}`,
+        };
+      }
+
+      const { fixtureId, scoreA, scoreB, rawScorersA, rawScorersB, notes, hasExplicitScorers } = parsed.data;
+
+      // Look up fixture
       const fixtureRes = await db.execute({
         sql: 'SELECT id, tournament_id, team_a_id, team_b_id, status FROM fixtures WHERE id = ?',
         args: [fixtureId],
       });
-
       if (fixtureRes.rows.length === 0) {
-        return {
-          success: false,
-          responseText: `⚠️ Fixture tidak ditemukan: ${fixtureId}`,
-        };
+        return { success: false, responseText: `⚠️ Fixture tidak ditemukan: ${fixtureId}` };
       }
-
       const fixtureRow = fixtureRes.rows[0];
       const teamAId = String(fixtureRow.team_a_id ?? fixtureRow[2]);
       const teamBId = String(fixtureRow.team_b_id ?? fixtureRow[3]);
 
-      // If players were not provided via JSON, build lineup from registered players
-      if (teamAPlayers.length === 0 || teamBPlayers.length === 0) {
-        const playersRes = await db.execute({
-          sql: `
-            SELECT id, team_id, nickname_raw, position, roster_slot
-            FROM players
-            WHERE team_id IN (?, ?) AND status = 'ACTIVE'
-            ORDER BY roster_slot ASC
-          `,
-          args: [teamAId, teamBId],
-        });
+      // Fetch team names
+      const teamsRes = await db.execute({
+        sql: 'SELECT id, team_name FROM teams WHERE id IN (?, ?)',
+        args: [teamAId, teamBId],
+      });
+      const teamAName = String(
+        teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.team_name ??
+        teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.[1] ??
+        'Tim A'
+      );
+      const teamBName = String(
+        teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.team_name ??
+        teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.[1] ??
+        'Tim B'
+      );
 
-        const activeA = playersRes.rows.filter((r) => String(r.team_id ?? r[1]) === teamAId);
-        const activeB = playersRes.rows.filter((r) => String(r.team_id ?? r[1]) === teamBId);
+      // Fetch active registered rosters
+      const playersRes = await db.execute({
+        sql: `
+          SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key,
+                 position, roster_slot, roster_type, status
+          FROM players
+          WHERE team_id IN (?, ?) AND status = 'ACTIVE'
+          ORDER BY roster_slot ASC
+        `,
+        args: [teamAId, teamBId],
+      });
 
-        if (activeA.length < 5 || activeB.length < 5) {
-          return {
-            success: false,
-            responseText: `⚠️ Salah satu tim belum memiliki 5 pemain terdaftar aktif (1 GK, 4 outfield). Tim A: ${activeA.length}, Tim B: ${activeB.length}.`,
-          };
-        }
+      const rosterA: Player[] = playersRes.rows
+        .filter((r) => String(r.team_id ?? r[2]) === teamAId)
+        .map((r) => ({
+          id: String(r.id ?? r[0]),
+          tournament_id: String(r.tournament_id ?? r[1]),
+          team_id: teamAId,
+          nickname_raw: String(r.nickname_raw ?? r[3]),
+          nickname_nfc: String(r.nickname_nfc ?? r[4]),
+          nickname_search_key: String(r.nickname_search_key ?? r[5]),
+          position: String(r.position ?? r[6]) as Player['position'],
+          roster_slot: Number(r.roster_slot ?? r[7]),
+          roster_type: String(r.roster_type ?? r[8]) as Player['roster_type'],
+          status: String(r.status ?? r[9]) as Player['status'],
+          created_at: '',
+          updated_at: '',
+        }));
 
-        // Build Team A lineup (1 GK, 4 Outfield)
-        const gkA = activeA.find((p) => String(p.position ?? p[3]) === 'GOALKEEPER');
-        const outA = activeA.filter((p) => String(p.position ?? p[3]) !== 'GOALKEEPER').slice(0, 4);
-        if (!gkA || outA.length < 4) {
-          return { success: false, responseText: '⚠️ Tim A harus memiliki 1 GOALKEEPER dan minimal 4 OUTFIELD terdaftar.' };
-        }
-        const lineupA = [gkA, ...outA];
+      const rosterB: Player[] = playersRes.rows
+        .filter((r) => String(r.team_id ?? r[2]) === teamBId)
+        .map((r) => ({
+          id: String(r.id ?? r[0]),
+          tournament_id: String(r.tournament_id ?? r[1]),
+          team_id: teamBId,
+          nickname_raw: String(r.nickname_raw ?? r[3]),
+          nickname_nfc: String(r.nickname_nfc ?? r[4]),
+          nickname_search_key: String(r.nickname_search_key ?? r[5]),
+          position: String(r.position ?? r[6]) as Player['position'],
+          roster_slot: Number(r.roster_slot ?? r[7]),
+          roster_type: String(r.roster_type ?? r[8]) as Player['roster_type'],
+          status: String(r.status ?? r[9]) as Player['status'],
+          created_at: '',
+          updated_at: '',
+        }));
 
-        // Allocate goals for Team A so recalculatedScoreA matches scoreA
-        teamAPlayers = lineupA.map((p, idx) => {
-          const isGk = p === gkA;
-          const goals = isGk ? 0 : (idx === 1 ? scoreA : 0);
-          return {
-            nickname_raw: String(p.nickname_raw ?? p[2]),
-            goals,
-            assists: 0,
-            passes: 0,
-            defense_raw: isGk ? scoreB : 0,
-            goalkeeper_saves: isGk ? scoreB : 0,
-          };
-        });
-
-        // Build Team B lineup (1 GK, 4 Outfield)
-        const gkB = activeB.find((p) => String(p.position ?? p[3]) === 'GOALKEEPER');
-        const outB = activeB.filter((p) => String(p.position ?? p[3]) !== 'GOALKEEPER').slice(0, 4);
-        if (!gkB || outB.length < 4) {
-          return { success: false, responseText: '⚠️ Tim B harus memiliki 1 GOALKEEPER dan minimal 4 OUTFIELD terdaftar.' };
-        }
-        const lineupB = [gkB, ...outB];
-
-        // Allocate goals for Team B so recalculatedScoreB matches scoreB
-        teamBPlayers = lineupB.map((p, idx) => {
-          const isGk = p === gkB;
-          const goals = isGk ? 0 : (idx === 1 ? scoreB : 0);
-          return {
-            nickname_raw: String(p.nickname_raw ?? p[2]),
-            goals,
-            assists: 0,
-            passes: 0,
-            defense_raw: isGk ? scoreA : 0,
-            goalkeeper_saves: isGk ? scoreA : 0,
-          };
-        });
-      }
-
-      // Execute handleManualReport
-      try {
-        const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
-        const res = await handleManualReport(db, {
-          organizer_id: organizerId,
-          is_organizer: true,
-          fixture_id: fixtureId,
-          game_id: gameId,
-          team_a_score: scoreA,
-          team_b_score: scoreB,
-          team_a_players: teamAPlayers,
-          team_b_players: teamBPlayers,
-          notes,
-        });
-
-        if (!res.success || !res.version) {
-          return {
-            success: false,
-            responseText: `⚠️ Gagal membuat draf laporan manual:\n${(res.errors || []).join('\n')}`,
-          };
-        }
-
-        // Fetch team names for formatting
-        const teamsRes = await db.execute({
-          sql: 'SELECT id, team_name FROM teams WHERE id IN (?, ?)',
-          args: [teamAId, teamBId],
-        });
-        const teamAName = String(
-          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.team_name ??
-          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.[1] ??
-          'Tim A'
-        );
-        const teamBName = String(
-          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.team_name ??
-          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.[1] ??
-          'Tim B'
-        );
-
-        const summaryText = formatMatchReportSummary({
-          status: 'PENDING_APPROVAL',
-          versionNumber: res.version.version_number,
-          fixtureCode: fixtureId,
-          teamAName,
-          teamBName,
-          teamAScore: scoreA,
-          teamBScore: scoreB,
-          teamAPlayers: teamAPlayers.map((p, idx) => ({
-            ordinal: idx + 1,
-            nickname: p.nickname_raw,
-            rating: p.rating,
-            goals: p.goals ?? 0,
-            assists: p.assists ?? 0,
-            passes: p.passes,
-            defense: p.defense_raw,
-            saves: p.goalkeeper_saves,
-          })),
-          teamBPlayers: teamBPlayers.map((p, idx) => ({
-            ordinal: idx + 1,
-            nickname: p.nickname_raw,
-            rating: p.rating,
-            goals: p.goals ?? 0,
-            assists: p.assists ?? 0,
-            passes: p.passes,
-            defense: p.defense_raw,
-            saves: p.goalkeeper_saves,
-          })),
-          pendingApprovers: ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
-        });
-
-        return {
-          success: true,
-          responseText: summaryText,
-        };
-      } catch (err: any) {
+      if (rosterA.length < 5 || rosterB.length < 5) {
         return {
           success: false,
-          responseText: `⚠️ Terjadi kesalahan saat memproses laporan manual: ${err.message}`,
+          responseText: `⚠️ Salah satu tim belum memiliki 5 pemain terdaftar aktif (1 GK, 4 outfield). ${teamAName}: ${rosterA.length}, ${teamBName}: ${rosterB.length}.`,
         };
       }
+
+      let matchedA: MatchedScorerDetail[] = [];
+      let matchedB: MatchedScorerDetail[] = [];
+      let unassignedA = 0;
+      let unassignedB = 0;
+      let teamAPlayers: RawPlayerMatchStat[] = [];
+      let teamBPlayers: RawPlayerMatchStat[] = [];
+
+      if (hasExplicitScorers) {
+        // Validate scorer goal sums against reported scores
+        const totalA = rawScorersA.reduce((sum, s) => sum + s.goals, 0);
+        const totalB = rawScorersB.reduce((sum, s) => sum + s.goals, 0);
+
+        if (totalA !== scoreA) {
+          const diff = Math.abs(totalA - scoreA);
+          return {
+            success: false,
+            responseText: `⚠️ Jumlah gol di daftar pencetak ${teamAName} (${totalA}) tidak cocok dengan skor tim (${scoreA}). Selisih: ${diff} gol. Mohon lengkapi.`,
+          };
+        }
+        if (totalB !== scoreB) {
+          const diff = Math.abs(totalB - scoreB);
+          return {
+            success: false,
+            responseText: `⚠️ Jumlah gol di daftar pencetak ${teamBName} (${totalB}) tidak cocok dengan skor tim (${scoreB}). Selisih: ${diff} gol. Mohon lengkapi.`,
+          };
+        }
+
+        // Fuzzy match scorers for Team A
+        for (const item of rawScorersA) {
+          const matchRes = matchScorerToRoster(item.name, rosterA);
+          if (!matchRes.player) {
+            return {
+              success: false,
+              responseText: `⚠️ ${matchRes.error || `Pencetak "${item.name}" tidak ditemukan di roster ${teamAName}.`}`,
+            };
+          }
+          matchedA.push({
+            inputName: item.name,
+            matchedNickname: matchRes.player.nickname_raw,
+            playerId: matchRes.player.id,
+            goals: item.goals,
+            similarity: matchRes.similarity,
+          });
+        }
+
+        // Fuzzy match scorers for Team B
+        for (const item of rawScorersB) {
+          const matchRes = matchScorerToRoster(item.name, rosterB);
+          if (!matchRes.player) {
+            return {
+              success: false,
+              responseText: `⚠️ ${matchRes.error || `Pencetak "${item.name}" tidak ditemukan di roster ${teamBName}.`}`,
+            };
+          }
+          matchedB.push({
+            inputName: item.name,
+            matchedNickname: matchRes.player.nickname_raw,
+            playerId: matchRes.player.id,
+            goals: item.goals,
+            similarity: matchRes.similarity,
+          });
+        }
+
+        const lineupA = buildLineupWithScorers(rosterA, matchedA, scoreB, false);
+        if (lineupA.error) return { success: false, responseText: `⚠️ ${lineupA.error}` };
+        teamAPlayers = lineupA.lineup;
+
+        const lineupB = buildLineupWithScorers(rosterB, matchedB, scoreA, false);
+        if (lineupB.error) return { success: false, responseText: `⚠️ ${lineupB.error}` };
+        teamBPlayers = lineupB.lineup;
+      } else {
+        // Fallback case: no scorers provided at all
+        unassignedA = scoreA;
+        unassignedB = scoreB;
+
+        const lineupA = buildLineupWithScorers(rosterA, [], scoreB, true);
+        if (lineupA.error) return { success: false, responseText: `⚠️ ${lineupA.error}` };
+        teamAPlayers = lineupA.lineup;
+
+        const lineupB = buildLineupWithScorers(rosterB, [], scoreA, true);
+        if (lineupB.error) return { success: false, responseText: `⚠️ ${lineupB.error}` };
+        teamBPlayers = lineupB.lineup;
+      }
+
+      // Stage in pending confirmation session (DO NOT create draft report yet!)
+      const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+      const pending: PendingManualReport = {
+        fixtureId,
+        scoreA,
+        scoreB,
+        teamAId,
+        teamBId,
+        teamAName,
+        teamBName,
+        teamAPlayers,
+        teamBPlayers,
+        rosterA,
+        rosterB,
+        matchedDetailsA: matchedA,
+        matchedDetailsB: matchedB,
+        unassignedGoalsA: unassignedA,
+        unassignedGoalsB: unassignedB,
+        notes,
+        organizerId,
+        chatId: ctx.message.chat_id,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      };
+
+      deps.manualReportSession.stagePendingReport(pending);
+      const confirmationPrompt = deps.manualReportSession.formatConfirmationPrompt(pending);
+
+      return {
+        success: true,
+        responseText: confirmationPrompt,
+      };
     },
+  });
+
+  // !confirm / !ok
+  const confirmHandler = async (ctx: CommandContext) => {
+    const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+    const confirmRes = await deps.manualReportSession.confirmPending(
+      db,
+      ctx.message.chat_id,
+      organizerId
+    );
+    if (!confirmRes.success) {
+      return { success: false, responseText: confirmRes.error };
+    }
+    return { success: true, responseText: confirmRes.replyText };
+  };
+
+  router.registerCommand({
+    command: 'confirm',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengonfirmasi draf laporan pertandingan manual (Admin only)',
+    handler: confirmHandler,
+  });
+
+  router.registerCommand({
+    command: 'ok',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengonfirmasi draf laporan pertandingan manual (Admin only)',
+    handler: confirmHandler,
   });
 }

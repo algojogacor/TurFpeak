@@ -51,6 +51,7 @@ import {
   type ManualReportInput,
   type ManualReportResult,
 } from './reports/manual.js';
+import { ManualReportSessionManager } from './application/manual-report-session.js';
 import {
   calculateTournamentAwards,
   type TournamentAwardsSummary,
@@ -113,6 +114,7 @@ export class FlashPeakApp {
   public readonly matchExtractor?: MatchSummaryExtractor;
   public readonly gkExtractor?: GoalkeeperDetailExtractor;
   public readonly correctionParser?: CorrectionParser;
+  public readonly manualReportSession: ManualReportSessionManager;
   public readonly centralGroupJid?: string;
   public sender?: WhatsAppSender;
 
@@ -135,6 +137,7 @@ export class FlashPeakApp {
     // Subsystems
     this.identityResolver = new IdentityResolver(this.db);
     this.onboardingService = new OnboardingService(this.identityResolver, this.db);
+    this.manualReportSession = new ManualReportSessionManager();
     this.commandRouter = new CommandRouter({
       centralGroupJid: config.centralGroupJid,
       organizerJid: config.organizerJid,
@@ -167,6 +170,7 @@ export class FlashPeakApp {
       db: this.db,
       identityResolver: this.identityResolver,
       onboardingService: this.onboardingService,
+      manualReportSession: this.manualReportSession,
       get sender() {
         return self.sender;
       },
@@ -192,6 +196,53 @@ export class FlashPeakApp {
         commandResult: commandResult || undefined,
         replyText: commandResult?.responseText,
       };
+    }
+
+    // 1.5 Pending Manual Report Confirmation / Correction Check
+    if (this.manualReportSession.hasPending(message.chat_id, message.sender_normalized_address)) {
+      const text = (message.text_body || message.caption || '').trim();
+      const normText = text.toLowerCase();
+      const isConfirm = ['ok', 'ya', 'confirm', 'lanjut', 'benar', 'sudah benar'].includes(normText);
+
+      if (isConfirm) {
+        const organizerId = message.sender_normalized_address || 'ORGANIZER';
+        const confirmRes = await this.manualReportSession.confirmPending(
+          this.db,
+          message.chat_id,
+          organizerId
+        );
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: confirmRes.success ? confirmRes.replyText : confirmRes.error,
+        };
+      }
+
+      // Check if it's a correction to the pending report
+      const isCorrection =
+        normText.includes('bukan') ||
+        normText.includes('koreksi') ||
+        normText.includes('ganti') ||
+        normText.includes('gol a') ||
+        normText.includes('gol b') ||
+        normText.includes('tim a') ||
+        normText.includes('tim b') ||
+        normText.startsWith('a:') ||
+        normText.startsWith('b:');
+
+      if (isCorrection) {
+        const organizerId = message.sender_normalized_address || 'ORGANIZER';
+        const correctionRes = this.manualReportSession.applyCorrection(
+          message.chat_id,
+          organizerId,
+          text
+        );
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: correctionRes.success ? correctionRes.updatedPrompt : correctionRes.error,
+        };
+      }
     }
 
     // 2. Onboarding Flow Check
