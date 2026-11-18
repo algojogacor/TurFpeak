@@ -297,7 +297,7 @@ export class CommandRouter {
     this.registerCommand({
       command: 'setgroup',
       requiredRole: 'ORGANIZER',
-      description: 'Menetapkan grup ini sebagai grup turnamen resmi',
+      description: 'Menetapkan grup ini sebagai grup turnamen resmi (Admin only)',
       allowedInDm: false,
       allowedInGroup: true,
       handler: (ctx) => {

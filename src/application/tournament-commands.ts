@@ -76,8 +76,11 @@ export function registerTournamentCommands(
 
   // !standings <group_code>
   router.registerCommand({
-    command: '!standings',
+    command: 'standings',
     requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menampilkan tabel klasemen turnamen terkini per grup (contoh: !standings A)',
     handler: async (ctx: CommandContext) => {
       const groupCode = ctx.args[0]?.toUpperCase() || 'A';
       const res = await db.execute({
@@ -102,8 +105,11 @@ export function registerTournamentCommands(
 
   // !awards
   router.registerCommand({
-    command: '!awards',
+    command: 'awards',
     requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menampilkan daftar perolehan penghargaan turnamen (Juara, Top Scorer, Best GK)',
     handler: async () => {
       const res = await db.execute('SELECT id, name FROM tournaments ORDER BY created_at DESC LIMIT 1');
       if (res.rows.length === 0) {
@@ -176,8 +182,11 @@ export function registerTournamentCommands(
 
   // !approve
   router.registerCommand({
-    command: '!approve',
+    command: 'approve',
     requiredRole: 'DELEGATE',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengesahkan draf laporan pertandingan (Reply draf skor atau ketik !approve <id>)',
     handler: async (ctx: CommandContext) => {
       let versionId = ctx.args[0];
       if (!versionId && ctx.message.reply_to_key) {
@@ -236,10 +245,11 @@ export function registerTournamentCommands(
 
   // !createtournament <tournament_name>
   router.registerCommand({
-    command: '!createtournament',
+    command: 'createtournament',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
+    description: 'Membuat turnamen baru format grup + gugur (Admin only)',
     handler: async (ctx: CommandContext) => {
       const name = ctx.rawArgs.trim();
       if (!name) {
@@ -279,10 +289,11 @@ export function registerTournamentCommands(
 
   // !draw [tournament_id]
   router.registerCommand({
-    command: '!draw',
+    command: 'draw',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
+    description: 'Mengundi pembagian grup secara acak dan membuat jadwal pertandingan (Admin only)',
     handler: async (ctx: CommandContext) => {
       let tournamentId = ctx.args[0]?.trim();
       let tournamentName = '';
@@ -458,7 +469,7 @@ export function registerTournamentCommands(
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mendaftarkan tim baru ke turnamen',
+    description: 'Mendaftarkan tim baru ke turnamen (Admin only)',
     handler: async (ctx: CommandContext) => {
       const teamName = ctx.rawArgs.trim();
       if (!teamName) {
@@ -523,7 +534,7 @@ export function registerTournamentCommands(
     requiredRole: 'ORGANIZER',
     allowedInDm: false,
     allowedInGroup: true,
-    description: 'Memulai verifikasi delegasi resmi tim secara bertahap di grup',
+    description: 'Memulai verifikasi delegasi resmi tim di grup secara bertahap (Admin only)',
     handler: async (ctx: CommandContext) => {
       const tRes = await db.execute('SELECT id, name, status FROM tournaments ORDER BY created_at DESC LIMIT 1');
       if (tRes.rows.length === 0) {
