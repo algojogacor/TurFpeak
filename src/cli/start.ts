@@ -5,11 +5,14 @@
  * renders QR code in the terminal for linking, and binds message event listeners.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import pino from 'pino';
 import qrcode from 'qrcode-terminal';
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { createClient } from '@libsql/client';
 import { WhatsAppConnection } from '../whatsapp/connection.js';
+import { WhatsAppSender } from '../whatsapp/sender.js';
 import { normalizeWAMessage } from '../whatsapp/normalizer.js';
 import { FlashPeakMediaClient } from '../media/client.js';
 import { ProviderRouter } from '../ai/router.js';
@@ -125,24 +128,34 @@ async function main() {
     console.log('  (Menu WhatsApp > Perangkat Tertaut > Tautkan)     ');
     console.log('====================================================\n');
     qrcode.generate(qr, { small: true });
+    try {
+      writeFileSync(path.join(authDir, 'last_qr.txt'), qr, 'utf8');
+    } catch {}
     console.log('\n[WA] Menunggu scan QR code dari aplikasi WhatsApp...');
   });
 
   // 5. Create Central TMS Application
+  const envGroup = process.env.WA_CENTRAL_GROUP_JID?.trim();
+  const centralGroupJid = envGroup && !envGroup.startsWith('120363000000000000') ? envGroup : undefined;
+
   const app = createApp({
     db,
     mediaClient,
     providerRouter,
     organizerPhone: process.env.WA_ORGANIZER_PHONE || '6281234567890',
-    centralGroupJid: process.env.WA_CENTRAL_GROUP_JID || '120363000000000000@g.us',
+    organizerJid: process.env.WA_ORGANIZER_JID,
+    centralGroupJid,
   });
 
   // Connect socket
   const sock = await waConnection.connect();
+  const sender = new WhatsAppSender(() => waConnection.getSocket() || sock, { minIntervalMs: 1500 });
+  app.setSender(sender);
 
-  sock.ev.on('connection.update', (update) => {
+  waConnection.on('connection.update', (update) => {
     if (update.connection === 'open') {
-      const userJid = sock.user?.id || 'Unknown';
+      const currentSock = waConnection.getSocket();
+      const userJid = currentSock?.user?.id || sock.user?.id || 'Unknown';
       console.log('\n====================================================');
       console.log(`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!`);
       console.log(`[WA] Akun Bot JID: ${userJid}`);
@@ -152,19 +165,63 @@ async function main() {
     }
   });
 
-  // Inbound messages routing
-  sock.ev.on('messages.upsert', async (data) => {
+  // Inbound messages routing attached to waConnection (persists across all socket reconnects!)
+  waConnection.on('messages.upsert', async (data: { type: string; messages: any[] }) => {
     try {
       if (data.type !== 'notify') return;
+      const currentSock = waConnection.getSocket() || sock;
+
       for (const msg of data.messages) {
-        if (!msg.message || msg.key.fromMe) continue;
+        if (!msg.message || msg.key?.fromMe) continue;
         const normalized = normalizeWAMessage(msg);
         if (!normalized) continue;
 
+        // Ignore broadcast and newsletter messages
+        if (
+          normalized.chat_id.endsWith('@broadcast') ||
+          normalized.chat_id === 'status@broadcast' ||
+          normalized.chat_id.endsWith('@newsletter')
+        ) {
+          continue;
+        }
+
+        console.log(
+          `[WA] Inbound msg from ${normalized.sender_raw_address} in ${normalized.chat_id}: ${normalized.text_body || normalized.caption || '[media]'}`
+        );
+
+        let mediaBuffer: Buffer | null = null;
+        const unwrapped = msg.message?.ephemeralMessage?.message ||
+          msg.message?.viewOnceMessage?.message ||
+          msg.message?.viewOnceMessageV2?.message ||
+          msg.message?.viewOnceMessageV2Extension?.message ||
+          msg.message?.documentWithCaptionMessage?.message ||
+          msg.message;
+
+        const isMedia = normalized.message_type === 'IMAGE' ||
+          Boolean(unwrapped?.imageMessage || unwrapped?.documentMessage);
+
+        if (isMedia) {
+          try {
+            console.log(`[WA] Downloading media attachment for message ${msg.key.id}...`);
+            mediaBuffer = (await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              {
+                logger: pino({ level: 'silent' }),
+                reuploadRequest: (reuploadMsg) => currentSock.updateMediaMessage(reuploadMsg),
+              }
+            )) as Buffer;
+            console.log(`[WA] Successfully downloaded media: ${mediaBuffer?.length} bytes`);
+          } catch (downloadErr) {
+            console.error('[WA] Error downloading media attachment:', downloadErr);
+          }
+        }
+
         // Process message through TMS orchestrator
-        const outcome = await app.handleInboundMessage(normalized);
+        const outcome = await app.handleInboundMessage(normalized, mediaBuffer);
         if (outcome.replyText) {
-          await sock.sendMessage(normalized.chat_id, { text: outcome.replyText }, { quoted: msg });
+          await sender.sendQuote(normalized.chat_id, outcome.replyText, msg);
         }
       }
     } catch (err) {

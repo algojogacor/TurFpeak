@@ -15,6 +15,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { Client } from '@libsql/client';
 import type {
   NormalizedMessage,
@@ -22,6 +23,7 @@ import type {
   CommandResult,
 } from './whatsapp/types.js';
 import { CommandRouter } from './whatsapp/router.js';
+import { WhatsAppSender } from './whatsapp/sender.js';
 import { IdentityResolver } from './identity/resolver.js';
 import { OnboardingService } from './identity/onboarding.js';
 import { FlashPeakMediaClient } from './media/client.js';
@@ -60,11 +62,22 @@ import {
   type TournamentAwardsSummary,
   type AwardsCalculationOptions,
 } from './stats/awards.js';
+import { createTournament } from './competition/tournament.js';
+import {
+  prepareDraw,
+  revealNext,
+} from './competition/draw.js';
+import { generateGroupStageFixtures } from './competition/fixtures.js';
 import {
   formatMatchReportSummary,
   formatStandingsTable,
   formatAwardsAnnouncement,
+  formatDrawRevealStep,
+  formatDrawCompletedSummary,
+  formatFixturesSchedule,
   type MatchReportSummaryParams,
+  type CompletedDrawGroup,
+  type FixtureScheduleDisplayItem,
 } from './whatsapp/formatters.js';
 import { formatAIFailureMessage } from './whatsapp/failure.js';
 import { recalculateAndPersistGroupStandings } from './competition/standings.js';
@@ -74,12 +87,14 @@ import type {
   ApprovalDecision,
   ReportVersion,
   ReportSession,
+  DrawResultGroupAssignment,
 } from './shared/types/index.js';
 
 export interface FlashPeakAppConfig {
   db: Client;
   mediaClient?: FlashPeakMediaClient;
   providerRouter?: ProviderRouter;
+  sender?: WhatsAppSender;
   centralGroupJid?: string;
   organizerJid?: string;
   organizerPhone?: string;
@@ -102,6 +117,7 @@ export interface InboundHandlingResult {
 export interface ProcessedBatchResult {
   sessionId: UUID;
   fixtureId: UUID;
+  targetChatId?: string;
   status: 'DRAFT_CREATED' | 'NEEDS_CORRECTION' | 'AI_FAILED' | 'NO_MEDIA';
   draftVersion?: ReportVersion;
   whatsappSummary?: string;
@@ -119,6 +135,8 @@ export class FlashPeakApp {
   public readonly matchExtractor?: MatchSummaryExtractor;
   public readonly gkExtractor?: GoalkeeperDetailExtractor;
   public readonly correctionParser?: CorrectionParser;
+  public readonly centralGroupJid?: string;
+  public sender?: WhatsAppSender;
 
   private quietWindowMs: number;
   private leaseDurationMs: number;
@@ -129,6 +147,8 @@ export class FlashPeakApp {
 
   constructor(config: FlashPeakAppConfig) {
     this.db = config.db;
+    this.centralGroupJid = config.centralGroupJid;
+    this.sender = config.sender;
     this.quietWindowMs = config.quietWindowMs ?? 5000;
     this.leaseDurationMs = config.leaseDurationMs ?? 30000;
     this.workerId = config.workerId ?? `worker-${randomUUID().slice(0, 8)}`;
@@ -154,6 +174,10 @@ export class FlashPeakApp {
     }
 
     this.registerAppCommands();
+  }
+
+  public setSender(sender: WhatsAppSender): void {
+    this.sender = sender;
   }
 
   /**
@@ -243,12 +267,342 @@ export class FlashPeakApp {
         return { success: outcome.isLocked, responseText: outcome.message };
       },
     });
+
+    // !createtournament <tournament_name>
+    this.commandRouter.registerCommand({
+      command: '!createtournament',
+      requiredRole: 'ORGANIZER',
+      allowedInDm: true,
+      allowedInGroup: true,
+      handler: async (ctx: CommandContext) => {
+        const name = ctx.rawArgs.trim();
+        if (!name) {
+          return {
+            success: false,
+            responseText: '⚠️ Format: *!createtournament <Nama Turnamen>*\nContoh: `!createtournament Flash Peak Championship Season 1`',
+          };
+        }
+
+        try {
+          const tournament = await createTournament(this.db, {
+            name,
+            format: 'GROUP_AND_KNOCKOUT',
+          });
+
+          return {
+            success: true,
+            responseText: [
+              `🏆 *TURNAMEN BERHASIL DIBUAT*`,
+              `──────────────────────────────`,
+              `📌 *Nama:* ${tournament.name}`,
+              `🆔 *ID:* \`${tournament.id}\``,
+              `📊 *Format:* Babak Grup + Knockout (D-008)`,
+              `⚙️ *Status:* DRAFT / REGISTRATION`,
+              ``,
+              `Pendaftaran tim dibuka. Panitia & delegasi dapat mendaftarkan tim ke turnamen ini.`,
+            ].join('\n'),
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            responseText: `❌ Gagal membuat turnamen: ${err.message || String(err)}`,
+          };
+        }
+      },
+    });
+
+    // !draw [tournament_id]
+    this.commandRouter.registerCommand({
+      command: '!draw',
+      requiredRole: 'ORGANIZER',
+      allowedInDm: true,
+      allowedInGroup: true,
+      handler: async (ctx: CommandContext) => {
+        let tournamentId = ctx.args[0]?.trim();
+        let tournamentName = '';
+
+        if (tournamentId) {
+          const tRes = await this.db.execute({
+            sql: `SELECT id, name, status FROM tournaments WHERE id = ?`,
+            args: [tournamentId],
+          });
+          if (tRes.rows.length === 0) {
+            return {
+              success: false,
+              responseText: `⚠️ Turnamen dengan ID \`${tournamentId}\` tidak ditemukan.`,
+            };
+          }
+          tournamentName = String(tRes.rows[0].name);
+        } else {
+          const tRes = await this.db.execute(`
+            SELECT id, name, status
+            FROM tournaments
+            ORDER BY created_at DESC
+            LIMIT 1
+          `);
+          if (tRes.rows.length === 0) {
+            return {
+              success: false,
+              responseText: '⚠️ Belum ada turnamen yang terdaftar di sistem.',
+            };
+          }
+          tournamentId = String(tRes.rows[0].id);
+          tournamentName = String(tRes.rows[0].name);
+        }
+
+        try {
+          // Prepare the draw (or resume existing draw)
+          const draw = await prepareDraw(this.db, tournamentId);
+
+          if (draw.status === 'COMPLETED') {
+            const groupsRes = await this.db.execute({
+              sql: `SELECT g.group_code, t.id as team_id, t.team_name, gm.draw_position
+                    FROM groups g
+                    JOIN group_members gm ON g.id = gm.group_id
+                    JOIN teams t ON gm.team_id = t.id
+                    WHERE g.draw_id = ?
+                    ORDER BY g.group_code ASC, gm.draw_position ASC`,
+              args: [draw.id],
+            });
+            const grpMap: Record<string, { teamId: string; teamName: string }[]> = {};
+            for (const r of groupsRes.rows) {
+              const code = String(r.group_code);
+              if (!grpMap[code]) grpMap[code] = [];
+              grpMap[code].push({ teamId: String(r.team_id), teamName: String(r.team_name) });
+            }
+            const completedGroups: CompletedDrawGroup[] = Object.entries(grpMap).map(([k, v]) => ({
+              groupCode: k,
+              teams: v,
+            }));
+            const summary = formatDrawCompletedSummary(
+              tournamentName,
+              completedGroups,
+              draw.commitment_hash || undefined
+            );
+            return {
+              success: true,
+              responseText: `ℹ️ Pengundian grup untuk turnamen ini sudah selesai sebelumnya.\n\n${summary}`,
+            };
+          }
+
+          // Initial start announcement
+          const assignment = JSON.parse(draw.result_json || '[]') as DrawResultGroupAssignment[];
+          const totalTeamsInDraw = assignment.reduce((acc, g) => acc + g.teams.length, 0);
+
+          if (this.sender) {
+            await this.sender.sendText(
+              ctx.message.chat_id,
+              `🎲 *MEMULAI PENGUNDIAN GRUP — ${tournamentName.toUpperCase()}*\nTotal: ${totalTeamsInDraw} Tim\nHarap tunggu, hasil undian akan diungkap secara langsung...`
+            );
+          }
+
+          // Progressive reveal loop (reveal team by team)
+          while (true) {
+            const step = await revealNext(this.db, draw.id);
+            if (step.is_complete || !step.item) {
+              break;
+            }
+
+            if (this.sender) {
+              const revealMsg = formatDrawRevealStep({
+                tournamentTitle: tournamentName,
+                stepIndex: step.revealed_count,
+                totalSteps: step.total_teams,
+                teamName: step.item.team_name,
+                groupCode: step.item.group_code,
+                seedReveal: step.seed_reveal || undefined,
+              });
+              await this.sender.sendText(ctx.message.chat_id, revealMsg);
+              // Pacing delay between team reveals (2500ms)
+              await new Promise((r) => setTimeout(r, 2500));
+            }
+          }
+
+          // Generate balanced round-robin group fixtures
+          await generateGroupStageFixtures(this.db, tournamentId);
+
+          // Transition tournament status to ACTIVE
+          await this.db.execute({
+            sql: `UPDATE tournaments SET status = 'ACTIVE', updated_at = ? WHERE id = ?`,
+            args: [new Date().toISOString(), tournamentId],
+          });
+
+          // Send completed draw summary
+          const completedGroups: CompletedDrawGroup[] = assignment.map((g) => ({
+            groupCode: g.group_code,
+            teams: g.teams.map((t) => ({ teamId: t.team_id, teamName: t.team_name })),
+          }));
+          const summaryMsg = formatDrawCompletedSummary(
+            tournamentName,
+            completedGroups,
+            draw.commitment_hash || undefined
+          );
+
+          if (this.sender) {
+            await this.sender.sendText(ctx.message.chat_id, summaryMsg);
+          }
+
+          // Pathway #11: Fixture Schedule Announcement
+          const fixturesRes = await this.db.execute({
+            sql: `
+              SELECT f.round_code, g.group_code, ta.team_name as team_a_name, tb.team_name as team_b_name, tl.team_name as host_name
+              FROM fixtures f
+              JOIN groups g ON f.group_id = g.id
+              JOIN teams ta ON f.team_a_id = ta.id
+              JOIN teams tb ON f.team_b_id = tb.id
+              LEFT JOIN teams tl ON f.left_side_team_id = tl.id
+              WHERE f.tournament_id = ?
+              ORDER BY g.group_code ASC, f.round_code ASC
+            `,
+            args: [tournamentId],
+          });
+
+          const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r) => ({
+            roundCode: String(r.round_code),
+            groupCode: String(r.group_code),
+            teamAName: String(r.team_a_name),
+            teamBName: String(r.team_b_name),
+            leftSideHostName: String(r.host_name || r.team_a_name),
+          }));
+
+          const scheduleMsg = formatFixturesSchedule(tournamentName, scheduleItems);
+
+          if (this.sender) {
+            await this.sender.sendText(ctx.message.chat_id, scheduleMsg);
+          }
+
+          return {
+            success: true,
+            responseText: this.sender
+              ? '✅ Pengundian grup dan jadwal pertandingan babak grup telah berhasil disiarkan!'
+              : `${summaryMsg}\n\n${scheduleMsg}`,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            responseText: `⚠️ Gagal menjalankan undian: ${err.message || String(err)}`,
+          };
+        }
+      },
+    });
+
+    // !addteam <team_name>
+    this.commandRouter.registerCommand({
+      command: 'addteam',
+      requiredRole: 'ORGANIZER',
+      allowedInDm: true,
+      allowedInGroup: true,
+      description: 'Mendaftarkan tim baru ke turnamen',
+      handler: async (ctx: CommandContext) => {
+        const teamName = ctx.rawArgs.trim();
+        if (!teamName) {
+          return {
+            success: false,
+            responseText: '⚠️ Format: *!addteam <Nama Tim>*\nContoh: `!addteam Garuda FC`',
+          };
+        }
+
+        const tRes = await this.db.execute('SELECT id, name, status FROM tournaments ORDER BY created_at DESC LIMIT 1');
+        if (tRes.rows.length === 0) {
+          return {
+            success: false,
+            responseText: '⚠️ Belum ada turnamen yang dibuat. Buat dulu dengan *!createtournament <Nama Turnamen>*.',
+          };
+        }
+        const tourneyId = String(tRes.rows[0].id);
+        const tourneyName = String(tRes.rows[0].name);
+
+        // Check if team with this name already exists in this tournament
+        const existRes = await this.db.execute({
+          sql: 'SELECT id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?)',
+          args: [tourneyId, teamName],
+        });
+        if (existRes.rows.length > 0) {
+          return {
+            success: false,
+            responseText: `⚠️ Tim *${teamName}* sudah terdaftar di turnamen *${tourneyName}*.`,
+          };
+        }
+
+        const teamId = randomUUID();
+        const now = new Date().toISOString();
+        await this.db.execute({
+          sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+                VALUES (?, ?, ?, 'PENDING', ?, ?)`,
+          args: [teamId, tourneyId, teamName, now, now],
+        });
+
+        const cntRes = await this.db.execute({
+          sql: 'SELECT COUNT(*) as cnt FROM teams WHERE tournament_id = ?',
+          args: [tourneyId],
+        });
+        const count = Number(cntRes.rows[0].cnt);
+
+        return {
+          success: true,
+          responseText: [
+            `✅ Tim *${teamName}* berhasil didaftarkan ke *${tourneyName}*!`,
+            `📊 Total tim terdaftar: *${count} tim*`,
+            count >= 8
+              ? `\n🎉 *Kuota minimal (8 tim) terpenuhi!* Panitia dapat mengetik *!onboarding* di grup ini untuk memulai verifikasi delegasi resmi masing-masing tim.`
+              : `\n💡 _Tambahkan ${8 - count} tim lagi untuk memenuhi syarat minimal 8 tim sebelum pengundian grup._`,
+          ].join('\n'),
+        };
+      },
+    });
+
+    // !onboarding
+    this.commandRouter.registerCommand({
+      command: 'onboarding',
+      requiredRole: 'ORGANIZER',
+      allowedInDm: false,
+      allowedInGroup: true,
+      description: 'Memulai verifikasi delegasi resmi tim secara bertahap di grup',
+      handler: async (ctx: CommandContext) => {
+        const tRes = await this.db.execute('SELECT id, name, status FROM tournaments ORDER BY created_at DESC LIMIT 1');
+        if (tRes.rows.length === 0) {
+          return { success: false, responseText: '⚠️ Belum ada turnamen yang dibuat.' };
+        }
+        const tourneyId = String(tRes.rows[0].id);
+
+        const promptResult = await this.onboardingService.getNextOnboardingPrompt(tourneyId);
+
+        if (promptResult.status === 'NO_TEAMS') {
+          return {
+            success: false,
+            responseText: '⚠️ Belum ada tim yang didaftarkan. Gunakan *!addteam <Nama Tim>* terlebih dahulu.',
+          };
+        }
+
+        if (promptResult.status === 'COMPLETED') {
+          return {
+            success: true,
+            responseText: '✅ Seluruh tim telah memiliki delegasi terverifikasi! Turnamen siap untuk tahap *!draw*.',
+          };
+        }
+
+        if (promptResult.status === 'PROMPT_READY' && promptResult.promptText && promptResult.team) {
+          if (this.sender) {
+            const sentKey = await this.sender.sendText(ctx.message.chat_id, promptResult.promptText);
+            this.onboardingService.setActivePrompt(tourneyId, promptResult.team.id, sentKey);
+            return { success: true };
+          } else {
+            return { success: true, responseText: promptResult.promptText };
+          }
+        }
+
+        return { success: false, responseText: 'Status onboarding tidak diketahui.' };
+      },
+    });
   }
 
   /**
    * Main incoming message handler.
    */
-  public async handleInboundMessage(message: NormalizedMessage): Promise<InboundHandlingResult> {
+  public async handleInboundMessage(
+    message: NormalizedMessage,
+    mediaBuffer?: Buffer | null
+  ): Promise<InboundHandlingResult> {
     // 1. Command Router Check
     if (this.commandRouter.isCommand(message)) {
       const commandResult = await this.commandRouter.handleMessage(message);
@@ -261,13 +615,27 @@ export class FlashPeakApp {
     }
 
     // 2. Onboarding Flow Check
-    const activeTournaments = await this.db.execute("SELECT id FROM tournaments WHERE status IN ('REGISTRATION', 'DRAW') LIMIT 1");
+    const activeTournaments = await this.db.execute("SELECT id FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
     if (activeTournaments.rows.length > 0) {
-      const tournamentId = String(activeTournaments.rows[0][0]);
+      const tournamentId = String(activeTournaments.rows[0].id ?? activeTournaments.rows[0][0]);
       const activePrompt = this.onboardingService.getActivePrompt(tournamentId);
       if (activePrompt && message.reply_to_key === activePrompt.promptMessageKey) {
         const replyRes = await this.onboardingService.handleOnboardingReply(tournamentId, message);
         if (replyRes.status === 'SUCCESS') {
+          // If there is a next pending team to prompt, send it sequentially after 2s
+          if (replyRes.nextPrompt?.promptText && replyRes.nextPrompt.team && this.sender) {
+            const nextPrompt = replyRes.nextPrompt;
+            setTimeout(async () => {
+              try {
+                if (this.sender && nextPrompt.promptText && nextPrompt.team) {
+                  const nextKey = await this.sender.sendText(message.chat_id, nextPrompt.promptText);
+                  this.onboardingService.setActivePrompt(tournamentId, nextPrompt.team.id, nextKey);
+                }
+              } catch (err) {
+                console.error('[Onboarding] Error sending next sequential prompt:', err);
+              }
+            }, 2000);
+          }
           return {
             handled: true,
             type: 'ONBOARDING',
@@ -299,8 +667,16 @@ export class FlashPeakApp {
     }
 
     // 4. Evidence / Match Ingestion Capture
-    const hasMedia = message.message_type === 'IMAGE' || Boolean(message.media_metadata);
-    if (hasMedia || isCorrectionCandidate) {
+    if (
+      message.chat_id.endsWith('@broadcast') ||
+      message.chat_id === 'status@broadcast' ||
+      message.chat_id.endsWith('@newsletter')
+    ) {
+      return { handled: false, type: 'UNKNOWN' };
+    }
+
+    const hasMedia = message.message_type === 'IMAGE' || Boolean(message.media_metadata) || Boolean(mediaBuffer);
+    if ((hasMedia && message.message_type === 'IMAGE') || isCorrectionCandidate) {
       const resolvedIdentity = await this.identityResolver.resolveIdentity(message.sender_raw_address);
       const delegateId = resolvedIdentity?.delegate?.id || null;
 
@@ -317,7 +693,7 @@ export class FlashPeakApp {
         sessionId = sessionRes.session.id;
       }
 
-      await captureInboundMessage(this.db, {
+      const captureRes = await captureInboundMessage(this.db, {
         provider_message_key: message.provider_message_key,
         chat_id: message.chat_id,
         sender_raw_address: message.sender_raw_address,
@@ -329,6 +705,25 @@ export class FlashPeakApp {
         reply_to_key: message.reply_to_key,
         report_session_id: sessionId,
       });
+
+      // Persist binary media into Flash Peak media service & Turso media_assets table
+      if (mediaBuffer && this.mediaClient) {
+        try {
+          const originalName = message.media_metadata?.fileName || `${message.provider_message_key}.jpg`;
+          const mime = message.media_metadata?.mimetype || 'image/jpeg';
+          const asset = await this.mediaClient.uploadMedia({
+            buffer: mediaBuffer,
+            filename: originalName,
+            mimeType: mime,
+            mediaRole: 'MAIN_MATCH',
+            sourceMessageId: captureRes.message.id,
+            uploadedByDelegateId: delegateId,
+          });
+          console.log(`[Media] Uploaded asset '${asset.id}' (${mediaBuffer.length} bytes) for message ${captureRes.message.id}`);
+        } catch (uploadErr) {
+          console.error('[Media] Failed to upload media asset to media service:', uploadErr);
+        }
+      }
 
       if (sessionId) {
         session = await resetSessionDebounce(
@@ -372,13 +767,23 @@ export class FlashPeakApp {
     const sessionId = batch.session.id;
     const fixtureId = batch.session.fixture_id;
 
+    const chatRes = await this.db.execute({
+      sql: 'SELECT chat_id FROM inbound_messages WHERE report_session_id = ? ORDER BY message_timestamp DESC LIMIT 1',
+      args: [sessionId],
+    });
+    const targetChatId = chatRes.rows.length > 0 && chatRes.rows[0][0]
+      ? String(chatRes.rows[0][0])
+      : this.centralGroupJid;
+
     try {
       if (batch.mediaAssets.length === 0) {
         await completeDebounceBatch(this.db, sessionId, 'INCOMPLETE');
         return {
           sessionId,
           fixtureId,
+          targetChatId,
           status: 'NO_MEDIA',
+          whatsappSummary: '⚠️ Bukti foto pertandingan tidak terdeteksi atau gagal diunduh. Silakan kirim ulang screenshot skor akhir pertandingan.',
           error: 'No media attachments in claimed batch',
         };
       }
@@ -388,6 +793,7 @@ export class FlashPeakApp {
         return {
           sessionId,
           fixtureId,
+          targetChatId,
           status: 'AI_FAILED',
           error: 'AI router not configured',
         };
@@ -400,9 +806,12 @@ export class FlashPeakApp {
         let base64 = '';
         if (this.mediaClient) {
           try {
-            const downloaded = await this.mediaClient.downloadMedia(asset.id);
+            const filename = path.basename(asset.storage_key);
+            const remoteId = filename.split('.')[0] || asset.id;
+            const downloaded = await this.mediaClient.downloadMedia(remoteId, asset.sha256);
             base64 = downloaded.buffer.toString('base64');
-          } catch {
+          } catch (dlErr) {
+            console.error(`[AI] Failed to download media asset ${asset.id}:`, dlErr);
             base64 = 'MOCK_BASE64_DATA';
           }
         } else {
@@ -426,6 +835,7 @@ export class FlashPeakApp {
         return {
           sessionId,
           fixtureId,
+          targetChatId,
           status: 'NEEDS_CORRECTION',
           error: 'Main match summary screenshot missing',
         };
@@ -531,6 +941,7 @@ export class FlashPeakApp {
       return {
         sessionId,
         fixtureId,
+        targetChatId,
         status: validation.isValid ? 'DRAFT_CREATED' : 'NEEDS_CORRECTION',
         draftVersion,
         whatsappSummary,
@@ -545,6 +956,7 @@ export class FlashPeakApp {
       return {
         sessionId,
         fixtureId,
+        targetChatId,
         status: 'AI_FAILED',
         whatsappSummary: failMsg,
         error: String(err),
@@ -720,7 +1132,15 @@ export class FlashPeakApp {
     this.isPolling = true;
     this.pollTimer = setInterval(async () => {
       try {
-        await this.processDueDebounceBatches();
+        const batchResults = await this.processDueDebounceBatches();
+        for (const res of batchResults) {
+          if (res.whatsappSummary && this.sender) {
+            const destChat = res.targetChatId || this.centralGroupJid;
+            if (destChat) {
+              await this.sender.sendText(destChat, res.whatsappSummary);
+            }
+          }
+        }
       } catch (err) {
         console.error('[FlashPeakApp] Error processing debounce batches:', err);
       }

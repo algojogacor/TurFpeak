@@ -5,6 +5,7 @@ import {
   formatDrawRevealStep,
   formatDrawCompletedSummary,
   formatAwardsAnnouncement,
+  formatFixturesSchedule,
 } from '../../src/whatsapp/formatters.js';
 import {
   formatAIFailureMessage,
@@ -259,6 +260,34 @@ describe('Fase 6: WhatsApp Message Formatters & Failure Handlers', () => {
       });
       expect(msgWithHint).toContain('!manualreport');
       expect(msgWithHint).toContain('wa.me/6281234567890');
+    });
+  });
+
+  describe('formatFixturesSchedule (Pathway #11)', () => {
+    it('formats group fixture kickoff schedule cleanly', () => {
+      const schedule = formatFixturesSchedule('Flash Peak Season 1', [
+        {
+          roundCode: 'ROUND_1',
+          groupCode: 'A',
+          teamAName: 'Garuda FC',
+          teamBName: 'Harimau FC',
+          leftSideHostName: 'Garuda FC',
+        },
+        {
+          roundCode: 'ROUND_1',
+          groupCode: 'B',
+          teamAName: 'Elang FC',
+          teamBName: 'Badak FC',
+          leftSideHostName: 'Elang FC',
+        },
+      ]);
+
+      expect(schedule).toContain('JADWAL PERTANDINGAN — FLASH PEAK SEASON 1');
+      expect(schedule).toContain('GRUP A');
+      expect(schedule).toContain('Garuda FC* vs *Harimau FC* (Host: Garuda FC)');
+      expect(schedule).toContain('GRUP B');
+      expect(schedule).toContain('Elang FC* vs *Badak FC* (Host: Elang FC)');
+      expect(schedule).toContain('Tim kiri bertindak sebagai Host Room');
     });
   });
 });

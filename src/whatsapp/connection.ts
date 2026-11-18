@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
   type WASocket,
   type ConnectionState,
   type UserFacingSocketConfig,
@@ -120,14 +121,27 @@ export class WhatsAppConnection extends EventEmitter {
         ? await this.config.customAuthStateProvider(this.config.authStateDir)
         : await useMultiFileAuthState(this.config.authStateDir);
 
+      let version: [number, number, number] = [2, 3000, 1043857760];
+      try {
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+      } catch (err) {
+        this.logger.warn({ err }, 'Failed to fetch latest WA version, using fallback');
+      }
+
       const socketConfig: Partial<UserFacingSocketConfig> = {
+        version,
         auth: state,
         logger: this.logger as any,
         printQRInTerminal: this.config.printQRInTerminal,
         browser: this.config.browser,
         markOnlineOnConnect: false,
         syncFullHistory: false,
+        keepAliveIntervalMs: 25000,
+        connectTimeoutMs: 30000,
+        defaultQueryTimeoutMs: 30000,
         generateHighQualityLinkPreview: false,
+        shouldIgnoreJid: (jid) => !jid || jid.endsWith('@broadcast') || jid === 'status@broadcast' || jid.endsWith('@newsletter'),
       };
 
       const sock: WASocket = this.config.customSocketFactory

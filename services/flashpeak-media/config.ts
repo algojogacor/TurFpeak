@@ -25,7 +25,7 @@ export function getDefaultConfig(): MediaServerConfig {
     storageRoot: process.env.FLASHPEAK_MEDIA_STORAGE_ROOT || path.resolve(process.cwd(), 'data/flashpeak-media'),
     quotaBytes: parseInt(process.env.FLASHPEAK_MEDIA_QUOTA_BYTES || String(5 * 1024 * 1024 * 1024), 10), // 5 GB default
     maxFileSize: parseInt(process.env.FLASHPEAK_MEDIA_MAX_FILE_SIZE || String(10 * 1024 * 1024), 10), // 10 MB default
-    hmacSecret: process.env.FLASHPEAK_MEDIA_SECRET || '',
+    hmacSecret: process.env.FLASHPEAK_MEDIA_SECRET || process.env.MEDIA_SERVICE_HMAC_SECRET || 'e56ad9530df7d79427f1e39d089210eddf18c55d136ca4a3cec438eff86dc206',
     allowedMimes: ['image/jpeg', 'image/png', 'image/webp'],
   };
 }

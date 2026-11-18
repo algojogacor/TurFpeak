@@ -371,3 +371,46 @@ function formatAwardSection(header: string, award: AwardDetail, metricUnit: stri
 
   return lines.join('\n');
 }
+
+export interface FixtureScheduleDisplayItem {
+  roundCode: string;
+  groupCode?: string;
+  teamAName: string;
+  teamBName: string;
+  leftSideHostName: string;
+}
+
+/**
+ * Formats fixture kickoff schedule announcement for WhatsApp (Pathway #11).
+ */
+export function formatFixturesSchedule(
+  tournamentTitle: string,
+  fixtures: FixtureScheduleDisplayItem[]
+): string {
+  const lines: string[] = [];
+  lines.push(`📅 *JADWAL PERTANDINGAN — ${tournamentTitle.toUpperCase()}*`);
+  lines.push('──────────────────────────────');
+
+  const byGroup: Record<string, FixtureScheduleDisplayItem[]> = {};
+  for (const f of fixtures) {
+    const key = f.groupCode ? `GRUP ${f.groupCode.toUpperCase()}` : f.roundCode;
+    if (!byGroup[key]) byGroup[key] = [];
+    byGroup[key].push(f);
+  }
+
+  for (const [grp, items] of Object.entries(byGroup)) {
+    lines.push('');
+    lines.push(`📌 *${grp}*`);
+    for (const item of items) {
+      lines.push(`  ⚽ *${item.teamAName}* vs *${item.teamBName}* (Host: ${item.leftSideHostName})`);
+    }
+  }
+
+  lines.push('');
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Tim kiri bertindak sebagai Host Room di dalam game Flash Peak._');
+  lines.push('Selamat bertanding & junjung sportivitas! ⚽🔥');
+
+  return lines.join('\n');
+}
+

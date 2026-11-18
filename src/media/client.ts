@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 import type { Client } from '@libsql/client';
 import type {
   MediaAsset,
@@ -173,7 +174,7 @@ export class FlashPeakMediaClient {
       );
     }
 
-    const assetId = crypto.randomUUID();
+    const assetId = result.id || crypto.randomUUID();
     const now = new Date().toISOString();
 
     const asset: MediaAsset = {
@@ -226,18 +227,20 @@ export class FlashPeakMediaClient {
     remoteId: string,
     expectedSha256?: string
   ): Promise<{ buffer: Buffer; mimeType: string; sha256: string }> {
-    const path = `/api/v1/media/${encodeURIComponent(remoteId)}`;
+    const filename = path.basename(remoteId);
+    const cleanId = filename.split('.')[0] || filename;
+    const downloadPath = `/api/v1/media/${encodeURIComponent(cleanId)}`;
     const authHeaders = generateMediaAuthHeaders(
       {
         method: 'GET',
-        path,
+        path: downloadPath,
         action: 'download',
-        resourceId: remoteId,
+        resourceId: cleanId,
       },
       this.secret
     );
 
-    const endpoint = `${this.apiUrl}${path}`;
+    const endpoint = `${this.apiUrl}${downloadPath}`;
     const res = await fetch(endpoint, {
       method: 'GET',
       headers: {

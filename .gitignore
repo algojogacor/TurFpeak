@@ -37,6 +37,8 @@ yarn-error.log*
 # Temporary files & tests coverage
 tmp/
 temp/
+scratch/
+test_images/
 coverage/
 .vitest/
 

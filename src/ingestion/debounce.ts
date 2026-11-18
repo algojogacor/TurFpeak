@@ -54,7 +54,7 @@ export async function resetSessionDebounce(
 
   await db.execute({
     sql: `UPDATE report_sessions
-          SET last_message_at = ?, debounce_due_at = ?, version = ?, updated_at = ?
+          SET status = 'COLLECTING', last_message_at = ?, debounce_due_at = ?, version = ?, updated_at = ?
           WHERE id = ?`,
     args: [nowIso, newDebounceDueAt, nextVersion, nowIso, sessionId],
   });

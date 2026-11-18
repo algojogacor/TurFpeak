@@ -39,7 +39,8 @@ PRIORITY:
 5. Never invent a missing or blurry number.
 6. Return null for unreadable or absent values.
 7. Keep raw text and visible stats in separate fields.
-8. The backend performs all business-rule validation.
+8. Player ratings in Flash Peak are strictly on a decimal scale from 0.0 to 10.0 (e.g. 10.0, 7.3, 8.5). The decimal point next to the avatar is small and stylized. Always output rating as a decimal number between 0.0 and 10.0 (e.g. 10.0, never 100.0; 7.3, never 73.0).
+9. The backend performs all business-rule validation.
 
 OUTPUT FORMAT:
 Return only JSON conforming to:

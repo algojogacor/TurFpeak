@@ -234,8 +234,14 @@ export async function validateMatchReport(
     if (defenseRaw < 0 || !Number.isInteger(defenseRaw)) {
       errors.push(`Team A player "${p.nickname_raw}" has invalid defense: ${defenseRaw}`);
     }
-    if (p.rating !== null && p.rating !== undefined && (p.rating < 0 || isNaN(p.rating))) {
-      errors.push(`Team A player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
+    let normalizedRating = p.rating ?? null;
+    if (normalizedRating !== null && normalizedRating !== undefined) {
+      if (normalizedRating > 10.0 && normalizedRating <= 100.0) {
+        normalizedRating = Number((normalizedRating / 10).toFixed(1));
+      }
+      if (normalizedRating < 0 || normalizedRating > 10.0 || isNaN(normalizedRating)) {
+        errors.push(`Team A player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
+      }
     }
 
     // Map goalkeeper DEFENSE to saves if registered as GK and saves not explicitly specified
@@ -253,7 +259,7 @@ export async function validateMatchReport(
     resolvedTeamAPlayers.push({
       player_id: registered ? registered.id : (p.player_id || ''),
       nickname_raw: p.nickname_raw,
-      rating: p.rating ?? null,
+      rating: normalizedRating,
       goals: Math.max(0, goals),
       assists: Math.max(0, assists),
       passes: Math.max(0, passes),
@@ -316,8 +322,14 @@ export async function validateMatchReport(
     if (defenseRaw < 0 || !Number.isInteger(defenseRaw)) {
       errors.push(`Team B player "${p.nickname_raw}" has invalid defense: ${defenseRaw}`);
     }
-    if (p.rating !== null && p.rating !== undefined && (p.rating < 0 || isNaN(p.rating))) {
-      errors.push(`Team B player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
+    let normalizedRating = p.rating ?? null;
+    if (normalizedRating !== null && normalizedRating !== undefined) {
+      if (normalizedRating > 10.0 && normalizedRating <= 100.0) {
+        normalizedRating = Number((normalizedRating / 10).toFixed(1));
+      }
+      if (normalizedRating < 0 || normalizedRating > 10.0 || isNaN(normalizedRating)) {
+        errors.push(`Team B player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
+      }
     }
 
     // Map goalkeeper DEFENSE to saves if registered as GK
@@ -334,7 +346,7 @@ export async function validateMatchReport(
     resolvedTeamBPlayers.push({
       player_id: registered ? registered.id : (p.player_id || ''),
       nickname_raw: p.nickname_raw,
-      rating: p.rating ?? null,
+      rating: normalizedRating,
       goals: Math.max(0, goals),
       assists: Math.max(0, assists),
       passes: Math.max(0, passes),

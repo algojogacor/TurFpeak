@@ -35,9 +35,7 @@ export class CommandRouter {
     this.centralGroupJid = jidNormalizedUser(
       config.centralGroupJid || process.env.WA_CENTRAL_GROUP_JID || ''
     );
-    this.organizerJid = jidNormalizedUser(
-      config.organizerJid || process.env.WA_ORGANIZER_JID || ''
-    );
+    this.organizerJid = (config.organizerJid || process.env.WA_ORGANIZER_JID || '').trim();
     this.organizerPhone = (config.organizerPhone || process.env.WA_ORGANIZER_PHONE || '').replace(/\D/g, '');
     this.identityResolver = config.identityResolver;
     this.logger = pino({ level: config.logLevel || 'silent' });
@@ -50,13 +48,21 @@ export class CommandRouter {
    * Registers a command definition.
    */
   public registerCommand(definition: CommandDefinition): void {
-    const cmd = definition.command.toLowerCase().trim();
+    const cmd = definition.command.toLowerCase().trim().replace(/^!/, '');
     this.commands.set(cmd, {
       ...definition,
       command: cmd,
       allowedInDm: definition.allowedInDm ?? (definition.requiredRole === 'ORGANIZER'),
       allowedInGroup: definition.allowedInGroup ?? true,
     });
+  }
+
+  public setCentralGroupJid(jid: string): void {
+    this.centralGroupJid = jidNormalizedUser(jid);
+  }
+
+  public getCentralGroupJid(): string {
+    return this.centralGroupJid;
   }
 
   /**
@@ -97,35 +103,32 @@ export class CommandRouter {
     const normalizedChatId = jidNormalizedUser(message.chat_id);
     const normalizedSender = message.sender_normalized_address;
 
-    // 1. Group Scope Validation (FR-ID-005)
-    // Commands and match reports must be accepted only in the configured central tournament group,
-    // unless it is an explicitly allowed private DM with the organizer.
-    const isCentralGroup = Boolean(this.centralGroupJid && normalizedChatId === this.centralGroupJid);
-    const isAdminChat = Boolean(this.organizerJid && normalizedChatId === this.organizerJid);
-    const isGroup = normalizedChatId.endsWith('@g.us');
-
-    if (isGroup && !isCentralGroup) {
-      this.logger.warn(
-        { chatId: normalizedChatId, centralGroup: this.centralGroupJid },
-        'Command rejected: outside central tournament group scope'
-      );
-      return {
-        success: false,
-        error: 'UNAUTHORIZED_GROUP',
-        responseText: '⚠️ Perintah hanya dapat diproses di dalam grup turnamen resmi.',
-      };
-    }
-
-    // 2. Authorization Check (Role Resolution)
+    // 1. Role Resolution & Authorization
     let role: UserRole = 'UNKNOWN';
     let isOrganizer = false;
 
-    // Check if sender is organizer (by JID match or phone digits)
-    if (this.organizerJid && normalizedSender === this.organizerJid) {
+    // Check if sender is organizer (by JID match, LID match, or phone digits)
+    const organizerList = (this.organizerJid || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (
+      organizerList.some(
+        (target) =>
+          normalizedSender.toLowerCase() === target ||
+          message.sender_raw_address.toLowerCase() === target ||
+          jidNormalizedUser(message.sender_raw_address).toLowerCase() === target
+      )
+    ) {
       isOrganizer = true;
     } else if (this.organizerPhone) {
       const senderDigits = normalizedSender.split('@')[0]?.replace(/\D/g, '');
-      if (senderDigits && senderDigits === this.organizerPhone) {
+      const rawDigits = message.sender_raw_address.split('@')[0]?.replace(/\D/g, '');
+      if (
+        (senderDigits && senderDigits === this.organizerPhone) ||
+        (rawDigits && rawDigits === this.organizerPhone)
+      ) {
         isOrganizer = true;
       }
     }
@@ -149,7 +152,7 @@ export class CommandRouter {
       }
     }
 
-    // 3. Command Definition Lookup
+    // 2. Command Definition Lookup
     const definition = this.commands.get(command);
     if (!definition) {
       return {
@@ -159,7 +162,26 @@ export class CommandRouter {
       };
     }
 
+    // 3. Role-based Access Control
+    if (definition.requiredRole === 'ORGANIZER' && role !== 'ORGANIZER') {
+      return {
+        success: false,
+        error: 'FORBIDDEN_ORGANIZER_ONLY',
+        responseText: '⛔ Perintah ini hanya memiliki izin untuk dijalankan oleh Organizer turnamen.',
+      };
+    }
+
+    if (definition.requiredRole === 'DELEGATE' && role === 'UNKNOWN') {
+      return {
+        success: false,
+        error: 'UNAUTHORIZED_DELEGATE',
+        responseText: '⛔ Identitas Anda belum terdaftar sebagai delegate resmi turnamen.',
+      };
+    }
+
     // 4. Validate DM vs Group Context
+    const isGroup = normalizedChatId.endsWith('@g.us');
+    const isAdminChat = !isGroup && isOrganizer;
     if (!isGroup && !definition.allowedInDm) {
       return {
         success: false,
@@ -176,21 +198,33 @@ export class CommandRouter {
       };
     }
 
-    // 5. Role-based Access Control
-    if (definition.requiredRole === 'ORGANIZER' && role !== 'ORGANIZER') {
-      return {
-        success: false,
-        error: 'FORBIDDEN_ORGANIZER_ONLY',
-        responseText: '⛔ Perintah ini hanya memiliki izin untuk dijalankan oleh Organizer turnamen.',
-      };
-    }
+    // 5. Group Scope Validation (FR-ID-005)
+    // Commands and match reports must be accepted only in the configured central tournament group,
+    // unless it is an explicitly allowed private DM with the organizer or an organizer administrative flow.
+    let isCentralGroup = Boolean(this.centralGroupJid && normalizedChatId === this.centralGroupJid);
 
-    if (definition.requiredRole === 'DELEGATE' && role === 'UNKNOWN') {
-      return {
-        success: false,
-        error: 'UNAUTHORIZED_DELEGATE',
-        responseText: '⛔ Identitas Anda belum terdaftar sebagai delegate resmi turnamen.',
-      };
+    if (isGroup && !isCentralGroup) {
+      // If an authorized ORGANIZER is running an administrative command (role ORGANIZER),
+      // or explicit group setup commands (!createtournament, !setgroup),
+      // or if central group has not been configured yet: adopt this group as official central group.
+      if (isOrganizer && (definition.requiredRole === 'ORGANIZER' || command === 'createtournament' || command === 'setgroup' || !this.centralGroupJid)) {
+        this.centralGroupJid = normalizedChatId;
+        isCentralGroup = true;
+        this.logger.info(
+          { newCentralGroup: normalizedChatId, command },
+          'Central tournament group automatically established by organizer'
+        );
+      } else {
+        this.logger.warn(
+          { chatId: normalizedChatId, centralGroup: this.centralGroupJid },
+          'Command rejected: outside central tournament group scope'
+        );
+        return {
+          success: false,
+          error: 'UNAUTHORIZED_GROUP',
+          responseText: '⚠️ Perintah hanya dapat diproses di dalam grup turnamen resmi.',
+        };
+      }
     }
 
     // 6. Execute Handler
@@ -255,6 +289,22 @@ export class CommandRouter {
         return {
           success: true,
           responseText: `📋 *Daftar Perintah Flash Peak TMS:*\n\n${available.join('\n')}`,
+        };
+      },
+    });
+
+    // !setgroup
+    this.registerCommand({
+      command: 'setgroup',
+      requiredRole: 'ORGANIZER',
+      description: 'Menetapkan grup ini sebagai grup turnamen resmi',
+      allowedInDm: false,
+      allowedInGroup: true,
+      handler: (ctx) => {
+        this.setCentralGroupJid(ctx.message.chat_id);
+        return {
+          success: true,
+          responseText: '✅ Grup ini telah berhasil ditetapkan sebagai Grup Resmi Turnamen Flash Peak TMS.',
         };
       },
     });
