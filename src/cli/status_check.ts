@@ -7,7 +7,7 @@ async function main() {
   const t = await db.execute('SELECT id, name, status FROM tournaments ORDER BY created_at DESC LIMIT 1');
   console.log('Tournament:', t.rows[0]);
 
-  const groups = await db.execute('SELECT id, group_code, name FROM groups');
+  const groups = await db.execute('SELECT id, group_code FROM groups');
   console.log('Groups:', groups.rows);
 
   const fixtures = await db.execute(`
