@@ -39,6 +39,7 @@ tmp/
 temp/
 scratch/
 test_images/
+*.mjs
 coverage/
 .vitest/
 
