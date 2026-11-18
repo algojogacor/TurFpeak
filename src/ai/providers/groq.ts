@@ -76,8 +76,8 @@ export class GroqAdapter implements ProviderAdapter {
     this.apiKeys = rawKeys.filter(Boolean);
 
     this.textModel = config.textModel || process.env.GROQ_TEXT_MODEL || 'qwen/qwen3.8-27b';
-    this.visionModel = config.visionModel || process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
-    this.model = config.model || process.env.GROQ_MODEL || this.textModel;
+    this.visionModel = config.visionModel || process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b';
+    this.model = config.model || process.env.GROQ_MODEL || 'qwen/qwen3.8-27b';
     this.endpoint = config.endpoint || process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
     this.defaultTimeoutMs = config.defaultTimeoutMs ?? 15000;
     this.customFetch = config.fetchFn ?? fetch;

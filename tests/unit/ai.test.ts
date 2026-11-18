@@ -198,7 +198,7 @@ describe('Fase 4: AI Pipeline & Vision', () => {
       });
 
       expect(response.parsed_json).toEqual({ score: 10, valid: true });
-      expect(capturedBody.model).toBe('llama-3.2-11b-vision-preview');
+      expect(capturedBody.model).toBe('qwen/qwen3.8-27b');
       expect(capturedBody.response_format).toEqual({ type: 'json_object' });
       expect(capturedBody.messages[1].content[1].type).toBe('image_url');
       expect(capturedBody.messages[1].content[1].image_url.url).toContain('data:image/jpeg;base64,dGVzdGJhc2U2NA==');
@@ -411,6 +411,16 @@ describe('Fase 4: AI Pipeline & Vision', () => {
       // Test key rotation on rate limit
       adapter.rotateKey();
       expect(adapter.getActiveApiKey()).toBe('key-2');
+
+      // Test vision request uses visionModel
+      const visionRes = await adapter.execute<{ status: string }>({
+        task: 'CLASSIFY',
+        system_prompt: 'System prompt',
+        prompt: 'User prompt',
+        images: [{ mime_type: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAE=' }],
+      });
+      expect(capturedBody.model).toBe('nvidia/nemotron-3.5-super-vl-120b-a12b');
+      expect(capturedBody.messages[1].content[1].type).toBe('image_url');
     });
   });
 

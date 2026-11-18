@@ -1,9 +1,9 @@
 /**
  * Flash Peak TMS - NVIDIA NIM Provider Adapter
  * 
- * Supports NVIDIA NIM OpenAI-compatible models (e.g. z-ai/glm-5.3-flash,
- * nvidia/nemotron-3.5-lightning-30b-a3b, moonshotai/kimi-k3.1-pro)
- * with multi-key rotation and JSON response format.
+ * Supports NVIDIA NIM OpenAI-compatible models (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b
+ * for vision OCR and nvidia/nemotron-3.5-lightning-30b-a3b for fast text)
+ * with multi-key rotation, reasoning extraction, and JSON response format.
  */
 
 import {
@@ -16,7 +16,6 @@ import {
   AIRateLimitError,
   AIQuotaExceededError,
   AITimeoutError,
-  AISafetyError,
   AIMalformedResponseError,
   AIProviderUnavailableError,
   sanitizeSensitiveString,
@@ -26,6 +25,8 @@ export interface NvidiaAdapterConfig {
   apiKey?: string;
   apiKeys?: string[];
   model?: string;
+  textModel?: string;
+  visionModel?: string;
   endpoint?: string;
   defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
@@ -34,11 +35,15 @@ export interface NvidiaAdapterConfig {
 export class NvidiaAdapter implements ProviderAdapter {
   public readonly name: AIProviderName = 'NVIDIA_NIM';
   public readonly model: string;
+  public readonly textModel: string;
+  public readonly visionModel: string;
   public readonly capabilities: ProviderCapabilities = {
-    vision: false,
+    vision: true,
     text: true,
     structured_output: true,
-    supported_mime_types: [],
+    max_image_dimensions: { width: 4096, height: 4096 },
+    max_image_bytes: 20 * 1024 * 1024,
+    supported_mime_types: ['image/jpeg', 'image/png', 'image/webp'],
   };
 
   private readonly apiKeys: string[];
@@ -66,7 +71,9 @@ export class NvidiaAdapter implements ProviderAdapter {
     }
     this.apiKeys = rawKeys.filter(Boolean);
 
-    this.model = config.model || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b';
+    this.visionModel = config.visionModel || process.env.NVIDIA_VISION_MODEL || 'nvidia/nemotron-3.5-super-vl-120b-a12b';
+    this.textModel = config.textModel || process.env.NVIDIA_TEXT_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b';
+    this.model = config.model || process.env.NVIDIA_MODEL || this.textModel;
     this.endpoint = config.endpoint || process.env.NVIDIA_ENDPOINT || 'https://integrate.api.nvidia.com/v1/chat/completions';
     this.defaultTimeoutMs = config.defaultTimeoutMs ?? 15000;
     this.customFetch = config.fetchFn ?? fetch;
@@ -97,19 +104,56 @@ export class NvidiaAdapter implements ProviderAdapter {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const messages: Array<{ role: string; content: string }> = [];
+    const isVision = Boolean(request.images && request.images.length > 0);
+    const modelToUse = isVision ? this.visionModel : (this.textModel || this.model);
+
+    const messages: Array<{ role: string; content: unknown }> = [];
 
     if (request.system_prompt) {
       messages.push({ role: 'system', content: request.system_prompt });
     }
-    messages.push({ role: 'user', content: request.prompt });
 
-    const payload = {
-      model: this.model,
+    if (isVision && request.images) {
+      const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+        { type: 'text', text: request.prompt },
+      ];
+
+      for (const img of request.images) {
+        const mime = img.mime_type || 'image/jpeg';
+        const url = img.base64.startsWith('data:')
+          ? img.base64
+          : `data:${mime};base64,${img.base64}`;
+        userContent.push({
+          type: 'image_url',
+          image_url: { url },
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: userContent,
+      });
+    } else {
+      messages.push({ role: 'user', content: request.prompt });
+    }
+
+    const payload: {
+      model: string;
+      messages: typeof messages;
+      temperature: number;
+      max_tokens?: number;
+      response_format?: { type: 'json_object' };
+    } = {
+      model: modelToUse,
       messages,
-      response_format: { type: 'json_object' },
       temperature: request.temperature ?? 0.1,
     };
+
+    if (isVision) {
+      payload.max_tokens = 1000;
+    } else {
+      payload.response_format = { type: 'json_object' };
+    }
 
     const startTime = Date.now();
 
@@ -148,28 +192,44 @@ export class NvidiaAdapter implements ProviderAdapter {
 
       const resJson = await res.json() as {
         choices?: Array<{
-          message?: { content?: string };
+          message?: { content?: string | null; reasoning_content?: string | null };
           finish_reason?: string;
         }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
 
       const choice = resJson.choices?.[0];
-      if (!choice || !choice.message || choice.message.content === undefined) {
-        throw new AIMalformedResponseError(this.name, 'NVIDIA NIM response contained no choice or content');
+      if (!choice || !choice.message) {
+        throw new AIMalformedResponseError(this.name, 'NVIDIA NIM response contained no choice');
       }
 
-      const rawContent = choice.message.content;
+      const rawContent = choice.message.content || choice.message.reasoning_content || '';
+      if (!rawContent) {
+        throw new AIMalformedResponseError(this.name, 'NVIDIA NIM response message content is empty');
+      }
 
       let parsedJson: T | undefined;
       try {
         const cleaned = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
         parsedJson = JSON.parse(cleaned) as T;
       } catch {
-        throw new AIMalformedResponseError(
-          this.name,
-          `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
-        );
+        // Try regex extraction of JSON object if wrapped in thinking/reasoning
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsedJson = JSON.parse(jsonMatch[0]) as T;
+          } catch {
+            throw new AIMalformedResponseError(
+              this.name,
+              `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
+            );
+          }
+        } else {
+          throw new AIMalformedResponseError(
+            this.name,
+            `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
+          );
+        }
       }
 
       return {
@@ -177,7 +237,7 @@ export class NvidiaAdapter implements ProviderAdapter {
         parsed_json: parsedJson,
         telemetry: {
           provider: this.name,
-          model: this.model,
+          model: modelToUse,
           task_type: request.task,
           latency_ms: latencyMs,
           input_tokens: resJson.usage?.prompt_tokens ?? null,
