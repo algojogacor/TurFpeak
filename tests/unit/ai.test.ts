@@ -30,6 +30,7 @@ import {
 import { GroqAdapter } from '../../src/ai/providers/groq.js';
 import { GeminiAdapter } from '../../src/ai/providers/gemini.js';
 import { OllamaAdapter } from '../../src/ai/providers/ollama.js';
+import { NvidiaAdapter } from '../../src/ai/providers/nvidia.js';
 import {
   ProviderRouter,
   AllProvidersFailedError,
@@ -359,6 +360,57 @@ describe('Fase 4: AI Pipeline & Vision', () => {
       expect(capturedBody.messages[1].images).toEqual(['b2xsYW1haW1hZ2U=']);
       expect(res.parsed_json).toEqual({ classification: 'MAIN_MATCH_SUMMARY' });
       expect(res.telemetry.provider).toBe('OLLAMA_CLOUD');
+    });
+  });
+
+  // ===========================================================================
+  // Task 4.4b: NVIDIA NIM Adapter
+  // ===========================================================================
+  describe('Task 4.4b: NvidiaAdapter', () => {
+    it('sends JSON requests to NVIDIA NIM endpoint and supports multi-key rotation', async () => {
+      let capturedBody: any;
+      let capturedAuth: string = '';
+
+      const mockFetch = vi.fn(async (_url: string, init: any) => {
+        capturedAuth = init.headers.Authorization;
+        capturedBody = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({ status: 'ok', model: 'nemotron-3.5-lightning' }),
+                },
+              },
+            ],
+            usage: { prompt_tokens: 42, completion_tokens: 15 },
+          }),
+        } as unknown as Response;
+      });
+
+      const adapter = new NvidiaAdapter({
+        apiKeys: ['key-1', 'key-2'],
+        model: 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      const res = await adapter.execute<{ status: string; model: string }>({
+        task: 'CLASSIFY',
+        system_prompt: 'System prompt',
+        prompt: 'User prompt',
+      });
+
+      expect(capturedAuth).toBe('Bearer key-1');
+      expect(capturedBody.model).toBe('nvidia/nemotron-3.5-lightning-30b-a3b');
+      expect(capturedBody.response_format).toEqual({ type: 'json_object' });
+      expect(res.parsed_json).toEqual({ status: 'ok', model: 'nemotron-3.5-lightning' });
+      expect(res.telemetry.provider).toBe('NVIDIA_NIM');
+
+      // Test key rotation on rate limit
+      adapter.rotateKey();
+      expect(adapter.getActiveApiKey()).toBe('key-2');
     });
   });
 

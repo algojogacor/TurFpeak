@@ -16,6 +16,7 @@ import { ProviderRouter } from '../ai/router.js';
 import { GroqAdapter } from '../ai/providers/groq.js';
 import { GeminiAdapter } from '../ai/providers/gemini.js';
 import { OllamaAdapter } from '../ai/providers/ollama.js';
+import { NvidiaAdapter } from '../ai/providers/nvidia.js';
 import type { ProviderAdapter } from '../ai/adapter.js';
 import { createApp } from '../index.js';
 import { runMigrations } from '../db/migrate.js';
@@ -81,6 +82,8 @@ async function main() {
   const geminiKey = process.env.GEMINI_API_KEY;
   const ollamaUrl = process.env.OLLAMA_CLOUD_BASE_URL;
 
+  const nvidiaKey = process.env.NVIDIA_API_KEY;
+
   const adapters: ProviderAdapter[] = [];
   if (groqKey && groqKey !== 'gsk_placeholder_groq_api_key') {
     adapters.push(new GroqAdapter({ apiKey: groqKey }));
@@ -89,6 +92,12 @@ async function main() {
     adapters.push(new GeminiAdapter({
       apiKey: geminiKey,
       model: process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
+    }));
+  }
+  if (nvidiaKey && !nvidiaKey.includes('placeholder')) {
+    adapters.push(new NvidiaAdapter({
+      apiKey: nvidiaKey,
+      model: process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
     }));
   }
   if (ollamaUrl && ollamaUrl !== 'https://ollama.cloud.example.com') {

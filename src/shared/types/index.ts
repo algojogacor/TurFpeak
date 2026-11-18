@@ -608,7 +608,7 @@ export interface AuditEvent {
   created_at: ISODateString;
 }
 
-export type AIProviderName = 'GROQ' | 'GEMINI' | 'OLLAMA_CLOUD';
+export type AIProviderName = 'GROQ' | 'GEMINI' | 'OLLAMA_CLOUD' | 'NVIDIA_NIM';
 
 export type AITaskType =
   | 'CLASSIFY'

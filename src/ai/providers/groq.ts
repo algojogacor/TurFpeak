@@ -29,6 +29,8 @@ export interface GroqAdapterConfig {
   apiKey?: string;
   apiKeys?: string[];
   model?: string;
+  textModel?: string;
+  visionModel?: string;
   endpoint?: string;
   defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
@@ -37,6 +39,8 @@ export interface GroqAdapterConfig {
 export class GroqAdapter implements ProviderAdapter {
   public readonly name: AIProviderName = 'GROQ';
   public readonly model: string;
+  public readonly textModel: string;
+  public readonly visionModel: string;
   public readonly capabilities: ProviderCapabilities = {
     vision: true,
     text: true,
@@ -53,14 +57,27 @@ export class GroqAdapter implements ProviderAdapter {
   private readonly customFetch: typeof fetch;
 
   constructor(config: GroqAdapterConfig = {}) {
-    const rawKeys = config.apiKeys || (process.env.GROQ_API_KEYS ? process.env.GROQ_API_KEYS.split(',').map(k => k.trim()).filter(Boolean) : []);
-    if (config.apiKey) rawKeys.unshift(config.apiKey.trim());
-    if (process.env.GROQ_API_KEY && !rawKeys.includes(process.env.GROQ_API_KEY.trim())) {
-      rawKeys.unshift(process.env.GROQ_API_KEY.trim());
+    let rawKeys: string[] = [];
+    if (config.apiKeys && config.apiKeys.length > 0) {
+      rawKeys = [...config.apiKeys];
+      if (config.apiKey && !rawKeys.includes(config.apiKey.trim())) {
+        rawKeys.unshift(config.apiKey.trim());
+      }
+    } else if (config.apiKey) {
+      rawKeys = [config.apiKey.trim()];
+    } else {
+      if (process.env.GROQ_API_KEYS) {
+        rawKeys = process.env.GROQ_API_KEYS.split(',').map(k => k.trim()).filter(Boolean);
+      }
+      if (process.env.GROQ_API_KEY && !rawKeys.includes(process.env.GROQ_API_KEY.trim())) {
+        rawKeys.unshift(process.env.GROQ_API_KEY.trim());
+      }
     }
     this.apiKeys = rawKeys.filter(Boolean);
 
-    this.model = config.model || process.env.GROQ_MODEL || 'llama-3.2-11b-vision-preview';
+    this.textModel = config.textModel || process.env.GROQ_TEXT_MODEL || 'qwen/qwen3.8-27b';
+    this.visionModel = config.visionModel || process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
+    this.model = config.model || process.env.GROQ_MODEL || this.textModel;
     this.endpoint = config.endpoint || process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
     this.defaultTimeoutMs = config.defaultTimeoutMs ?? 15000;
     this.customFetch = config.fetchFn ?? fetch;
@@ -127,8 +144,12 @@ export class GroqAdapter implements ProviderAdapter {
       });
     }
 
+    const modelToUse = (request.images && request.images.length > 0)
+      ? this.visionModel
+      : (this.textModel || this.model);
+
     const payload = {
-      model: this.model,
+      model: modelToUse,
       messages,
       response_format: { type: 'json_object' },
       temperature: request.temperature ?? 0.1,
@@ -196,7 +217,7 @@ export class GroqAdapter implements ProviderAdapter {
         parsed_json: parsedJson,
         telemetry: {
           provider: this.name,
-          model: this.model,
+          model: modelToUse,
           task_type: request.task,
           latency_ms: latencyMs,
           input_tokens: resJson.usage?.prompt_tokens ?? null,

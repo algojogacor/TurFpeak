@@ -17,6 +17,7 @@ export * from './adapter.js';
 export * from './providers/groq.js';
 export * from './providers/gemini.js';
 export * from './providers/ollama.js';
+export * from './providers/nvidia.js';
 export * from './router.js';
 export * from './classifier.js';
 export * from './extractors/match.js';
