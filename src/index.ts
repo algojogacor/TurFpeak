@@ -947,7 +947,44 @@ export class FlashPeakApp {
         sql: `SELECT submitting_team_id FROM report_sessions WHERE id = ? LIMIT 1`,
         args: [sessionId],
       });
-      const submittingTeamId = sessionRowRes.rows.length > 0 ? String(sessionRowRes.rows[0][0]) : null;
+      let submittingTeamId = sessionRowRes.rows.length > 0 ? String(sessionRowRes.rows[0][0]) : null;
+
+      // Check if any message in the debounce batch explicitly specified a winning team
+      for (const msg of batch.messages) {
+        const text = (msg.caption || msg.text_body || '').trim().toLowerCase();
+        if (!text) continue;
+        const bName = teamBName.toLowerCase();
+        const aName = teamAName.toLowerCase();
+        const bMatch = text.includes(bName);
+        const aMatch = text.includes(aName);
+
+        if (bMatch && !aMatch) {
+          submittingTeamId = teamBId;
+          await this.db.execute({
+            sql: `UPDATE report_sessions SET submitting_team_id = ? WHERE id = ?`,
+            args: [teamBId, sessionId],
+          });
+          break;
+        } else if (aMatch && !bMatch) {
+          submittingTeamId = teamAId;
+          await this.db.execute({
+            sql: `UPDATE report_sessions SET submitting_team_id = ? WHERE id = ?`,
+            args: [teamAId, sessionId],
+          });
+          break;
+        } else if (aMatch && bMatch) {
+          const bWinPattern = new RegExp(`(pemenang|menang|win|juara)[:\\s]+${bName}|${bName}[:\\s]+(menang|win)`, 'i');
+          if (bWinPattern.test(text)) {
+            submittingTeamId = teamBId;
+            await this.db.execute({
+              sql: `UPDATE report_sessions SET submitting_team_id = ? WHERE id = ?`,
+              args: [teamBId, sessionId],
+            });
+            break;
+          }
+        }
+      }
+
       const isSubmittingTeamB = Boolean(submittingTeamId && submittingTeamId === teamBId);
 
       const rawTeamAScore = matchExtraction.summary_data.team_a_score ?? 0;
@@ -1307,7 +1344,90 @@ export class FlashPeakApp {
   private async resolveFixtureForMessage(
     message: NormalizedMessage
   ): Promise<{ id: string; team_a_id: string; submitting_team_id?: string } | null> {
-    // 1. Resolve identity of the sender to identify their registered team
+    const captionText = (message.caption || message.text_body || '').trim();
+
+    // 1. Explicit Caption / Text match (Highest Priority)
+    // When a team name is mentioned, that team is explicitly designated as the winner!
+    if (captionText) {
+      const teamsRes = await this.db.execute({
+        sql: `
+          SELECT t.id, t.team_name
+          FROM teams t
+          JOIN tournaments tr ON t.tournament_id = tr.id
+          WHERE tr.status = 'ACTIVE'
+        `,
+        args: [],
+      });
+
+      const matchedTeams: Array<{ id: string; team_name: string }> = [];
+      for (const row of teamsRes.rows) {
+        const tId = String(row.id ?? row[0]);
+        const tName = String(row.team_name ?? row[1]);
+        const escaped = tName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = new RegExp(`(^|\\s|[^a-zA-Z0-9])${escaped}($|\\s|[^a-zA-Z0-9])`, 'i');
+        if (pattern.test(captionText)) {
+          matchedTeams.push({ id: tId, team_name: tName });
+        }
+      }
+
+      if (matchedTeams.length === 1) {
+        const winnerTeam = matchedTeams[0];
+        const matchedFixture = await this.db.execute({
+          sql: `
+            SELECT f.id, f.team_a_id
+            FROM fixtures f
+            JOIN tournaments tr ON f.tournament_id = tr.id
+            WHERE tr.status = 'ACTIVE'
+              AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+              AND (f.team_a_id = ? OR f.team_b_id = ?)
+            ORDER BY f.round_code ASC, f.created_at ASC
+            LIMIT 1
+          `,
+          args: [winnerTeam.id, winnerTeam.id],
+        });
+        if (matchedFixture.rows.length > 0 && matchedFixture.rows[0]) {
+          const mRow = matchedFixture.rows[0];
+          return {
+            id: String(mRow.id ?? mRow[0]),
+            team_a_id: String(mRow.team_a_id ?? mRow[1]),
+            submitting_team_id: winnerTeam.id,
+          };
+        }
+      } else if (matchedTeams.length >= 2) {
+        const team1 = matchedTeams[0];
+        const team2 = matchedTeams[1];
+        const matchedFixture = await this.db.execute({
+          sql: `
+            SELECT f.id, f.team_a_id, f.team_b_id
+            FROM fixtures f
+            JOIN tournaments tr ON f.tournament_id = tr.id
+            WHERE tr.status = 'ACTIVE'
+              AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+              AND ((f.team_a_id = ? AND f.team_b_id = ?) OR (f.team_a_id = ? AND f.team_b_id = ?))
+            ORDER BY f.round_code ASC, f.created_at ASC
+            LIMIT 1
+          `,
+          args: [team1.id, team2.id, team2.id, team1.id],
+        });
+        if (matchedFixture.rows.length > 0 && matchedFixture.rows[0]) {
+          const mRow = matchedFixture.rows[0];
+          let winnerId = team1.id;
+          const lowerCaption = captionText.toLowerCase();
+          const t2Escaped = team2.team_name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const t2WinPattern = new RegExp(`(pemenang|menang|win|juara)[:\\s]+${t2Escaped}|${t2Escaped}[:\\s]+(menang|win)`, 'i');
+          if (t2WinPattern.test(lowerCaption)) {
+            winnerId = team2.id;
+          }
+          return {
+            id: String(mRow.id ?? mRow[0]),
+            team_a_id: String(mRow.team_a_id ?? mRow[1]),
+            submitting_team_id: winnerId,
+          };
+        }
+      }
+    }
+
+    // 2. Identity-based Auto-Lock (Fallback when caption has no team name)
     let senderTeamId: string | null = null;
     try {
       const resolvedIdentity = await this.identityResolver.resolveIdentity(
@@ -1322,7 +1442,6 @@ export class FlashPeakApp {
       console.warn('[FlashPeakApp] Error resolving identity for fixture lookup:', err);
     }
 
-    // 2. If sender is a verified delegate for a team, lock directly to that team's scheduled match!
     if (senderTeamId) {
       const teamFixture = await this.db.execute({
         sql: `
@@ -1344,48 +1463,6 @@ export class FlashPeakApp {
           team_a_id: String(row.team_a_id ?? row[1]),
           submitting_team_id: senderTeamId,
         };
-      }
-    }
-
-    // 3. Check caption or text body for team name mentions (e.g. "Tim A", "Garuda FC")
-    const captionText = (message.caption || message.text_body || '').trim().toLowerCase();
-    if (captionText) {
-      const teamsRes = await this.db.execute({
-        sql: `
-          SELECT t.id, t.team_name
-          FROM teams t
-          JOIN tournaments tr ON t.tournament_id = tr.id
-          WHERE tr.status = 'ACTIVE'
-        `,
-        args: [],
-      });
-
-      for (const row of teamsRes.rows) {
-        const tId = String(row.id ?? row[0]);
-        const tName = String(row.team_name ?? row[1]).toLowerCase();
-        if (captionText.includes(tName)) {
-          const matchedFixture = await this.db.execute({
-            sql: `
-              SELECT f.id, f.team_a_id
-              FROM fixtures f
-              JOIN tournaments tr ON f.tournament_id = tr.id
-              WHERE tr.status = 'ACTIVE'
-                AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
-                AND (f.team_a_id = ? OR f.team_b_id = ?)
-              ORDER BY f.round_code ASC, f.created_at ASC
-              LIMIT 1
-            `,
-            args: [tId, tId],
-          });
-          if (matchedFixture.rows.length > 0 && matchedFixture.rows[0]) {
-            const mRow = matchedFixture.rows[0];
-            return {
-              id: String(mRow.id ?? mRow[0]),
-              team_a_id: String(mRow.team_a_id ?? mRow[1]),
-              submitting_team_id: tId,
-            };
-          }
-        }
       }
     }
 
