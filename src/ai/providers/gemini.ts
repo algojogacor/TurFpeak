@@ -53,7 +53,7 @@ export class GeminiAdapter implements ProviderAdapter {
 
   constructor(config: GeminiAdapterConfig = {}) {
     this.apiKey = config.apiKey || process.env.GEMINI_API_KEY || '';
-    this.model = config.model || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    this.model = config.model || process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
     this.endpoint = config.endpoint || process.env.GEMINI_ENDPOINT;
     this.defaultTimeoutMs = config.defaultTimeoutMs ?? 15000;
     this.customFetch = config.fetchFn ?? fetch;

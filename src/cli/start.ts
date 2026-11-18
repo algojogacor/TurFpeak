@@ -85,8 +85,11 @@ async function main() {
   if (groqKey && groqKey !== 'gsk_placeholder_groq_api_key') {
     adapters.push(new GroqAdapter({ apiKey: groqKey }));
   }
-  if (geminiKey && geminiKey !== 'AIzaSy_placeholder_gemini_api_key') {
-    adapters.push(new GeminiAdapter({ apiKey: geminiKey }));
+  if (geminiKey && geminiKey !== 'AIzaSy_placeholder_gemini_api_key' && !geminiKey.startsWith('AIzaSy_')) {
+    adapters.push(new GeminiAdapter({
+      apiKey: geminiKey,
+      model: process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
+    }));
   }
   if (ollamaUrl && ollamaUrl !== 'https://ollama.cloud.example.com') {
     adapters.push(new OllamaAdapter({ baseUrl: ollamaUrl, apiKey: process.env.OLLAMA_CLOUD_API_KEY }));

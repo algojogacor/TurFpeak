@@ -211,7 +211,7 @@ export class GroqAdapter implements ProviderAdapter {
       }
       if (err instanceof Error) {
         // Ensure sensitive tokens are not leaked in message
-        err.message = sanitizeSensitiveString(err.message, [this.apiKey]);
+        err.message = sanitizeSensitiveString(err.message, this.apiKeys);
       }
       throw err;
     } finally {
