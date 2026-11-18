@@ -28,7 +28,6 @@ import { FlashPeakMediaClient } from './media/client.js';
 import { captureInboundMessage } from './ingestion/capture.js';
 import {
   findOrCreateReportSession,
-  getReportSessionById,
 } from './ingestion/session.js';
 import {
   resetSessionDebounce,
@@ -40,12 +39,10 @@ import { ProviderRouter } from './ai/router.js';
 import { ImageClassifier } from './ai/classifier.js';
 import { MatchSummaryExtractor } from './ai/extractors/match.js';
 import { GoalkeeperDetailExtractor } from './ai/extractors/goalkeeper.js';
-import { resolveGoalkeeperIdentity } from './ai/extractors/gk-identity.js';
 import { CorrectionParser, type ReportContext } from './ai/correction-parser.js';
 import {
   createReportDraft,
   getReportVersion,
-  getLatestReportVersion,
 } from './reports/versioning.js';
 import { validateMatchReport } from './reports/validation.js';
 import { applyReportCorrection, type CorrectionResult } from './reports/corrections.js';
@@ -58,12 +55,6 @@ import {
   type ManualReportInput,
   type ManualReportResult,
 } from './reports/manual.js';
-import {
-  aggregatePlayerStats,
-  aggregateTeamStats,
-  type AggregatedPlayerStats,
-  type AggregatedTeamStats,
-} from './stats/aggregator.js';
 import {
   calculateTournamentAwards,
   type TournamentAwardsSummary,
@@ -310,36 +301,46 @@ export class FlashPeakApp {
     // 4. Evidence / Match Ingestion Capture
     const hasMedia = message.message_type === 'IMAGE' || Boolean(message.media_metadata);
     if (hasMedia || isCorrectionCandidate) {
-      await captureInboundMessage(this.db, {
-        provider_message_key: message.provider_message_key,
-        chat_id: message.chat_id,
-        sender_raw_address: message.sender_raw_address,
-        delegate_id: message.sender_normalized_address,
-        message_timestamp: message.message_timestamp,
-        message_type: message.message_type,
-        text_body: message.text_body,
-        caption: message.caption,
-        reply_to_key: message.reply_to_key,
-      });
+      const resolvedIdentity = await this.identityResolver.resolveIdentity(message.sender_raw_address);
+      const delegateId = resolvedIdentity?.delegate?.id || null;
 
       const fixture = await this.resolveFixtureForMessage(message);
+      let sessionId: string | null = null;
+      let session: ReportSession | undefined;
+
       if (fixture) {
         const teamId = fixture.team_a_id;
         const sessionRes = await findOrCreateReportSession(this.db, {
           fixture_id: fixture.id,
           submitting_team_id: teamId,
         });
+        sessionId = sessionRes.session.id;
+      }
 
-        const updatedSession = await resetSessionDebounce(
+      await captureInboundMessage(this.db, {
+        provider_message_key: message.provider_message_key,
+        chat_id: message.chat_id,
+        sender_raw_address: message.sender_raw_address,
+        delegate_id: delegateId,
+        message_timestamp: message.message_timestamp,
+        message_type: message.message_type,
+        text_body: message.text_body,
+        caption: message.caption,
+        reply_to_key: message.reply_to_key,
+        report_session_id: sessionId,
+      });
+
+      if (sessionId) {
+        session = await resetSessionDebounce(
           this.db,
-          sessionRes.session.id,
+          sessionId,
           this.quietWindowMs
         );
 
         return {
           handled: true,
           type: 'EVIDENCE',
-          session: updatedSession,
+          session,
         };
       }
     }
@@ -436,7 +437,7 @@ export class FlashPeakApp {
       });
 
       const fixtureRes = await this.db.execute({
-        sql: `SELECT f.id, f.team_a_id, f.team_b_id, g.id AS game_id, ta.name, tb.name
+        sql: `SELECT f.id, f.team_a_id, f.team_b_id, g.id AS game_id, ta.team_name, tb.team_name
               FROM fixtures f
               LEFT JOIN games g ON g.fixture_id = f.id
               LEFT JOIN teams ta ON f.team_a_id = ta.id
@@ -616,11 +617,37 @@ export class FlashPeakApp {
       };
     }
 
-    const senderId = message.sender_normalized_address;
+    const resolved = await this.identityResolver.resolveIdentity(message.sender_raw_address);
+    const senderId = resolved?.delegate?.id || message.sender_normalized_address;
+
+    // Ensure inbound message is recorded in database
+    let inboundMsgId = message.id;
+    const msgRow = await this.db.execute({
+      sql: 'SELECT id FROM inbound_messages WHERE provider_message_key = ? LIMIT 1',
+      args: [message.provider_message_key],
+    });
+    if (msgRow.rows.length > 0) {
+      inboundMsgId = String(msgRow.rows[0][0]);
+    } else {
+      const captured = await captureInboundMessage(this.db, {
+        provider_message_key: message.provider_message_key,
+        chat_id: message.chat_id,
+        sender_raw_address: message.sender_raw_address,
+        delegate_id: resolved?.delegate?.id || null,
+        message_timestamp: message.message_timestamp,
+        message_type: message.message_type,
+        text_body: message.text_body,
+        caption: message.caption,
+        reply_to_key: message.reply_to_key,
+        report_session_id: version.report_session_id,
+      });
+      inboundMsgId = captured.message.id;
+    }
+
     const result = await applyReportCorrection(this.db, {
       target_report_version_id: versionId,
       sender_id: senderId,
-      inbound_message_id: message.provider_message_key,
+      inbound_message_id: inboundMsgId,
       patch: parseOutcome.patch,
     });
 
@@ -725,9 +752,9 @@ export class FlashPeakApp {
     return getReportVersion(this.db, String(res.rows[0][0]));
   }
 
-  private async resolveFixtureForMessage(message: NormalizedMessage): Promise<{ id: string; team_a_id: string } | null> {
+  private async resolveFixtureForMessage(_message: NormalizedMessage): Promise<{ id: string; team_a_id: string } | null> {
     const res = await this.db.execute({
-      sql: `SELECT id, team_a_id FROM fixtures WHERE status IN ('SCHEDULED', 'IN_PROGRESS') ORDER BY scheduled_start_time ASC LIMIT 1`,
+      sql: `SELECT id, team_a_id FROM fixtures WHERE status IN ('SCHEDULED', 'IN_PROGRESS') ORDER BY scheduled_at ASC LIMIT 1`,
       args: [],
     });
     if (res.rows.length === 0) return null;

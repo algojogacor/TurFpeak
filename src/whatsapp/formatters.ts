@@ -71,8 +71,9 @@ export function formatMatchReportSummary(params: MatchReportSummaryParams): stri
 
   const lines: string[] = [];
 
-  // Header with explicit status tag
-  const statusTag = `[${status}]`;
+  // Header with explicit status tag (PROMPT_CATALOG.md §8: DRAFT / NEEDS CORRECTION / PENDING APPROVAL / OFFICIAL)
+  const displayStatus = status.replace(/_/g, ' ');
+  const statusTag = `[${displayStatus}]`;
   const stageHeader = stageName ? ` • ${stageName}` : '';
   const fixtureHeader = fixtureCode ? ` (${fixtureCode})` : '';
   lines.push(`⚽ *LAPORAN PERTANDINGAN* ${statusTag}${fixtureHeader}${stageHeader}`);

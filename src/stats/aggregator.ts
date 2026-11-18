@@ -83,7 +83,7 @@ export async function aggregatePlayerStats(
       p.id AS player_id,
       p.tournament_id,
       p.team_id,
-      t.name AS team_name,
+      t.team_name AS team_name,
       p.nickname_raw,
       p.position,
       COUNT(pgs.id) AS games_played,
@@ -111,7 +111,7 @@ export async function aggregatePlayerStats(
       AND g.status = 'COMPLETED'
       AND g.is_walkover = 0
       ${filterClause}
-    GROUP BY p.id, p.tournament_id, p.team_id, t.name, p.nickname_raw, p.position
+    GROUP BY p.id, p.tournament_id, p.team_id, t.team_name, p.nickname_raw, p.position
     ORDER BY total_goals DESC, total_assists DESC, total_defense_raw DESC, games_played DESC
   `;
 
@@ -160,7 +160,7 @@ export async function aggregateTeamStats(
 ): Promise<AggregatedTeamStats[]> {
   // First, get all teams in tournament
   const teamsRes = await db.execute({
-    sql: 'SELECT id, name FROM teams WHERE tournament_id = ? ORDER BY name ASC',
+    sql: 'SELECT id, team_name FROM teams WHERE tournament_id = ? ORDER BY team_name ASC',
     args: [tournamentId],
   });
 
