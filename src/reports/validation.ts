@@ -41,6 +41,7 @@ export interface MatchValidationInput {
   team_b_score: number;
   team_a_players: RawPlayerMatchStat[];
   team_b_players: RawPlayerMatchStat[];
+  allow_unassigned_goals?: boolean;
 }
 
 export interface ValidationResult {
@@ -375,15 +376,27 @@ export async function validateMatchReport(
   // 8. Recompute & Validate Score Consistency (ARCHITECTURE.md §8)
   // Backend recomputes individual goal sums and compares to team score
   if (input.team_a_score !== sumGoalsA) {
-    errors.push(
-      `Score inconsistency for Team A: team score is ${input.team_a_score}, but sum of individual player goals is ${sumGoalsA}`
-    );
+    if (input.allow_unassigned_goals) {
+      warnings.push(
+        `Skor tim A adalah ${input.team_a_score}, tetapi jumlah gol pemain baru ${sumGoalsA} (${input.team_a_score - sumGoalsA} gol belum ditugaskan/unassigned)`
+      );
+    } else {
+      errors.push(
+        `Score inconsistency for Team A: team score is ${input.team_a_score}, but sum of individual player goals is ${sumGoalsA}`
+      );
+    }
   }
 
   if (input.team_b_score !== sumGoalsB) {
-    errors.push(
-      `Score inconsistency for Team B: team score is ${input.team_b_score}, but sum of individual player goals is ${sumGoalsB}`
-    );
+    if (input.allow_unassigned_goals) {
+      warnings.push(
+        `Skor tim B adalah ${input.team_b_score}, tetapi jumlah gol pemain baru ${sumGoalsB} (${input.team_b_score - sumGoalsB} gol belum ditugaskan/unassigned)`
+      );
+    } else {
+      errors.push(
+        `Score inconsistency for Team B: team score is ${input.team_b_score}, but sum of individual player goals is ${sumGoalsB}`
+      );
+    }
   }
 
   const isValid = errors.length === 0;

@@ -41,6 +41,7 @@ export interface ManualReportInput {
   notes?: string;
   is_organizer?: boolean;
   correlation_id?: string;
+  allow_unassigned_goals?: boolean;
 }
 
 export interface ManualReportResult {
@@ -48,6 +49,7 @@ export interface ManualReportResult {
   version?: ReportVersion;
   validatedData?: ValidatedMatchData;
   errors?: string[];
+  warnings?: string[];
 }
 
 /**
@@ -121,12 +123,14 @@ export async function handleManualReport(
     team_b_score: input.team_b_score,
     team_a_players: input.team_a_players,
     team_b_players: input.team_b_players,
+    allow_unassigned_goals: input.allow_unassigned_goals,
   });
 
   if (!validation.isValid || !validation.validatedData) {
     return {
       success: false,
       errors: validation.errors,
+      warnings: validation.warnings,
     };
   }
 
@@ -215,6 +219,7 @@ export async function handleManualReport(
     success: true,
     version,
     validatedData: validation.validatedData,
+    warnings: validation.warnings,
   };
 }
 

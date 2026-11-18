@@ -32,7 +32,7 @@ module.exports = {
     {
       name: 'flashpeak-bot',
       script: 'node_modules/tsx/dist/cli.mjs',
-      args: 'src/index.ts',
+      args: 'src/cli/start.ts',
       cwd: './',
       instances: 1,
       exec_mode: 'fork',
