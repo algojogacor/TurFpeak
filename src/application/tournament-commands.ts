@@ -10,6 +10,7 @@
  * - !draw: Cryptographic draw with live progressive team reveals
  * - !addteam: Team roster pre-registration
  * - !onboarding: Interactive sequential delegate verification
+ * - !manualreport: Admin manual match report fallback (FR-FAIL-003, FR-FAIL-004, FR-FAIL-005)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -23,11 +24,14 @@ import { createTournament } from '../competition/tournament.js';
 import { prepareDraw, revealNext } from '../competition/draw.js';
 import { generateGroupStageFixtures } from '../competition/fixtures.js';
 import { calculateTournamentAwards } from '../stats/awards.js';
+import { handleManualReport } from '../reports/manual.js';
+import type { RawPlayerMatchStat } from '../reports/validation.js';
 import {
   formatAwardsAnnouncement,
   formatDrawCompletedSummary,
   formatDrawRevealStep,
   formatFixturesSchedule,
+  formatMatchReportSummary,
   type CompletedDrawGroup,
   type FixtureScheduleDisplayItem,
 } from '../whatsapp/formatters.js';
@@ -546,6 +550,237 @@ export function registerTournamentCommands(
       }
 
       return { success: false, responseText: 'Status onboarding tidak diketahui.' };
+    },
+  });
+
+  // !manualreport
+  router.registerCommand({
+    command: 'manualreport',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Membuat draf laporan pertandingan manual saat AI terkendala (Admin only)',
+    handler: async (ctx: CommandContext) => {
+      const trimmed = ctx.rawArgs.trim();
+
+      let fixtureId: string = '';
+      let scoreA: number = 0;
+      let scoreB: number = 0;
+      let notes: string | undefined;
+      let teamAPlayers: RawPlayerMatchStat[] = [];
+      let teamBPlayers: RawPlayerMatchStat[] = [];
+      let gameId: string | undefined;
+
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          fixtureId = parsed.fixture_id;
+          gameId = parsed.game_id;
+          scoreA = Number(parsed.team_a_score);
+          scoreB = Number(parsed.team_b_score);
+          notes = parsed.notes;
+          teamAPlayers = parsed.team_a_players || [];
+          teamBPlayers = parsed.team_b_players || [];
+        } catch (err: any) {
+          return {
+            success: false,
+            responseText: `⚠️ Format JSON tidak valid: ${err.message}`,
+          };
+        }
+      } else {
+        if (ctx.args.length < 3) {
+          return {
+            success: false,
+            responseText: [
+              `⚠️ *Format Perintah !manualreport (Khusus Organizer)*`,
+              ``,
+              `Gunakan salah satu format berikut:`,
+              `1️⃣ *Format Cepat (skor pertandingan):*`,
+              `\`!manualreport <fixture_id> <skor_a> <skor_b> [catatan]\``,
+              `_Contoh:_ \`!manualreport fix-001 2 1 Laga tunda diinput manual\``,
+              ``,
+              `2️⃣ *Format JSON (rincian statistik pemain):*`,
+              `\`!manualreport {"fixture_id":"fix-001","team_a_score":2,"team_b_score":1,"team_a_players":[...],"team_b_players":[...]}\``,
+            ].join('\n'),
+          };
+        }
+
+        fixtureId = ctx.args[0];
+        scoreA = parseInt(ctx.args[1], 10);
+        scoreB = parseInt(ctx.args[2], 10);
+        notes = ctx.args.slice(3).join(' ') || undefined;
+      }
+
+      if (!fixtureId || isNaN(scoreA) || isNaN(scoreB) || scoreA < 0 || scoreB < 0) {
+        return {
+          success: false,
+          responseText: '⚠️ Parameter tidak valid. Pastikan fixture ID dan skor (angka non-negatif) telah diisi dengan benar.',
+        };
+      }
+
+      // Check fixture
+      const fixtureRes = await db.execute({
+        sql: 'SELECT id, tournament_id, team_a_id, team_b_id, status FROM fixtures WHERE id = ?',
+        args: [fixtureId],
+      });
+
+      if (fixtureRes.rows.length === 0) {
+        return {
+          success: false,
+          responseText: `⚠️ Fixture tidak ditemukan: ${fixtureId}`,
+        };
+      }
+
+      const fixtureRow = fixtureRes.rows[0];
+      const teamAId = String(fixtureRow.team_a_id ?? fixtureRow[2]);
+      const teamBId = String(fixtureRow.team_b_id ?? fixtureRow[3]);
+
+      // If players were not provided via JSON, build lineup from registered players
+      if (teamAPlayers.length === 0 || teamBPlayers.length === 0) {
+        const playersRes = await db.execute({
+          sql: `
+            SELECT id, team_id, nickname_raw, position, roster_slot
+            FROM players
+            WHERE team_id IN (?, ?) AND status = 'ACTIVE'
+            ORDER BY roster_slot ASC
+          `,
+          args: [teamAId, teamBId],
+        });
+
+        const activeA = playersRes.rows.filter((r) => String(r.team_id ?? r[1]) === teamAId);
+        const activeB = playersRes.rows.filter((r) => String(r.team_id ?? r[1]) === teamBId);
+
+        if (activeA.length < 5 || activeB.length < 5) {
+          return {
+            success: false,
+            responseText: `⚠️ Salah satu tim belum memiliki 5 pemain terdaftar aktif (1 GK, 4 outfield). Tim A: ${activeA.length}, Tim B: ${activeB.length}.`,
+          };
+        }
+
+        // Build Team A lineup (1 GK, 4 Outfield)
+        const gkA = activeA.find((p) => String(p.position ?? p[3]) === 'GOALKEEPER');
+        const outA = activeA.filter((p) => String(p.position ?? p[3]) !== 'GOALKEEPER').slice(0, 4);
+        if (!gkA || outA.length < 4) {
+          return { success: false, responseText: '⚠️ Tim A harus memiliki 1 GOALKEEPER dan minimal 4 OUTFIELD terdaftar.' };
+        }
+        const lineupA = [gkA, ...outA];
+
+        // Allocate goals for Team A so recalculatedScoreA matches scoreA
+        teamAPlayers = lineupA.map((p, idx) => {
+          const isGk = p === gkA;
+          const goals = isGk ? 0 : (idx === 1 ? scoreA : 0);
+          return {
+            nickname_raw: String(p.nickname_raw ?? p[2]),
+            goals,
+            assists: 0,
+            passes: 0,
+            defense_raw: isGk ? scoreB : 0,
+            goalkeeper_saves: isGk ? scoreB : 0,
+          };
+        });
+
+        // Build Team B lineup (1 GK, 4 Outfield)
+        const gkB = activeB.find((p) => String(p.position ?? p[3]) === 'GOALKEEPER');
+        const outB = activeB.filter((p) => String(p.position ?? p[3]) !== 'GOALKEEPER').slice(0, 4);
+        if (!gkB || outB.length < 4) {
+          return { success: false, responseText: '⚠️ Tim B harus memiliki 1 GOALKEEPER dan minimal 4 OUTFIELD terdaftar.' };
+        }
+        const lineupB = [gkB, ...outB];
+
+        // Allocate goals for Team B so recalculatedScoreB matches scoreB
+        teamBPlayers = lineupB.map((p, idx) => {
+          const isGk = p === gkB;
+          const goals = isGk ? 0 : (idx === 1 ? scoreB : 0);
+          return {
+            nickname_raw: String(p.nickname_raw ?? p[2]),
+            goals,
+            assists: 0,
+            passes: 0,
+            defense_raw: isGk ? scoreA : 0,
+            goalkeeper_saves: isGk ? scoreA : 0,
+          };
+        });
+      }
+
+      // Execute handleManualReport
+      try {
+        const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+        const res = await handleManualReport(db, {
+          organizer_id: organizerId,
+          is_organizer: true,
+          fixture_id: fixtureId,
+          game_id: gameId,
+          team_a_score: scoreA,
+          team_b_score: scoreB,
+          team_a_players: teamAPlayers,
+          team_b_players: teamBPlayers,
+          notes,
+        });
+
+        if (!res.success || !res.version) {
+          return {
+            success: false,
+            responseText: `⚠️ Gagal membuat draf laporan manual:\n${(res.errors || []).join('\n')}`,
+          };
+        }
+
+        // Fetch team names for formatting
+        const teamsRes = await db.execute({
+          sql: 'SELECT id, team_name FROM teams WHERE id IN (?, ?)',
+          args: [teamAId, teamBId],
+        });
+        const teamAName = String(
+          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.team_name ??
+          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamAId)?.[1] ??
+          'Tim A'
+        );
+        const teamBName = String(
+          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.team_name ??
+          teamsRes.rows.find((r) => String(r.id ?? r[0]) === teamBId)?.[1] ??
+          'Tim B'
+        );
+
+        const summaryText = formatMatchReportSummary({
+          status: 'PENDING_APPROVAL',
+          versionNumber: res.version.version_number,
+          fixtureCode: fixtureId,
+          teamAName,
+          teamBName,
+          teamAScore: scoreA,
+          teamBScore: scoreB,
+          teamAPlayers: teamAPlayers.map((p, idx) => ({
+            ordinal: idx + 1,
+            nickname: p.nickname_raw,
+            rating: p.rating,
+            goals: p.goals ?? 0,
+            assists: p.assists ?? 0,
+            passes: p.passes,
+            defense: p.defense_raw,
+            saves: p.goalkeeper_saves,
+          })),
+          teamBPlayers: teamBPlayers.map((p, idx) => ({
+            ordinal: idx + 1,
+            nickname: p.nickname_raw,
+            rating: p.rating,
+            goals: p.goals ?? 0,
+            assists: p.assists ?? 0,
+            passes: p.passes,
+            defense: p.defense_raw,
+            saves: p.goalkeeper_saves,
+          })),
+          pendingApprovers: ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
+        });
+
+        return {
+          success: true,
+          responseText: summaryText,
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          responseText: `⚠️ Terjadi kesalahan saat memproses laporan manual: ${err.message}`,
+        };
+      }
     },
   });
 }
