@@ -1,0 +1,47 @@
+{
+  "project": "Flash Peak TMS",
+  "documentation_version": "0.1.1-draft",
+  "prepared_on": "2026-11-18",
+  "changelog_from_0_1_0": [
+    "Fixed goalkeeper screenshot count: one per game WON (not per game played) within the series — corrects a bug in PRD §8.3 and FRD FR-GK-007",
+    "Replaced cross-screen statistical goalkeeper identity matching with caption-based nickname fuzzy matching (FR-GK-005)",
+    "All goalkeeper records are now award-eligible by construction (no more 'retained but ineligible' state)",
+    "Resolved O-001 through O-015; see DECISIONS.md section D for full resolutions",
+    "Group sizing confirmed: batches of 5, remainder absorbed as groups of 4; qualifiers fixed at 2 per group regardless of size",
+    "Registration confirmed open/uncapped",
+    "Tied KO game replay now explicitly adds into existing series score rather than an ambiguous 'replay' with no persistence rule",
+    "Room host policy replaced 'alternating host' with 'advisory left-side default + opponent-substitution + forfeit-on-refusal'",
+    "New double-room-card-unavailable rule: Group Stage = double walkover (0 pts each), Knockout = mandatory reschedule",
+    "Verax media integration changed from 'reuse existing service' to 'separate instance, pattern reference only' for editorial/tournament media isolation",
+    "AI provider policy confirmed: Groq + Gemini + Ollama Cloud, rotated/load-balanced, all free tier",
+    "Report session expiry extension capped at 3 occurrences",
+    "Award formulas simplified to single-metric ranking (no weighted composite formulas)",
+    "New FR-COMP-013: left/right side assignment in Group Stage fixtures must be balanced per team (standard round-robin satisfies this), so no single team is disproportionately the default room host across the Group Stage — added new fixtures.left_side_team_id and host_assignment_reason fields to DATA_MODEL.md"
+  ],
+  "files": [
+    "AGENT.md",
+    "AI_PIPELINE.md",
+    "ARCHITECTURE.md",
+    "COMPETITION_RULES.md",
+    "DATA_MODEL.md",
+    "DECISIONS.md",
+    "FRD.md",
+    "INFRASTRUCTURE.md",
+    "PRD.md",
+    "PROMPT_CATALOG.md",
+    "README.md",
+    "SWARM_PLAN.md",
+    "TESTING.md",
+    "WORKFLOWS.md"
+  ],
+  "research_sources": [
+    "https://developers.openai.com/api/docs/guides/prompt-engineering",
+    "https://developers.openai.com/api/docs/guides/structured-outputs",
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/design-multimodal-prompts",
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/prompts/prompt-design-strategies",
+    "https://github.com/WhiskeySockets/Baileys",
+    "https://github.com/WhiskeySockets/Baileys/releases",
+    "https://www.npmjs.com/package/@whiskeysockets/baileys",
+    "https://baileys.wiki/"
+  ]
+}
