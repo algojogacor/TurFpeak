@@ -16,7 +16,7 @@ export async function startMediaService() {
 
 // Allow direct CLI execution if run directly via node/tsx
 const scriptPath = (process.argv[1] || '').replace(/\\/g, '/');
-if (scriptPath.endsWith('services/flashpeak-media/index.ts') || scriptPath.endsWith('services/flashpeak-media/index.js')) {
+if (scriptPath.endsWith('index.ts') || scriptPath.endsWith('index.js')) {
   startMediaService().catch((err) => {
     console.error('[flashpeak-media] Failed to start:', err);
     process.exit(1);
