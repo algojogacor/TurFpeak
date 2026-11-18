@@ -184,7 +184,8 @@ function formatPlayerLine(p: PlayerStatDisplayItem): string {
     statItems.push(`Saves: ${formatMetricValue(p.saves)}`);
   }
   if (p.rating !== null && p.rating !== undefined) {
-    statItems.push(`Rating: ${p.rating.toFixed(1)}`);
+    const r = typeof p.rating === 'number' && p.rating > 10.0 ? p.rating / 10 : Number(p.rating);
+    statItems.push(`Rating: ${r.toFixed(1)}`);
   }
 
   if (statItems.length > 0) {

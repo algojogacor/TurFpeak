@@ -229,7 +229,7 @@ export class FlashPeakApp {
 
     // !schedule / !jadwal
     const scheduleHandler = async () => {
-      const tRes = await this.db.execute('SELECT id, name FROM tournaments WHERE status NOT IN ("COMPLETED", "ARCHIVED") ORDER BY created_at DESC LIMIT 1');
+      const tRes = await this.db.execute("SELECT id, name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
       if (tRes.rows.length === 0) {
         return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
       }
@@ -761,7 +761,7 @@ export class FlashPeakApp {
       let session: ReportSession | undefined;
 
       if (fixture) {
-        const teamId = fixture.team_a_id;
+        const teamId = fixture.submitting_team_id || resolvedIdentity?.team?.id || fixture.team_a_id;
         const sessionRes = await findOrCreateReportSession(this.db, {
           fixture_id: fixture.id,
           submitting_team_id: teamId,
@@ -943,14 +943,33 @@ export class FlashPeakApp {
       const teamAName = String(fRow[4] || 'Tim A');
       const teamBName = String(fRow[5] || 'Tim B');
 
+      const sessionRowRes = await this.db.execute({
+        sql: `SELECT submitting_team_id FROM report_sessions WHERE id = ? LIMIT 1`,
+        args: [sessionId],
+      });
+      const submittingTeamId = sessionRowRes.rows.length > 0 ? String(sessionRowRes.rows[0][0]) : null;
+      const isSubmittingTeamB = Boolean(submittingTeamId && submittingTeamId === teamBId);
+
+      const rawTeamAScore = matchExtraction.summary_data.team_a_score ?? 0;
+      const rawTeamBScore = matchExtraction.summary_data.team_b_score ?? 0;
+      const teamAScore = isSubmittingTeamB ? rawTeamBScore : rawTeamAScore;
+      const teamBScore = isSubmittingTeamB ? rawTeamAScore : rawTeamBScore;
+
+      const rawPlayersForA = isSubmittingTeamB
+        ? matchExtraction.summary_data.team_b_players
+        : matchExtraction.summary_data.team_a_players;
+      const rawPlayersForB = isSubmittingTeamB
+        ? matchExtraction.summary_data.team_a_players
+        : matchExtraction.summary_data.team_b_players;
+
       const validation = await validateMatchReport(this.db, {
         fixture_id: fixtureId,
         game_id: gameId,
         team_a_id: teamAId,
         team_b_id: teamBId,
-        team_a_score: matchExtraction.summary_data.team_a_score ?? 0,
-        team_b_score: matchExtraction.summary_data.team_b_score ?? 0,
-        team_a_players: matchExtraction.summary_data.team_a_players.map((p) => ({
+        team_a_score: teamAScore,
+        team_b_score: teamBScore,
+        team_a_players: rawPlayersForA.map((p) => ({
           nickname_raw: p.nickname_raw,
           rating: p.rating,
           goals: p.goals,
@@ -959,7 +978,7 @@ export class FlashPeakApp {
           defense_raw: p.defense,
           goalkeeper_saves: null,
         })),
-        team_b_players: matchExtraction.summary_data.team_b_players.map((p) => ({
+        team_b_players: rawPlayersForB.map((p) => ({
           nickname_raw: p.nickname_raw,
           rating: p.rating,
           goals: p.goals,
@@ -988,26 +1007,40 @@ export class FlashPeakApp {
         versionNumber: draftVersion.version_number,
         teamAName,
         teamBName,
-        teamAScore: matchExtraction.summary_data.team_a_score,
-        teamBScore: matchExtraction.summary_data.team_b_score,
-        teamAPlayers: matchExtraction.summary_data.team_a_players.map((p, idx) => ({
-          ordinal: idx + 1,
-          nickname: p.nickname_raw,
-          goals: p.goals,
-          assists: p.assists,
-          passes: p.passes,
-          defense: p.defense,
-          rating: p.rating,
-        })),
-        teamBPlayers: matchExtraction.summary_data.team_b_players.map((p, idx) => ({
-          ordinal: idx + 1,
-          nickname: p.nickname_raw,
-          goals: p.goals,
-          assists: p.assists,
-          passes: p.passes,
-          defense: p.defense,
-          rating: p.rating,
-        })),
+        teamAScore,
+        teamBScore,
+        teamAPlayers: rawPlayersForA.map((p, idx) => {
+          const valRating = validation.validatedData?.team_a_players?.[idx]?.rating;
+          let r = valRating !== undefined && valRating !== null ? valRating : p.rating;
+          if (r !== null && r !== undefined && r > 10.0) {
+            r = Number((r / 10).toFixed(1));
+          }
+          return {
+            ordinal: idx + 1,
+            nickname: p.nickname_raw,
+            goals: p.goals,
+            assists: p.assists,
+            passes: p.passes,
+            defense: p.defense,
+            rating: r,
+          };
+        }),
+        teamBPlayers: rawPlayersForB.map((p, idx) => {
+          const valRating = validation.validatedData?.team_b_players?.[idx]?.rating;
+          let r = valRating !== undefined && valRating !== null ? valRating : p.rating;
+          if (r !== null && r !== undefined && r > 10.0) {
+            r = Number((r / 10).toFixed(1));
+          }
+          return {
+            ordinal: idx + 1,
+            nickname: p.nickname_raw,
+            goals: p.goals,
+            assists: p.assists,
+            passes: p.passes,
+            defense: p.defense,
+            rating: r,
+          };
+        }),
         uncertainties: validation.warnings,
         pendingApprovers: draftStatus === 'PENDING_APPROVAL' ? ['TEAM_A', 'TEAM_B', 'ORGANIZER'] : [],
       };
@@ -1271,13 +1304,114 @@ export class FlashPeakApp {
     return getReportVersion(this.db, String(res.rows[0][0]));
   }
 
-  private async resolveFixtureForMessage(_message: NormalizedMessage): Promise<{ id: string; team_a_id: string } | null> {
-    const res = await this.db.execute({
-      sql: `SELECT id, team_a_id FROM fixtures WHERE status IN ('SCHEDULED', 'IN_PROGRESS') ORDER BY scheduled_at ASC LIMIT 1`,
+  private async resolveFixtureForMessage(
+    message: NormalizedMessage
+  ): Promise<{ id: string; team_a_id: string; submitting_team_id?: string } | null> {
+    // 1. Resolve identity of the sender to identify their registered team
+    let senderTeamId: string | null = null;
+    try {
+      const resolvedIdentity = await this.identityResolver.resolveIdentity(
+        message.sender_raw_address,
+        message.chat_id
+      );
+
+      if (resolvedIdentity.status === 'VERIFIED' && resolvedIdentity.team) {
+        senderTeamId = resolvedIdentity.team.id;
+      }
+    } catch (err) {
+      console.warn('[FlashPeakApp] Error resolving identity for fixture lookup:', err);
+    }
+
+    // 2. If sender is a verified delegate for a team, lock directly to that team's scheduled match!
+    if (senderTeamId) {
+      const teamFixture = await this.db.execute({
+        sql: `
+          SELECT f.id, f.team_a_id
+          FROM fixtures f
+          JOIN tournaments t ON f.tournament_id = t.id
+          WHERE t.status = 'ACTIVE'
+            AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+            AND (f.team_a_id = ? OR f.team_b_id = ?)
+          ORDER BY f.round_code ASC, f.created_at ASC
+          LIMIT 1
+        `,
+        args: [senderTeamId, senderTeamId],
+      });
+      if (teamFixture.rows.length > 0 && teamFixture.rows[0]) {
+        const row = teamFixture.rows[0];
+        return {
+          id: String(row.id ?? row[0]),
+          team_a_id: String(row.team_a_id ?? row[1]),
+          submitting_team_id: senderTeamId,
+        };
+      }
+    }
+
+    // 3. Check caption or text body for team name mentions (e.g. "Tim A", "Garuda FC")
+    const captionText = (message.caption || message.text_body || '').trim().toLowerCase();
+    if (captionText) {
+      const teamsRes = await this.db.execute({
+        sql: `
+          SELECT t.id, t.team_name
+          FROM teams t
+          JOIN tournaments tr ON t.tournament_id = tr.id
+          WHERE tr.status = 'ACTIVE'
+        `,
+        args: [],
+      });
+
+      for (const row of teamsRes.rows) {
+        const tId = String(row.id ?? row[0]);
+        const tName = String(row.team_name ?? row[1]).toLowerCase();
+        if (captionText.includes(tName)) {
+          const matchedFixture = await this.db.execute({
+            sql: `
+              SELECT f.id, f.team_a_id
+              FROM fixtures f
+              JOIN tournaments tr ON f.tournament_id = tr.id
+              WHERE tr.status = 'ACTIVE'
+                AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+                AND (f.team_a_id = ? OR f.team_b_id = ?)
+              ORDER BY f.round_code ASC, f.created_at ASC
+              LIMIT 1
+            `,
+            args: [tId, tId],
+          });
+          if (matchedFixture.rows.length > 0 && matchedFixture.rows[0]) {
+            const mRow = matchedFixture.rows[0];
+            return {
+              id: String(mRow.id ?? mRow[0]),
+              team_a_id: String(mRow.team_a_id ?? mRow[1]),
+              submitting_team_id: tId,
+            };
+          }
+        }
+      }
+    }
+
+    // 4. Fallback for organizer or unattached submissions: first scheduled match in active tournament
+    const fallback = await this.db.execute({
+      sql: `
+        SELECT f.id, f.team_a_id
+        FROM fixtures f
+        JOIN tournaments tr ON f.tournament_id = tr.id
+        WHERE tr.status = 'ACTIVE'
+          AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+        ORDER BY f.round_code ASC, f.created_at ASC
+        LIMIT 1
+      `,
       args: [],
     });
-    if (res.rows.length === 0) return null;
-    return { id: String(res.rows[0][0]), team_a_id: String(res.rows[0][1]) };
+
+    if (fallback.rows.length > 0 && fallback.rows[0]) {
+      const fbRow = fallback.rows[0];
+      return {
+        id: String(fbRow.id ?? fbRow[0]),
+        team_a_id: String(fbRow.team_a_id ?? fbRow[1]),
+      };
+    }
+
+    return null;
   }
 }
 
