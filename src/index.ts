@@ -40,13 +40,13 @@ import { ProviderRouter } from './ai/router.js';
 import { ImageClassifier } from './ai/classifier.js';
 import { MatchSummaryExtractor } from './ai/extractors/match.js';
 import { GoalkeeperDetailExtractor } from './ai/extractors/goalkeeper.js';
-import { CorrectionParser, type ReportContext } from './ai/correction-parser.js';
+import { CorrectionParser } from './ai/correction-parser.js';
 import {
   createReportDraft,
   getReportVersion,
 } from './reports/versioning.js';
 import { validateMatchReport } from './reports/validation.js';
-import { applyReportCorrection, type CorrectionResult } from './reports/corrections.js';
+import type { CorrectionResult } from './reports/corrections.js';
 import {
   submitReportApproval,
   type ApprovalOutcome,
@@ -63,6 +63,7 @@ import {
 } from './stats/awards.js';
 import { registerTournamentCommands } from './application/tournament-commands.js';
 import { resolveFixtureForMessage } from './application/fixture-resolver.js';
+import { handleReportCorrection } from './application/report-correction-coordinator.js';
 import {
   formatMatchReportSummary,
   formatStandingsTable,
@@ -636,102 +637,15 @@ export class FlashPeakApp {
       throw new Error('Correction parser not configured');
     }
 
-    const version = await getReportVersion(this.db, versionId);
-    if (!version) {
-      throw new Error(`Report version not found: ${versionId}`);
-    }
-
-    const text = message.text_body || message.caption || '';
-    const validatedData = JSON.parse(version.validated_data_json);
-
-    const reportContext: ReportContext = {
-      report_version_id: versionId,
-      team_a: {
-        id: validatedData.team_a_id,
-        name: 'Team A',
-        players: (validatedData.team_a_players || []).map((p: any, idx: number) => ({
-          ordinal: idx + 1,
-          nickname: p.nickname_raw,
-          goals: p.goals,
-          assists: p.assists,
-          passes: p.passes,
-          defense: p.defense_raw,
-        })),
+    return handleReportCorrection(
+      {
+        db: this.db,
+        correctionParser: this.correctionParser,
+        identityResolver: this.identityResolver,
       },
-      team_b: {
-        id: validatedData.team_b_id,
-        name: 'Team B',
-        players: (validatedData.team_b_players || []).map((p: any, idx: number) => ({
-          ordinal: idx + 1,
-          nickname: p.nickname_raw,
-          goals: p.goals,
-          assists: p.assists,
-          passes: p.passes,
-          defense: p.defense_raw,
-        })),
-      },
-      score_a: validatedData.team_a_score,
-      score_b: validatedData.team_b_score,
-    };
-
-    const parseOutcome = await this.correctionParser.parse({
-      message_text: text,
-      report_context: reportContext,
-    });
-
-    if (parseOutcome.status !== 'PROPOSED') {
-      return {
-        result: {
-          success: false,
-          status: 'NEEDS_CLARIFICATION',
-          clarification_reason: parseOutcome.clarification_reason,
-        },
-        replyText: `❓ *Perlu Klarifikasi:* ${parseOutcome.clarification_reason}`,
-      };
-    }
-
-    const resolved = await this.identityResolver.resolveIdentity(message.sender_raw_address);
-    const senderId = resolved?.delegate?.id || message.sender_normalized_address;
-
-    // Ensure inbound message is recorded in database
-    let inboundMsgId = message.id;
-    const msgRow = await this.db.execute({
-      sql: 'SELECT id FROM inbound_messages WHERE provider_message_key = ? LIMIT 1',
-      args: [message.provider_message_key],
-    });
-    if (msgRow.rows.length > 0) {
-      inboundMsgId = String(msgRow.rows[0][0]);
-    } else {
-      const captured = await captureInboundMessage(this.db, {
-        provider_message_key: message.provider_message_key,
-        chat_id: message.chat_id,
-        sender_raw_address: message.sender_raw_address,
-        delegate_id: resolved?.delegate?.id || null,
-        message_timestamp: message.message_timestamp,
-        message_type: message.message_type,
-        text_body: message.text_body,
-        caption: message.caption,
-        reply_to_key: message.reply_to_key,
-        report_session_id: version.report_session_id,
-      });
-      inboundMsgId = captured.message.id;
-    }
-
-    const result = await applyReportCorrection(this.db, {
-      target_report_version_id: versionId,
-      sender_id: senderId,
-      inbound_message_id: inboundMsgId,
-      patch: parseOutcome.patch,
-    });
-
-    let replyText = '';
-    if (result.success && result.newVersion) {
-      replyText = `✅ *Koreksi Berhasil Diterapkan (Versi ${result.newVersion.version_number})*\nSemua persetujuan sebelumnya telah direset.\nSilakan review dan setujui kembali menggunakan *!approve*.`;
-    } else {
-      replyText = `❌ *Koreksi Gagal:* ${result.error || 'Perlu klarifikasi data.'}`;
-    }
-
-    return { result, replyText };
+      versionId,
+      message
+    );
   }
 
   /**
