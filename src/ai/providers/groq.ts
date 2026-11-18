@@ -27,6 +27,7 @@ import {
 
 export interface GroqAdapterConfig {
   apiKey?: string;
+  apiKeys?: string[];
   model?: string;
   endpoint?: string;
   defaultTimeoutMs?: number;
@@ -45,28 +46,44 @@ export class GroqAdapter implements ProviderAdapter {
     supported_mime_types: ['image/jpeg', 'image/png', 'image/webp'],
   };
 
-  private readonly apiKey: string;
+  private readonly apiKeys: string[];
+  private keyIndex = 0;
   private readonly endpoint: string;
   private readonly defaultTimeoutMs: number;
   private readonly customFetch: typeof fetch;
 
   constructor(config: GroqAdapterConfig = {}) {
-    this.apiKey = config.apiKey || process.env.GROQ_API_KEY || '';
+    const rawKeys = config.apiKeys || (process.env.GROQ_API_KEYS ? process.env.GROQ_API_KEYS.split(',').map(k => k.trim()).filter(Boolean) : []);
+    if (config.apiKey) rawKeys.unshift(config.apiKey.trim());
+    if (process.env.GROQ_API_KEY && !rawKeys.includes(process.env.GROQ_API_KEY.trim())) {
+      rawKeys.unshift(process.env.GROQ_API_KEY.trim());
+    }
+    this.apiKeys = rawKeys.filter(Boolean);
+
     this.model = config.model || process.env.GROQ_MODEL || 'llama-3.2-11b-vision-preview';
     this.endpoint = config.endpoint || process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
     this.defaultTimeoutMs = config.defaultTimeoutMs ?? 15000;
     this.customFetch = config.fetchFn ?? fetch;
   }
 
-  public async healthCheck(): Promise<boolean> {
-    if (!this.apiKey) {
-      return false;
+  public getActiveApiKey(): string {
+    if (this.apiKeys.length === 0) return '';
+    return this.apiKeys[this.keyIndex % this.apiKeys.length] || '';
+  }
+
+  public rotateKey(): void {
+    if (this.apiKeys.length > 1) {
+      this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
     }
-    return true;
+  }
+
+  public async healthCheck(): Promise<boolean> {
+    return this.apiKeys.length > 0;
   }
 
   public async execute<T = unknown>(request: AIRequest): Promise<AIResponse<T>> {
-    if (!this.apiKey) {
+    const activeKey = this.getActiveApiKey();
+    if (!activeKey) {
       throw new AIAuthenticationError(this.name, 'GROQ_API_KEY is not configured');
     }
 
@@ -124,7 +141,7 @@ export class GroqAdapter implements ProviderAdapter {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
+          'Authorization': `Bearer ${activeKey}`,
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -134,13 +151,15 @@ export class GroqAdapter implements ProviderAdapter {
 
       if (!res.ok) {
         const rawErrorBody = await res.text().catch(() => '');
-        const sanitizedBody = sanitizeSensitiveString(rawErrorBody, [this.apiKey]);
+        const sanitizedBody = sanitizeSensitiveString(rawErrorBody, [activeKey]);
 
         if (res.status === 401 || res.status === 403) {
+          this.rotateKey();
           throw new AIAuthenticationError(this.name, `Groq authentication failed (${res.status}): ${sanitizedBody}`, res.status);
         }
 
         if (res.status === 429) {
+          this.rotateKey();
           const lowerBody = sanitizedBody.toLowerCase();
           if (lowerBody.includes('quota') || lowerBody.includes('insufficient_quota') || lowerBody.includes('exceeded your current quota')) {
             throw new AIQuotaExceededError(this.name, `Groq quota exhausted: ${sanitizedBody}`, res.status);
