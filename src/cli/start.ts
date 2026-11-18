@@ -68,7 +68,11 @@ async function main() {
       console.log('[DB] Database schema is up to date.');
     }
   } catch (err) {
-    console.warn('[DB] Migration notice:', err instanceof Error ? err.message : err);
+    console.error('[DB] Database migration failed. Aborting startup to prevent running with an invalid schema:', err instanceof Error ? err.message : err);
+    try {
+      db.close();
+    } catch {}
+    throw new Error(`Database migration failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // 2. Initialize Media Client (pointing to Flash Peak Media Service on VM or local)
