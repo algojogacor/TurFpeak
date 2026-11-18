@@ -227,6 +227,63 @@ export class FlashPeakApp {
       },
     });
 
+    // !schedule / !jadwal
+    const scheduleHandler = async () => {
+      const tRes = await this.db.execute('SELECT id, name FROM tournaments WHERE status NOT IN ("COMPLETED", "ARCHIVED") ORDER BY created_at DESC LIMIT 1');
+      if (tRes.rows.length === 0) {
+        return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
+      }
+      const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
+      const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
+
+      const fixturesRes = await this.db.execute({
+        sql: `
+          SELECT f.round_code, g.group_code, ta.team_name as team_a_name, tb.team_name as team_b_name, tl.team_name as host_name
+          FROM fixtures f
+          JOIN groups g ON f.group_id = g.id
+          JOIN teams ta ON f.team_a_id = ta.id
+          JOIN teams tb ON f.team_b_id = tb.id
+          LEFT JOIN teams tl ON f.left_side_team_id = tl.id
+          WHERE f.tournament_id = ?
+          ORDER BY g.group_code ASC, f.round_code ASC
+        `,
+        args: [tournamentId],
+      });
+
+      if (fixturesRes.rows.length === 0) {
+        return { success: false, responseText: '⚠️ Jadwal pertandingan belum dibuat. Jalankan *!draw* terlebih dahulu.' };
+      }
+
+      const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r) => ({
+        roundCode: String(r.round_code),
+        groupCode: String(r.group_code),
+        teamAName: String(r.team_a_name),
+        teamBName: String(r.team_b_name),
+        leftSideHostName: String(r.host_name || r.team_a_name),
+      }));
+
+      const scheduleMsg = formatFixturesSchedule(tournamentName, scheduleItems);
+      return { success: true, responseText: scheduleMsg };
+    };
+
+    this.commandRouter.registerCommand({
+      command: 'schedule',
+      requiredRole: 'ANY',
+      allowedInDm: true,
+      allowedInGroup: true,
+      description: 'Menampilkan jadwal pertandingan resmi turnamen',
+      handler: scheduleHandler,
+    });
+
+    this.commandRouter.registerCommand({
+      command: 'jadwal',
+      requiredRole: 'ANY',
+      allowedInDm: true,
+      allowedInGroup: true,
+      description: 'Menampilkan jadwal pertandingan resmi turnamen',
+      handler: scheduleHandler,
+    });
+
     // !approve
     this.commandRouter.registerCommand({
       command: '!approve',

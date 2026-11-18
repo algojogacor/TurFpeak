@@ -391,18 +391,28 @@ export function formatFixturesSchedule(
   lines.push(`📅 *JADWAL PERTANDINGAN — ${tournamentTitle.toUpperCase()}*`);
   lines.push('──────────────────────────────');
 
-  const byGroup: Record<string, FixtureScheduleDisplayItem[]> = {};
+  // Group by Group Code -> Round Code -> matches
+  const byGroup: Record<string, Record<string, FixtureScheduleDisplayItem[]>> = {};
+
   for (const f of fixtures) {
-    const key = f.groupCode ? `GRUP ${f.groupCode.toUpperCase()}` : f.roundCode;
-    if (!byGroup[key]) byGroup[key] = [];
-    byGroup[key].push(f);
+    const grpKey = f.groupCode ? `GRUP ${f.groupCode.toUpperCase()}` : 'BABAK GRUP';
+    const roundKey = f.roundCode
+      ? f.roundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1').replace(/_/g, ' ')
+      : 'Pertandingan';
+
+    if (!byGroup[grpKey]) byGroup[grpKey] = {};
+    if (!byGroup[grpKey][roundKey]) byGroup[grpKey][roundKey] = [];
+    byGroup[grpKey][roundKey].push(f);
   }
 
-  for (const [grp, items] of Object.entries(byGroup)) {
+  for (const [grp, rounds] of Object.entries(byGroup)) {
     lines.push('');
     lines.push(`📌 *${grp}*`);
-    for (const item of items) {
-      lines.push(`  ⚽ *${item.teamAName}* vs *${item.teamBName}* (Host: ${item.leftSideHostName})`);
+    for (const [roundName, items] of Object.entries(rounds)) {
+      lines.push(`  🔹 *${roundName}:*`);
+      for (const item of items) {
+        lines.push(`    ⚽ *${item.teamAName}* vs *${item.teamBName}* (Host: ${item.leftSideHostName})`);
+      }
     }
   }
 
