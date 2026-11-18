@@ -232,9 +232,28 @@ export class FlashPeakApp {
       command: '!approve',
       requiredRole: 'DELEGATE',
       handler: async (ctx: CommandContext) => {
-        const versionId = ctx.args[0];
+        let versionId = ctx.args[0];
+        if (!versionId && ctx.message.reply_to_key) {
+          const ver = await this.findVersionByMessageKey(ctx.message.reply_to_key);
+          if (ver) versionId = ver.id;
+        }
         if (!versionId) {
-          return { success: false, responseText: 'Format: !approve <report_version_id>' };
+          const latestVer = await this.db.execute(`
+            SELECT rv.id FROM report_versions rv
+            JOIN fixtures f ON rv.fixture_id = f.id
+            JOIN tournaments t ON f.tournament_id = t.id
+            WHERE t.status = 'ACTIVE' AND rv.status IN ('PENDING_APPROVAL', 'NEEDS_CORRECTION')
+            ORDER BY rv.created_at DESC LIMIT 1
+          `);
+          if (latestVer.rows.length > 0) {
+            versionId = String(latestVer.rows[0].id ?? latestVer.rows[0][0]);
+          }
+        }
+        if (!versionId) {
+          return {
+            success: false,
+            responseText: '⚠️ Balas/kutip pesan draf laporan pertandingan dengan *!approve*, atau ketik: `!approve <id>`',
+          };
         }
         let approverType: ApproverType = 'ORGANIZER';
         if (ctx.role === 'DELEGATE') {
@@ -1137,7 +1156,26 @@ export class FlashPeakApp {
           if (res.whatsappSummary && this.sender) {
             const destChat = res.targetChatId || this.centralGroupJid;
             if (destChat) {
-              await this.sender.sendText(destChat, res.whatsappSummary);
+              const sentKey = await this.sender.sendText(destChat, res.whatsappSummary);
+              if (sentKey && res.sessionId) {
+                try {
+                  await this.db.execute({
+                    sql: `INSERT OR IGNORE INTO inbound_messages (id, report_session_id, provider_message_key, chat_id, sender_raw_address, sender_normalized_address, address_type, is_from_me, message_type, text_body, message_timestamp, received_at)
+                          VALUES (?, ?, ?, ?, 'bot@s.whatsapp.net', 'bot@s.whatsapp.net', 'JID', 1, 'TEXT', ?, ?, ?)`,
+                    args: [
+                      randomUUID(),
+                      res.sessionId,
+                      sentKey,
+                      destChat,
+                      res.whatsappSummary,
+                      new Date().toISOString(),
+                      new Date().toISOString(),
+                    ],
+                  });
+                } catch (persistErr) {
+                  console.warn('[FlashPeakApp] Could not bind outbound summary message key:', persistErr);
+                }
+              }
             }
           }
         }
