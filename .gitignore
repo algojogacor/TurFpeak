@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Vendor / cloned references
+vendor/
+
+# WhatsApp Auth State (sensitive credentials)
+auth_state/
+baileys_store.json
+
+# Local SQLite databases
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+local.sqlite
+
+# Media storage runtime directories
+media_storage/
+services/flashpeak-media/storage/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files & tests coverage
+tmp/
+temp/
+coverage/
+.vitest/
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
