@@ -1587,9 +1587,15 @@ export function registerTournamentCommands(
     };
 
     const gkNames = extractNames(rawGk);
-    const gkName = gkNames.length > 0 ? gkNames[0] : undefined;
-    const starterList = extractNames(rawInti);
+    let gkName = gkNames.length > 0 ? gkNames[0] : undefined;
+    let starterList = extractNames(rawInti);
     const subList = extractNames(rawSub);
+
+    // Fallback: If no explicit INTI keyword was provided, but multiple names follow GK (e.g. GK: Budi \n 1. Doni \n 2. Eko)
+    if (starterList.length === 0 && gkNames.length > 1) {
+      gkName = gkNames[0];
+      starterList = gkNames.slice(1);
+    }
 
     return {
       isRegistration: true,
