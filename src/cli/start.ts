@@ -95,26 +95,47 @@ async function main() {
   const ollamaUrl = process.env.OLLAMA_CLOUD_BASE_URL;
 
   const nvidiaKey = process.env.NVIDIA_API_KEY;
+  const groqKeys = process.env.GROQ_API_KEYS
+    ? process.env.GROQ_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : undefined;
+  const nvidiaKeys = process.env.NVIDIA_API_KEYS
+    ? process.env.NVIDIA_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : undefined;
 
   const adapters: ProviderAdapter[] = [];
   if (groqKey && groqKey !== 'gsk_placeholder_groq_api_key') {
-    adapters.push(new GroqAdapter({ apiKey: groqKey }));
+    adapters.push(
+      new GroqAdapter({
+        apiKey: groqKey,
+        apiKeys: groqKeys,
+      })
+    );
   }
   if (geminiKey && geminiKey !== 'AIzaSy_placeholder_gemini_api_key' && !geminiKey.startsWith('AIzaSy_')) {
-    adapters.push(new GeminiAdapter({
-      apiKey: geminiKey,
-      model: process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
-    }));
+    adapters.push(
+      new GeminiAdapter({
+        apiKey: geminiKey,
+        model: process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
+      })
+    );
   }
   if (nvidiaKey && !nvidiaKey.includes('placeholder')) {
-    adapters.push(new NvidiaAdapter({
-      apiKey: nvidiaKey,
-      model: process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
-    }));
+    adapters.push(
+      new NvidiaAdapter({
+        apiKey: nvidiaKey,
+        apiKeys: nvidiaKeys,
+        model: process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
+      })
+    );
   }
   if (ollamaUrl && ollamaUrl !== 'https://ollama.cloud.example.com') {
     adapters.push(new OllamaAdapter({ baseUrl: ollamaUrl, apiKey: process.env.OLLAMA_CLOUD_API_KEY }));
   }
+
+  console.log(
+    `[AI] Initialized Multi-Provider Router with ${adapters.length} provider(s): ` +
+      adapters.map((a) => a.name).join(', ')
+  );
 
   const providerRouter = new ProviderRouter({
     adapters,
