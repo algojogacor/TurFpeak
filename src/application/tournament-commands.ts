@@ -1741,10 +1741,72 @@ export function registerTournamentCommands(
     }
 
     if (!teamId || !officialTeamName) {
-      return {
-        success: false,
-        responseText: `⚠️ Tim tidak ditemukan di turnamen *${tournamentName}*.\nMohon cantumkan nama tim Anda di awal, contoh:\n\`!roster <Nama Tim> Kiper: ... | Inti: ... | Cadangan: ...\``,
-      };
+      // Auto-create team if registering during DRAFT status
+      const tStatusRes = await db.execute({
+        sql: 'SELECT status FROM tournaments WHERE id = ?',
+        args: [tournamentId],
+      });
+      const currentTourneyStatus = String(tStatusRes.rows[0]?.status || 'DRAFT');
+
+      if (parsed.teamName && currentTourneyStatus === 'DRAFT') {
+        const countRes = await db.execute({
+          sql: 'SELECT COUNT(*) as c FROM teams WHERE tournament_id = ?',
+          args: [tournamentId],
+        });
+        const currentTeamCount = Number(countRes.rows[0]?.c || 0);
+        if (currentTeamCount >= 16) {
+          return {
+            success: false,
+            responseText: '⚠️ Pendaftaran ditutup. Kuota 16 tim sudah penuh!',
+          };
+        }
+
+        const newTeamId = randomUUID();
+        const cleanName = parsed.teamName.trim();
+        const nowIso = new Date().toISOString();
+
+        await db.execute({
+          sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+                VALUES (?, ?, ?, 'PENDING', ?, ?)`,
+          args: [newTeamId, tournamentId, cleanName, nowIso, nowIso],
+        });
+
+        teamId = newTeamId;
+        officialTeamName = cleanName;
+
+        // Auto-bind sender as official delegate
+        let delId = ctx.delegateId;
+        if (!delId && ctx.message?.sender_raw_address) {
+          try {
+            const rawAddr = ctx.message.sender_raw_address;
+            const addrType = rawAddr.includes('@lid') ? 'LID' : 'PHONE';
+            const displayName = `Delegasi ${cleanName}`;
+            const { delegate } = await deps.identityResolver.createDelegateWithIdentity(
+              displayName,
+              rawAddr,
+              addrType as any,
+              { sourceChatId: ctx.message.chat_id }
+            );
+            delId = delegate.id;
+          } catch (delErr) {
+            console.warn('[Roster] Auto-delegate creation error:', delErr);
+          }
+        }
+
+        if (delId) {
+          try {
+            await deps.identityResolver.bindDelegateToTeam(newTeamId, delId);
+            officialDelegateId = delId;
+          } catch (bindErr) {
+            console.warn('[Roster] Auto-delegate bind error:', bindErr);
+          }
+        }
+      } else {
+        return {
+          success: false,
+          responseText: `⚠️ Tim tidak ditemukan di turnamen *${tournamentName}*.\nMohon cantumkan nama tim Anda di awal, contoh:\n\`!roster <Nama Tim> Kiper: ... | Inti: ... | Cadangan: ...\``,
+        };
+      }
     }
 
     // Authorization: must be Organizer OR team delegate
