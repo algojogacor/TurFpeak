@@ -41,6 +41,7 @@
 | D-032 | Both teams unable to provide a room card for a Knockout (BO3/BO5) fixture: the fixture MUST be rescheduled, since "no drawn series" applies in KO and there is no fair administrative score to assign. If rescheduling repeatedly fails for the same fixture, escalate to organizer for a manual ruling. |
 | D-033 | Report session repeat-extension cap: a report session's expiry/escalation window (see O-012/FR-ING-008) may be extended a maximum of 3 times when new disputes/objections arrive within the current window. After the 3rd extension, the session closes under existing expiry policy regardless of new objections, and any further dispute goes to organizer review instead of auto-extending again. |
 | D-034 | Left/right side assignment in Group Stage fixtures (which determines the default room-host recommendation, D-029/FR-FIX-005) must be balanced per team across its own group fixtures at fixture-generation time — no team should be stuck always-left (always expected to host) or always-right across the Group Stage. Standard round-robin scheduling (e.g. circle method) satisfies this by construction; a team's left-count and right-count across its own fixtures may differ by at most 1. See FR-COMP-013. |
+| D-035 | In-game character uniqueness rule: No duplicate characters/heroes are allowed within the same team during a match (e.g. no double Ford, no double Moco, no double Rafael). Every player on the team must select a distinct character. |
 
 ## B. Proposed defaults — require organizer approval before publication
 

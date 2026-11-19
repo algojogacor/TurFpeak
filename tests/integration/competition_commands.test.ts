@@ -753,6 +753,8 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(res.replyText).toContain('Format 5+5');
       expect(res.replyText).toContain('19:59 WIB');
       expect(res.replyText).toContain('D-031');
+      expect(res.replyText).toContain('Karakter Unik');
+      expect(res.replyText).toContain('double Ford');
     });
 
     it('allows registering and viewing team roster with format 5+5 (1 GK, 4 Inti, up to 5 Cadangan)', async () => {
@@ -777,6 +779,7 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(regRes.replyText).toContain('Striker1');
       expect(regRes.replyText).toContain('Sub1');
       expect(regRes.replyText).toContain('8 / 10');
+      expect(regRes.replyText).toContain('Karakter Unik');
 
       // View roster
       const viewMsg = createTextMessage(regularUserJid, centralGroupJid, '!roster Singa FC');
@@ -788,6 +791,62 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(viewRes.replyText).toContain('KingKiper');
       expect(viewRes.replyText).toContain('Striker1');
       expect(viewRes.replyText).toContain('Sub1');
+    });
+
+    it('supports flexible natural language and multiline roster registration', async () => {
+      const app = createApp({ db, organizerPhone, centralGroupJid });
+
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!createtournament Flexible Roster Cup'));
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!addteam Garuda FC'));
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!addteam Elang FC'));
+
+      // 1. Natural Language registration with informal Indonesian
+      const nlMsg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        '!daftar roster tim Garuda FC kipernya Ikyy, pemain intinya Budi, Joko, Doni, Reza, cadangannya Rian, Kevin'
+      );
+      const nlRes = await app.handleInboundMessage(nlMsg);
+
+      expect(nlRes.handled).toBe(true);
+      expect(nlRes.replyText).toContain('ROSTER TIM GARUDA FC BERHASIL DIDAFTARKAN');
+      expect(nlRes.replyText).toContain('Ikyy');
+      expect(nlRes.replyText).toContain('Budi');
+      expect(nlRes.replyText).toContain('Reza');
+      expect(nlRes.replyText).toContain('Rian');
+      expect(nlRes.replyText).toContain('7 / 10');
+
+      // 2. Multiline registration with numbers and bullet points
+      const multilineText = [
+        '!roster Elang FC',
+        'Kiper: EagleGK',
+        'Inti:',
+        '1. P1',
+        '2. P2',
+        '3. P3',
+        '4. P4',
+        'Cadangan:',
+        '- C1',
+        '- C2',
+      ].join('\n');
+
+      const multiRes = await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, multilineText));
+      expect(multiRes.handled).toBe(true);
+      expect(multiRes.replyText).toContain('ROSTER TIM ELANG FC BERHASIL DIDAFTARKAN');
+      expect(multiRes.replyText).toContain('EagleGK');
+      expect(multiRes.replyText).toContain('P1');
+      expect(multiRes.replyText).toContain('C1');
+      expect(multiRes.replyText).toContain('7 / 10');
+
+      // 3. Reject duplicate player across teams (Rule 2.7)
+      // Attempt to register 'Budi' (already in Garuda FC) into a new roster
+      const dupMsg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        '!roster tim Elang FC kiper EagleGK, inti Budi, P2, P3, P4, cadangan C1'
+      );
+      const dupRes = await app.handleInboundMessage(dupMsg);
+      expect(dupRes.replyText).toContain('sudah terdaftar di tim *Garuda FC*');
     });
 
     it('executes !claimwo single forfeit and awards 3-0 win with 3 points', async () => {

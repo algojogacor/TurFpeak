@@ -1207,10 +1207,11 @@ export function registerTournamentCommands(
         `1. 👥 *Tim & Roster:*`,
         `   • Format 5 vs 5 (1 Kiper + 4 Pemain Inti).`,
         `   • Cadangan: Maksimal 5 pemain cadangan (Format 5+5, total max 10 pemain). Tim dengan hanya 5 pemain tanpa cadangan tetap diizinkan.`,
+        `   • 🚫 *Karakter Unik (No Duplicate):* DILARANG menggunakan karakter yang sama dalam 1 tim (contoh: Dilarang double Ford, double Moco, dll). Setiap pemain wajib memakai karakter berbeda!`,
         `   • 1 Pemain hanya boleh terdaftar & membela 1 tim di turnamen.`,
         `   • Nickname in-game WAJIB sama persis dengan yang didaftarkan.`,
         `   • Dilarang keras mengganti nickname selama turnamen berlangsung.`,
-        `   • Format pendaftaran roster:`,
+        `   • Format pendaftaran roster (bisa format baku atau chat santai):`,
         `     *!roster <Nama Tim> GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]*`,
         ``,
         `2. 🏆 *Format Kompetisi:*`,
@@ -1276,300 +1277,444 @@ export function registerTournamentCommands(
     handler: ruleHandler,
   });
 
+  // Robust and Lenient Roster Parser for Both Rigid and Natural Language Input
+  const parseRosterInput = (raw: string) => {
+    const norm = raw.trim();
+
+    // Check if this is an attempt to register
+    const hasGkKeyword = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
+    const hasIntiKeyword = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
+
+    if (!hasGkKeyword && !hasIntiKeyword) {
+      return {
+        isRegistration: false,
+        teamName: undefined,
+        gkName: undefined,
+        starterList: [] as string[],
+        subList: [] as string[],
+      };
+    }
+
+    const gkRegex = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+    const intiRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+    const subRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*cadangan|cadangan|subs?|substitutes?|cad)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+
+    interface Marker {
+      type: 'GK' | 'INTI' | 'SUB';
+      matchIndex: number;
+      contentStartIndex: number;
+    }
+
+    const markers: Marker[] = [];
+
+    const gkMatch = norm.match(gkRegex);
+    if (gkMatch && gkMatch.index !== undefined) {
+      markers.push({
+        type: 'GK',
+        matchIndex: gkMatch.index,
+        contentStartIndex: gkMatch.index + gkMatch[0].length,
+      });
+    }
+
+    const intiMatch = norm.match(intiRegex);
+    if (intiMatch && intiMatch.index !== undefined) {
+      markers.push({
+        type: 'INTI',
+        matchIndex: intiMatch.index,
+        contentStartIndex: intiMatch.index + intiMatch[0].length,
+      });
+    }
+
+    const subMatch = norm.match(subRegex);
+    if (subMatch && subMatch.index !== undefined) {
+      markers.push({
+        type: 'SUB',
+        matchIndex: subMatch.index,
+        contentStartIndex: subMatch.index + subMatch[0].length,
+      });
+    }
+
+    markers.sort((a, b) => a.matchIndex - b.matchIndex);
+
+    let teamNameCandidate = '';
+    if (markers.length > 0) {
+      teamNameCandidate = norm.substring(0, markers[0].matchIndex).trim();
+    }
+
+    let teamName: string | undefined = teamNameCandidate
+      .replace(/^(?:tim|team|daftar\s+roster|daftar|roster|nama\s*tim)\s+/i, '')
+      .replace(/[|:,;.-]+$/, '')
+      .trim();
+
+    if (!teamName || teamName.length < 2) {
+      teamName = undefined;
+    }
+
+    let rawGk = '';
+    let rawInti = '';
+    let rawSub = '';
+
+    for (let i = 0; i < markers.length; i++) {
+      const cur = markers[i];
+      const nextStart = i + 1 < markers.length ? markers[i + 1].matchIndex : norm.length;
+      const content = norm.substring(cur.contentStartIndex, nextStart).trim();
+
+      if (cur.type === 'GK') {
+        rawGk = content;
+      } else if (cur.type === 'INTI') {
+        rawInti = content;
+      } else if (cur.type === 'SUB') {
+        rawSub = content;
+      }
+    }
+
+    const extractNames = (str: string): string[] => {
+      return str
+        .split(/[\n|;,/]+|\s+dan\s+|\s+&\s+/i)
+        .map((item) =>
+          item
+            .replace(/^\s*(?:[-•*]|\d+[\.\)]|\[\d+\])\s*/, '')
+            .replace(/[.,;]+$/, '')
+            .trim()
+        )
+        .filter((n) => n.length > 0 && !/^(?:dan|and|nya|adalah)$/i.test(n));
+    };
+
+    const gkNames = extractNames(rawGk);
+    const gkName = gkNames.length > 0 ? gkNames[0] : undefined;
+    const starterList = extractNames(rawInti);
+    const subList = extractNames(rawSub);
+
+    return {
+      isRegistration: true,
+      teamName,
+      gkName,
+      starterList,
+      subList,
+    };
+  };
+
   // !roster [Nama Tim] [GK: ... | Inti: ... | Cadangan: ...]
+  const rosterHandler = async (ctx: CommandContext) => {
+    const raw = ctx.rawArgs.trim();
+
+    // Check active tournament
+    const tRes = await db.execute("SELECT id, name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
+    if (tRes.rows.length === 0) {
+      return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
+    }
+    const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
+    const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
+
+    if (!raw) {
+      return {
+        success: true,
+        responseText: [
+          `📋 *PANDUAN PERINTAH ROSTER (FORMAT 5+5)*`,
+          `──────────────────────────────`,
+          `1. *Melihat Roster Tim:*`,
+          `   \`!roster <Nama Tim>\``,
+          `   Contoh: \`!roster Garuda FC\``,
+          ``,
+          `2. *Mendaftarkan / Memperbarui Roster:*`,
+          `   Bisa menggunakan format baku maupun bahasa santai/chat WhatsApp.`,
+          `   • *Format Baku:*`,
+          `     \`!roster Garuda FC GK: Ikyy | Inti: Budi, Joko, Doni, Reza | Cadangan: Rian, Kevin\``,
+          `   • *Format Bahasa Santai:*`,
+          `     \`!roster tim Garuda FC kipernya Ikyy, pemain intinya Budi, Joko, Doni, Reza, cadangannya Rian, Kevin\``,
+          `──────────────────────────────`,
+          `💡 _Minimal 5 pemain (1 GK + 4 Inti). Maksimal 5 cadangan (Total max 10 pemain)._`,
+          `🚫 *Aturan Karakter:* Dilarang menggunakan karakter kembar dalam 1 tim saat tanding (misal: dilarang double Ford).`,
+        ].join('\n'),
+      };
+    }
+
+    const parsed = parseRosterInput(raw);
+
+    if (!parsed.isRegistration) {
+      // VIEW ROSTER
+      const targetTeamName = raw.replace(/^(?:tim|team|lihat|cek)\s+/i, '').trim();
+      const teamRes = await db.execute({
+        sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
+        args: [tournamentId, targetTeamName],
+      });
+
+      if (teamRes.rows.length === 0) {
+        return {
+          success: false,
+          responseText: `⚠️ Tim *${targetTeamName}* tidak ditemukan di turnamen *${tournamentName}*.`,
+        };
+      }
+
+      const teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
+      const officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
+
+      const playersRes = await db.execute({
+        sql: `SELECT nickname_raw, position, roster_slot, roster_type
+              FROM players
+              WHERE team_id = ? AND tournament_id = ? AND status = 'ACTIVE'
+              ORDER BY roster_slot ASC`,
+        args: [teamId, tournamentId],
+      });
+
+      if (playersRes.rows.length === 0) {
+        return {
+          success: true,
+          responseText: [
+            `📋 *ROSTER TIM: ${officialTeamName.toUpperCase()}*`,
+            `──────────────────────────────`,
+            `⚠️ Belum ada pemain yang didaftarkan untuk tim ini.`,
+            ``,
+            `*Format Pendaftaran:*`,
+            `\`!roster ${officialTeamName} GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]\``,
+          ].join('\n'),
+        };
+      }
+
+      const gk = playersRes.rows.find((r: any) => String(r.position) === 'GOALKEEPER' || Number(r.roster_slot) === 1);
+      const starters = playersRes.rows.filter((r: any) => String(r.roster_type) === 'STARTER' && String(r.position) !== 'GOALKEEPER');
+      const subs = playersRes.rows.filter((r: any) => String(r.roster_type) === 'SUBSTITUTE');
+
+      const lines: string[] = [];
+      lines.push(`📋 *ROSTER RESMI TIM: ${officialTeamName.toUpperCase()}*`);
+      lines.push(`──────────────────────────────`);
+      lines.push(`🧤 *Kiper (Slot 1):* ${gk ? String(gk.nickname_raw) : '-(belum ada)-'}`);
+      lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
+      if (starters.length === 0) {
+        lines.push(`  _(belum ada)_`);
+      } else {
+        starters.forEach((s: any, idx: number) => {
+          lines.push(`  ${idx + 2}. ${String(s.nickname_raw)}`);
+        });
+      }
+
+      lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+      if (subs.length === 0) {
+        lines.push(`  _(tidak ada cadangan)_`);
+      } else {
+        subs.forEach((s: any, idx: number) => {
+          lines.push(`  ${idx + 6}. ${String(s.nickname_raw)}`);
+        });
+      }
+      lines.push(`──────────────────────────────`);
+      lines.push(`📊 Total: *${playersRes.rows.length} / 10* pemain terdaftar.`);
+
+      return { success: true, responseText: lines.join('\n') };
+    }
+
+    // REGISTER / UPDATE ROSTER
+    let teamId: string | null = null;
+    let officialTeamName: string | null = null;
+    let officialDelegateId: string | null = null;
+
+    if (parsed.teamName) {
+      const teamRes = await db.execute({
+        sql: `SELECT id, team_name, delegate_id FROM teams 
+              WHERE tournament_id = ? AND (LOWER(team_name) = LOWER(?) OR LOWER(team_name) LIKE ?)
+              ORDER BY CASE WHEN LOWER(team_name) = LOWER(?) THEN 0 ELSE 1 END LIMIT 1`,
+        args: [tournamentId, parsed.teamName, `%${parsed.teamName.toLowerCase()}%`, parsed.teamName],
+      });
+      if (teamRes.rows.length > 0) {
+        teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
+        officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
+        officialDelegateId = teamRes.rows[0].delegate_id ? String(teamRes.rows[0].delegate_id) : null;
+      }
+    }
+
+    // If team name was omitted or not matched by text, try resolving from sender's delegate ID
+    if (!teamId && ctx.delegateId) {
+      const delTeamRes = await db.execute({
+        sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND delegate_id = ? LIMIT 1`,
+        args: [tournamentId, ctx.delegateId],
+      });
+      if (delTeamRes.rows.length > 0) {
+        teamId = String(delTeamRes.rows[0].id ?? delTeamRes.rows[0][0]);
+        officialTeamName = String(delTeamRes.rows[0].team_name ?? delTeamRes.rows[0][1]);
+        officialDelegateId = delTeamRes.rows[0].delegate_id ? String(delTeamRes.rows[0].delegate_id) : null;
+      }
+    }
+
+    if (!teamId || !officialTeamName) {
+      return {
+        success: false,
+        responseText: `⚠️ Tim tidak ditemukan di turnamen *${tournamentName}*.\nMohon cantumkan nama tim Anda di awal, contoh:\n\`!roster <Nama Tim> Kiper: ... | Inti: ... | Cadangan: ...\``,
+      };
+    }
+
+    // Authorization: must be Organizer OR team delegate
+    if (!ctx.isOrganizer && ctx.delegateId !== officialDelegateId) {
+      return {
+        success: false,
+        responseText: `⛔ Hanya Panitia atau delegasi resmi dari *${officialTeamName}* yang berhak mendaftarkan roster tim ini.`,
+      };
+    }
+
+    if (!parsed.gkName) {
+      return {
+        success: false,
+        responseText: '⚠️ Nama Kiper (GK) wajib diisi. Contoh: `GK: Ikyy` atau `Kiper: Ikyy`',
+      };
+    }
+
+    if (parsed.starterList.length < 4) {
+      return {
+        success: false,
+        responseText: `⚠️ Pemain inti harus minimal 4 pemain outfield (saat ini terdeteksi: ${parsed.starterList.length}).\nContoh: \`Inti: Budi, Joko, Doni, Reza\``,
+      };
+    }
+
+    if (parsed.starterList.length > 4) {
+      // Move excess starters to subs if space permits
+      const excess = parsed.starterList.splice(4);
+      parsed.subList.unshift(...excess);
+    }
+
+    if (parsed.subList.length > 5) {
+      return {
+        success: false,
+        responseText: `⚠️ Maksimal pemain cadangan adalah 5 orang (Format 5+5). Anda memasukkan ${parsed.subList.length} cadangan.`,
+      };
+    }
+
+    // Validate all names are unique within team
+    const allNames = [parsed.gkName, ...parsed.starterList, ...parsed.subList];
+    const normalizedMap = new Set<string>();
+    for (const n of allNames) {
+      const normN = n.toLowerCase().trim();
+      if (normalizedMap.has(normN)) {
+        return {
+          success: false,
+          responseText: `⚠️ Ditemukan nama ganda di dalam roster: *"${n}"*. Setiap pemain harus memiliki nickname unik.`,
+        };
+      }
+      normalizedMap.add(normN);
+    }
+
+    // Validate no player is registered in another team in this tournament (Rule 2.7)
+    for (const n of allNames) {
+      const existCheck = await db.execute({
+        sql: `SELECT t.team_name FROM players p JOIN teams t ON p.team_id = t.id WHERE p.tournament_id = ? AND p.team_id != ? AND LOWER(p.nickname_raw) = LOWER(?) LIMIT 1`,
+        args: [tournamentId, teamId, n],
+      });
+      if (existCheck.rows.length > 0) {
+        const registeredTeam = String(existCheck.rows[0].team_name ?? existCheck.rows[0][0]);
+        return {
+          success: false,
+          responseText: `⚠️ Pemain *"${n}"* sudah terdaftar di tim *${registeredTeam}*. Sesuai regulasi (Pasal 2.7), 1 pemain hanya boleh membela 1 tim di turnamen.`,
+        };
+      }
+    }
+
+    // Save into players table
+    // 1. Delete previous players for this team in this tournament
+    await db.execute({
+      sql: `DELETE FROM players WHERE team_id = ? AND tournament_id = ?`,
+      args: [teamId, tournamentId],
+    });
+
+    const now = new Date().toISOString();
+
+    // Slot 1: GK
+    await db.execute({
+      sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'GOALKEEPER', 1, 'STARTER', 'ACTIVE', ?, ?)`,
+      args: [
+        randomUUID(),
+        tournamentId,
+        teamId,
+        parsed.gkName,
+        parsed.gkName.normalize('NFC'),
+        parsed.gkName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+        now,
+        now,
+      ],
+    });
+
+    // Slot 2-5: Starters
+    for (let i = 0; i < parsed.starterList.length; i++) {
+      const pName = parsed.starterList[i];
+      await db.execute({
+        sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'STARTER', 'ACTIVE', ?, ?)`,
+        args: [
+          randomUUID(),
+          tournamentId,
+          teamId,
+          pName,
+          pName.normalize('NFC'),
+          pName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+          i + 2,
+          now,
+          now,
+        ],
+      });
+    }
+
+    // Slot 6-10: Substitutes
+    for (let i = 0; i < parsed.subList.length; i++) {
+      const sName = parsed.subList[i];
+      await db.execute({
+        sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'SUBSTITUTE', 'ACTIVE', ?, ?)`,
+        args: [
+          randomUUID(),
+          tournamentId,
+          teamId,
+          sName,
+          sName.normalize('NFC'),
+          sName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+          i + 6,
+          now,
+          now,
+        ],
+      });
+    }
+
+    const lines: string[] = [];
+    lines.push(`✅ *ROSTER TIM ${officialTeamName.toUpperCase()} BERHASIL DIDAFTARKAN!*`);
+    lines.push(`──────────────────────────────`);
+    lines.push(`🧤 *Kiper (Slot 1):* ${parsed.gkName}`);
+    lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
+    parsed.starterList.forEach((s, idx) => lines.push(`  ${idx + 2}. ${s}`));
+    lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+    if (parsed.subList.length === 0) {
+      lines.push(`  _(tidak ada cadangan)_`);
+    } else {
+      parsed.subList.forEach((s, idx) => lines.push(`  ${idx + 6}. ${s}`));
+    }
+    lines.push(`──────────────────────────────`);
+    lines.push(`📊 Total Terdaftar: *${allNames.length} / 10* pemain (Format 5+5).`);
+    lines.push(`🚫 *Aturan Karakter Unik:* Dilarang menggunakan karakter yang sama dalam 1 tim saat tanding (contoh: dilarang double Ford, double Moco, dll).`);
+    lines.push(`💡 _Nickname di atas harus sama persis dengan yang digunakan di dalam game._`);
+
+    return { success: true, responseText: lines.join('\n') };
+  };
+
   router.registerCommand({
     command: 'roster',
     requiredRole: 'ANY',
     allowedInDm: true,
     allowedInGroup: true,
     description: 'Mendaftarkan atau melihat roster pemain tim (Format 5+5: 1 GK, 4 Inti, max 5 Cadangan)',
-    handler: async (ctx: CommandContext) => {
-      const raw = ctx.rawArgs.trim();
+    handler: rosterHandler,
+  });
 
-      // Check active tournament
-      const tRes = await db.execute("SELECT id, name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
-      if (tRes.rows.length === 0) {
-        return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
-      }
-      const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
-      const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
+  router.registerCommand({
+    command: 'daftarroster',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mendaftarkan roster pemain tim',
+    handler: rosterHandler,
+  });
 
-      if (!raw) {
-        return {
-          success: true,
-          responseText: [
-            `📋 *PANDUAN PERINTAH ROSTER (FORMAT 5+5)*`,
-            `──────────────────────────────`,
-            `1. *Melihat Roster Tim:*`,
-            `   \`!roster <Nama Tim>\``,
-            `   Contoh: \`!roster Garuda FC\``,
-            ``,
-            `2. *Mendaftarkan / Memperbarui Roster:*`,
-            `   \`!roster <Nama Tim> GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2, C3]\``,
-            `   Contoh:`,
-            `   \`!roster Garuda FC GK: Ikyy | Inti: Budi, Joko, Doni, Reza | Cadangan: Rian, Kevin\``,
-            `──────────────────────────────`,
-            `💡 _Minimal 5 pemain (1 GK + 4 Inti). Maksimal 5 cadangan (Total max 10 pemain)._`,
-          ].join('\n'),
-        };
-      }
-
-      const lowerRaw = raw.toLowerCase();
-      const isRegistration = lowerRaw.includes('gk:') || lowerRaw.includes('kiper:');
-
-      if (!isRegistration) {
-        // VIEW ROSTER
-        const targetTeamName = raw;
-        const teamRes = await db.execute({
-          sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
-          args: [tournamentId, targetTeamName],
-        });
-
-        if (teamRes.rows.length === 0) {
-          return {
-            success: false,
-            responseText: `⚠️ Tim *${targetTeamName}* tidak ditemukan di turnamen *${tournamentName}*.`,
-          };
-        }
-
-        const teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
-        const officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
-
-        const playersRes = await db.execute({
-          sql: `SELECT nickname_raw, position, roster_slot, roster_type
-                FROM players
-                WHERE team_id = ? AND tournament_id = ? AND status = 'ACTIVE'
-                ORDER BY roster_slot ASC`,
-          args: [teamId, tournamentId],
-        });
-
-        if (playersRes.rows.length === 0) {
-          return {
-            success: true,
-            responseText: [
-              `📋 *ROSTER TIM: ${officialTeamName.toUpperCase()}*`,
-              `──────────────────────────────`,
-              `⚠️ Belum ada pemain yang didaftarkan untuk tim ini.`,
-              ``,
-              `*Format Pendaftaran:*`,
-              `\`!roster ${officialTeamName} GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]\``,
-            ].join('\n'),
-          };
-        }
-
-        const gk = playersRes.rows.find((r: any) => String(r.position) === 'GOALKEEPER' || Number(r.roster_slot) === 1);
-        const starters = playersRes.rows.filter((r: any) => String(r.roster_type) === 'STARTER' && String(r.position) !== 'GOALKEEPER');
-        const subs = playersRes.rows.filter((r: any) => String(r.roster_type) === 'SUBSTITUTE');
-
-        const lines: string[] = [];
-        lines.push(`📋 *ROSTER RESMI TIM: ${officialTeamName.toUpperCase()}*`);
-        lines.push(`──────────────────────────────`);
-        lines.push(`🧤 *Kiper (Slot 1):* ${gk ? String(gk.nickname_raw) : '-(belum ada)-'}`);
-        lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
-        if (starters.length === 0) {
-          lines.push(`  _(belum ada)_`);
-        } else {
-          starters.forEach((s: any, idx: number) => {
-            lines.push(`  ${idx + 2}. ${String(s.nickname_raw)}`);
-          });
-        }
-
-        lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
-        if (subs.length === 0) {
-          lines.push(`  _(tidak ada cadangan)_`);
-        } else {
-          subs.forEach((s: any, idx: number) => {
-            lines.push(`  ${idx + 6}. ${String(s.nickname_raw)}`);
-          });
-        }
-        lines.push(`──────────────────────────────`);
-        lines.push(`📊 Total: *${playersRes.rows.length} / 10* pemain terdaftar.`);
-
-        return { success: true, responseText: lines.join('\n') };
-      }
-
-      // REGISTER / UPDATE ROSTER
-      // Extract team name before gk: or kiper:
-      const matchGkPrefix = raw.match(/^(.*?)(?:gk|kiper):/i);
-      const teamNamePart = matchGkPrefix ? matchGkPrefix[1].trim() : '';
-
-      if (!teamNamePart) {
-        return {
-          success: false,
-          responseText: '⚠️ Format salah: Nama tim harus dicantumkan di awal.\nContoh: `!roster Garuda FC GK: Ikyy | Inti: Budi, Joko, Doni, Reza | Cadangan: Rian`',
-        };
-      }
-
-      const teamRes = await db.execute({
-        sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
-        args: [tournamentId, teamNamePart],
-      });
-
-      if (teamRes.rows.length === 0) {
-        return {
-          success: false,
-          responseText: `⚠️ Tim *${teamNamePart}* tidak ditemukan di turnamen *${tournamentName}*.`,
-        };
-      }
-
-      const teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
-      const officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
-      const officialDelegateId = teamRes.rows[0].delegate_id ? String(teamRes.rows[0].delegate_id) : null;
-
-      // Authorization: must be Organizer OR team delegate
-      if (!ctx.isOrganizer && ctx.delegateId !== officialDelegateId) {
-        return {
-          success: false,
-          responseText: `⛔ Hanya Panitia atau delegasi resmi dari *${officialTeamName}* yang berhak mendaftarkan roster tim ini.`,
-        };
-      }
-
-      // Parse fields: GK, Inti, Cadangan
-      const afterTeam = raw.slice(matchGkPrefix![0].length - 3); // starts with "gk:"
-      // Normalize separators
-      const parts = afterTeam.split(/[|;\n]+/);
-      let gkName = '';
-      const starterList: string[] = [];
-      const subList: string[] = [];
-
-      for (const part of parts) {
-        const trimmedPart = part.trim();
-        if (/^(?:gk|kiper):/i.test(trimmedPart)) {
-          const val = trimmedPart.replace(/^(?:gk|kiper):/i, '').trim();
-          if (val) gkName = val.split(/[,/]/)[0]?.trim() || '';
-        } else if (/^(?:inti|pemain|starters?):/i.test(trimmedPart)) {
-          const val = trimmedPart.replace(/^(?:inti|pemain|starters?):/i, '').trim();
-          val.split(/[,/]/).map((s) => s.trim()).filter(Boolean).forEach((s) => starterList.push(s));
-        } else if (/^(?:cadangan|subs?|substitutes?):/i.test(trimmedPart)) {
-          const val = trimmedPart.replace(/^(?:cadangan|subs?|substitutes?):/i, '').trim();
-          val.split(/[,/]/).map((s) => s.trim()).filter(Boolean).forEach((s) => subList.push(s));
-        }
-      }
-
-      if (!gkName) {
-        return {
-          success: false,
-          responseText: '⚠️ Nama Kiper (GK) wajib diisi. Contoh: `GK: Ikyy`',
-        };
-      }
-
-      if (starterList.length < 4) {
-        return {
-          success: false,
-          responseText: `⚠️ Pemain inti harus minimal 4 pemain outfield (saat ini terdeteksi: ${starterList.length}).\nContoh: \`Inti: Budi, Joko, Doni, Reza\``,
-        };
-      }
-
-      if (starterList.length > 4) {
-        // Move excess starters to subs if space permits
-        const excess = starterList.splice(4);
-        subList.unshift(...excess);
-      }
-
-      if (subList.length > 5) {
-        return {
-          success: false,
-          responseText: `⚠️ Maksimal pemain cadangan adalah 5 orang (Format 5+5). Anda memasukkan ${subList.length} cadangan.`,
-        };
-      }
-
-      // Validate all names are unique within team
-      const allNames = [gkName, ...starterList, ...subList];
-      const normalizedMap = new Set<string>();
-      for (const n of allNames) {
-        const norm = n.toLowerCase().trim();
-        if (normalizedMap.has(norm)) {
-          return {
-            success: false,
-            responseText: `⚠️ Ditemukan nama ganda di dalam roster: *"${n}"*. Setiap pemain harus memiliki nickname unik.`,
-          };
-        }
-        normalizedMap.add(norm);
-      }
-
-      // Save into players table
-      // 1. Delete previous players for this team in this tournament
-      await db.execute({
-        sql: `DELETE FROM players WHERE team_id = ? AND tournament_id = ?`,
-        args: [teamId, tournamentId],
-      });
-
-      const now = new Date().toISOString();
-
-      // Slot 1: GK
-      await db.execute({
-        sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'GOALKEEPER', 1, 'STARTER', 'ACTIVE', ?, ?)`,
-        args: [
-          randomUUID(),
-          tournamentId,
-          teamId,
-          gkName,
-          gkName.normalize('NFC'),
-          gkName.toLowerCase().replace(/[^a-z0-9]/g, ''),
-          now,
-          now,
-        ],
-      });
-
-      // Slot 2-5: Starters
-      for (let i = 0; i < starterList.length; i++) {
-        const pName = starterList[i];
-        await db.execute({
-          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'STARTER', 'ACTIVE', ?, ?)`,
-          args: [
-            randomUUID(),
-            tournamentId,
-            teamId,
-            pName,
-            pName.normalize('NFC'),
-            pName.toLowerCase().replace(/[^a-z0-9]/g, ''),
-            i + 2,
-            now,
-            now,
-          ],
-        });
-      }
-
-      // Slot 6-10: Substitutes
-      for (let i = 0; i < subList.length; i++) {
-        const sName = subList[i];
-        await db.execute({
-          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'SUBSTITUTE', 'ACTIVE', ?, ?)`,
-          args: [
-            randomUUID(),
-            tournamentId,
-            teamId,
-            sName,
-            sName.normalize('NFC'),
-            sName.toLowerCase().replace(/[^a-z0-9]/g, ''),
-            i + 6,
-            now,
-            now,
-          ],
-        });
-      }
-
-      const lines: string[] = [];
-      lines.push(`✅ *ROSTER TIM ${officialTeamName.toUpperCase()} BERHASIL DIDAFTARKAN!*`);
-      lines.push(`──────────────────────────────`);
-      lines.push(`🧤 *Kiper (Slot 1):* ${gkName}`);
-      lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
-      starterList.forEach((s, idx) => lines.push(`  ${idx + 2}. ${s}`));
-      lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
-      if (subList.length === 0) {
-        lines.push(`  _(tidak ada cadangan)_`);
-      } else {
-        subList.forEach((s, idx) => lines.push(`  ${idx + 6}. ${s}`));
-      }
-      lines.push(`──────────────────────────────`);
-      lines.push(`📊 Total Terdaftar: *${allNames.length} / 10* pemain (Format 5+5).`);
-      lines.push(`💡 _Roster ini akan otomatis dicocokkan oleh sistem saat pemrosesan skor dan penghargaan turnamen._`);
-
-      return { success: true, responseText: lines.join('\n') };
-    },
+  router.registerCommand({
+    command: 'daftarpemain',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mendaftarkan roster pemain tim',
+    handler: rosterHandler,
   });
 
   // !claimwo / !wo <fixture_id> <nama_tim_forfeit> [alasan]

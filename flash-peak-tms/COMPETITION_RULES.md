@@ -25,6 +25,7 @@
 8. Registered in-game nicknames must match the nickname used in the game.
 9. Nickname changes during the tournament are prohibited.
 10. Any discrepancy is referred to organizer review. A default score must not be applied automatically until the relevant evidence and rule are reviewed.
+11. **Karakter Unik / Larangan Karakter Kembar (No Duplicate Characters):** Dalam satu tim, setiap pemain dilarang menggunakan karakter in-game yang sama dalam satu pertandingan (misalnya: dilarang menggunakan double Ford, double Moco, double Rafael, dll). Setiap pemain di tim wajib menggunakan karakter yang berbeda.
 
 ## 3. Competition format
 

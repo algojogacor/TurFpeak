@@ -406,13 +406,18 @@ export class FlashPeakApp {
         };
       }
 
-      // 7. Roster / Susunan Pemain (e.g. "!siapa pemain singa fc", "!susunan pemain garuda")
-      if (/(roster|susunan pemain|daftar pemain|lineup)/i.test(normQuery)) {
-        const teamMatch = normQuery.match(/(?:tim|roster|pemain)\s+([a-zA-Z0-9\s]+)/i);
-        const teamArg = teamMatch && teamMatch[1] ? ` ${teamMatch[1].trim()}` : '';
+      // 7. Roster / Susunan Pemain (e.g. "!siapa pemain singa fc", "!susunan pemain garuda", "!daftar roster...")
+      if (/(roster|susunan pemain|daftar pemain|lineup|pemain)/i.test(normQuery)) {
+        const isReg = /(?:gk|kiper|penjaga\s*gawang)/i.test(normQuery);
+        let rosterArg = textAfterPrefix;
+        if (!isReg) {
+          const teamMatch = normQuery.match(/(?:tim|roster|pemain)\s+([a-zA-Z0-9\s]+)/i);
+          rosterArg = teamMatch && teamMatch[1] ? teamMatch[1].trim() : textAfterPrefix;
+        }
+        const cleanArg = rosterArg.replace(/^(?:daftar\s+roster|daftar\s+pemain|susunan\s+pemain|roster)\s*/i, '').trim();
         const rosterRes = await this.commandRouter.handleMessage({
           ...message,
-          text_body: `!roster${teamArg}`,
+          text_body: `!roster ${cleanArg}`,
         });
         return {
           handled: true,
