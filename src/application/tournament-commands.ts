@@ -130,8 +130,26 @@ export function registerTournamentCommands(
     },
   });
 
-  // !schedule / !jadwal
-  const scheduleHandler = async () => {
+  // !schedule / !jadwal [hari ini | tim | grup]
+  const scheduleHandler = async (ctx?: CommandContext) => {
+    const rawFilter = (ctx?.rawArgs || '').trim().toLowerCase();
+
+    // 1. If asking about today / active matchday (e.g. "!jadwal hari ini apa", "!jadwal hari ini", "!jadwal sekarang")
+    const isTodayQuery =
+      rawFilter.includes('hari ini') ||
+      rawFilter.includes('today') ||
+      rawFilter.includes('sekarang') ||
+      rawFilter.includes('ronde ini') ||
+      rawFilter.includes('saat ini');
+
+    if (isTodayQuery && deps.matchdayService) {
+      const matchdayStatus = await deps.matchdayService.formatMatchdayStatus();
+      return {
+        success: true,
+        responseText: matchdayStatus,
+      };
+    }
+
     const tRes = await db.execute("SELECT id, name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
     if (tRes.rows.length === 0) {
       return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
@@ -150,7 +168,7 @@ export function registerTournamentCommands(
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = ta.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_a_address,
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address
         FROM fixtures f
-        JOIN groups g ON f.group_id = g.id
+        LEFT JOIN groups g ON f.group_id = g.id
         JOIN teams ta ON f.team_a_id = ta.id
         JOIN teams tb ON f.team_b_id = tb.id
         LEFT JOIN teams tl ON f.left_side_team_id = tl.id
@@ -165,7 +183,7 @@ export function registerTournamentCommands(
     }
 
     const mentionsSet = new Set<string>();
-    const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r: any) => {
+    let scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r: any) => {
       const rawAddrA = r.delegate_a_address ? String(r.delegate_a_address) : null;
       const rawAddrB = r.delegate_b_address ? String(r.delegate_b_address) : null;
 
@@ -187,7 +205,7 @@ export function registerTournamentCommands(
 
       return {
         roundCode: String(r.round_code),
-        groupCode: String(r.group_code),
+        groupCode: r.group_code ? String(r.group_code) : '-',
         teamAName: String(r.team_a_name),
         teamBName: String(r.team_b_name),
         leftSideHostName: String(r.host_name || r.team_a_name),
@@ -197,6 +215,31 @@ export function registerTournamentCommands(
         teamBDelegateJid: jidB,
       };
     });
+
+    // 2. Filter by specific team or group if specified
+    if (rawFilter && !isTodayQuery) {
+      const groupMatch = rawFilter.match(/\b(?:grup|group)\s*([a-z0-9]+)\b/i);
+      if (groupMatch && groupMatch[1]) {
+        const targetGroup = groupMatch[1].toUpperCase();
+        scheduleItems = scheduleItems.filter((item) => item.groupCode?.toUpperCase() === targetGroup);
+      } else {
+        const cleanFilter = rawFilter.replace(/^(jadwal|schedule|main|lawan)\s*/i, '').trim();
+        if (cleanFilter.length >= 2) {
+          scheduleItems = scheduleItems.filter(
+            (item) =>
+              item.teamAName.toLowerCase().includes(cleanFilter) ||
+              item.teamBName.toLowerCase().includes(cleanFilter)
+          );
+        }
+      }
+
+      if (scheduleItems.length === 0) {
+        return {
+          success: false,
+          responseText: `⚠️ Tidak ditemukan jadwal pertandingan untuk kriteria "${rawFilter}". Ketik *!schedule* untuk melihat semua jadwal.`,
+        };
+      }
+    }
 
     const scheduleMsg = formatFixturesSchedule(tournamentName, scheduleItems);
     return {

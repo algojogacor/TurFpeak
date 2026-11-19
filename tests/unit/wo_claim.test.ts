@@ -282,5 +282,68 @@ describe('Natural Language Walkover (WO) Claim', () => {
       expect(cancelOutcome.replyText).toContain('PENGAJUAN KLAIM WALKOVER (WO) DITOLAK');
       expect(app.woClaimSession.hasPending(groupJid)).toBe(false);
     });
+
+    it('routes natural language schedule, rules, and awards queries prefixed with !', async () => {
+      // 1. !jadwal hari ini apa -> routes to matchday status
+      const msgToday: NormalizedMessage = {
+        provider_message_key: 'msg-today-sched',
+        chat_id: groupJid,
+        sender_raw_address: '628123456789@s.whatsapp.net',
+        sender_normalized_address: '628123456789@s.whatsapp.net',
+        message_timestamp: Math.floor(Date.now() / 1000),
+        message_type: 'TEXT',
+        text_body: '!jadwal hari ini apa',
+        is_from_me: false,
+      };
+      const outcomeToday = await app.handleInboundMessage(msgToday);
+      expect(outcomeToday.handled).toBe(true);
+      expect(outcomeToday.replyText).toContain('STATUS MATCHDAY TURNAMEN');
+      expect(outcomeToday.replyText).toContain('19:59 WIB');
+
+      // 2. !jadwal Singa FC -> filters schedule by team
+      const msgFilterTeam: NormalizedMessage = {
+        provider_message_key: 'msg-sched-singa',
+        chat_id: groupJid,
+        sender_raw_address: '628123456789@s.whatsapp.net',
+        sender_normalized_address: '628123456789@s.whatsapp.net',
+        message_timestamp: Math.floor(Date.now() / 1000),
+        message_type: 'TEXT',
+        text_body: '!jadwal Singa FC',
+        is_from_me: false,
+      };
+      const outcomeFilter = await app.handleInboundMessage(msgFilterTeam);
+      expect(outcomeFilter.handled).toBe(true);
+      expect(outcomeFilter.replyText).toContain('Singa FC');
+
+      // 3. !aturan turnamen apa aja -> routes to !rule
+      const msgRule: NormalizedMessage = {
+        provider_message_key: 'msg-nl-rule',
+        chat_id: groupJid,
+        sender_raw_address: '628123456789@s.whatsapp.net',
+        sender_normalized_address: '628123456789@s.whatsapp.net',
+        message_timestamp: Math.floor(Date.now() / 1000),
+        message_type: 'TEXT',
+        text_body: '!aturan turnamen apa aja',
+        is_from_me: false,
+      };
+      const outcomeRule = await app.handleInboundMessage(msgRule);
+      expect(outcomeRule.handled).toBe(true);
+      expect(outcomeRule.replyText).toContain('REGULASI RESMI TURNAMEN');
+
+      // 4. !siapa topskor sementara -> routes to !awards
+      const msgAwards: NormalizedMessage = {
+        provider_message_key: 'msg-nl-awards',
+        chat_id: groupJid,
+        sender_raw_address: '628123456789@s.whatsapp.net',
+        sender_normalized_address: '628123456789@s.whatsapp.net',
+        message_timestamp: Math.floor(Date.now() / 1000),
+        message_type: 'TEXT',
+        text_body: '!siapa topskor sementara',
+        is_from_me: false,
+      };
+      const outcomeAwards = await app.handleInboundMessage(msgAwards);
+      expect(outcomeAwards.handled).toBe(true);
+      expect(outcomeAwards.replyText).toContain('PENGHARGAAN INDIVIDU');
+    });
   });
 });

@@ -227,8 +227,11 @@ export class FlashPeakApp {
 
       // If not a registered command keyword, check for Natural Language intents prefixed with '!'
       // e.g. "!kita klaim wo ya, musuh ga aktif sesuai jadwal janjian"
-      // or "!klaim wo match 1 karena lawan tidak hadir 15 menit"
+      // or "!jadwal hari ini apa", "!kapan batas main", "!siapa topskor"
       const textAfterPrefix = rawMsgText.slice(1).trim();
+      const normQuery = textAfterPrefix.toLowerCase();
+
+      // 1. Walkover (WO) Claim or WO Questions (Must evaluate first to avoid WO reasons matching generic keywords like 'jadwal')
       const woIntent = parseWoClaimIntent(textAfterPrefix);
 
       if (woIntent.isGeneralQuestion) {
@@ -332,6 +335,90 @@ export class FlashPeakApp {
             mentions,
           };
         }
+      }
+
+      // 2. Jadwal Hari Ini / Matchday Status & Deadline (e.g. "!apa jadwal hari ini", "!kapan batas main")
+      const isTodayScheduleQuery =
+        /(jadwal|main|tanding).*(hari ini|today|sekarang|saat ini)/i.test(normQuery) ||
+        /(hari ini|today|sekarang).*(jadwal|main|tanding)/i.test(normQuery) ||
+        /(deadline|batas waktu|sisa waktu|sampai jam berapa|jam berapa batas)/i.test(normQuery);
+
+      if (isTodayScheduleQuery && this.matchdayService) {
+        const statusText = await this.matchdayService.formatMatchdayStatus();
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: statusText,
+        };
+      }
+
+      // 3. Regulasi / Aturan Turnamen (e.g. "!aturan turnamen apa aja", "!gimana aturannya")
+      if (/(aturan|rule|regulasi|ketentuan|syarat|format turnamen)/i.test(normQuery)) {
+        const ruleRes = await this.commandRouter.handleMessage({
+          ...message,
+          text_body: '!rule',
+        });
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: ruleRes?.responseText,
+        };
+      }
+
+      // 4. Top Scorer / Penghargaan / Best GK (e.g. "!siapa top skor", "!topskor sementara")
+      if (/(top\s*skor|top\s*scorer|kiper terbaik|best\s*gk|penghargaan|awards|pencetak gol)/i.test(normQuery)) {
+        const awardsRes = await this.commandRouter.handleMessage({
+          ...message,
+          text_body: '!awards',
+        });
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: awardsRes?.responseText,
+        };
+      }
+
+      // 5. Klasemen / Standings (e.g. "!lihat klasemen grup A", "!gimana klasemen sementara")
+      if (/(klasemen|standings|peringkat|posisi grup|tabel grup)/i.test(normQuery)) {
+        const groupMatch = normQuery.match(/\b(?:grup|group)\s*([a-z0-9]+)\b/i);
+        const groupArg = groupMatch ? ` ${groupMatch[1]}` : '';
+        const standingsRes = await this.commandRouter.handleMessage({
+          ...message,
+          text_body: `!standings${groupArg}`,
+        });
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: standingsRes?.responseText,
+        };
+      }
+
+      // 6. Jadwal Pertandingan Umum (e.g. "!lihat jadwal", "!tampilkan jadwal")
+      if (/(jadwal|schedule|fixture)/i.test(normQuery)) {
+        const schedRes = await this.commandRouter.handleMessage({
+          ...message,
+          text_body: `!schedule ${textAfterPrefix}`,
+        });
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: schedRes?.responseText,
+        };
+      }
+
+      // 7. Roster / Susunan Pemain (e.g. "!siapa pemain singa fc", "!susunan pemain garuda")
+      if (/(roster|susunan pemain|daftar pemain|lineup)/i.test(normQuery)) {
+        const teamMatch = normQuery.match(/(?:tim|roster|pemain)\s+([a-zA-Z0-9\s]+)/i);
+        const teamArg = teamMatch && teamMatch[1] ? ` ${teamMatch[1].trim()}` : '';
+        const rosterRes = await this.commandRouter.handleMessage({
+          ...message,
+          text_body: `!roster${teamArg}`,
+        });
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: rosterRes?.responseText,
+        };
       }
 
       // If text starts with '!' but is neither a known command nor a known NL intent,
