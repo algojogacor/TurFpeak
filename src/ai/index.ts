@@ -23,5 +23,6 @@ export * from './classifier.js';
 export * from './extractors/match.js';
 export * from './extractors/goalkeeper.js';
 export * from './extractors/gk-identity.js';
+export * from './extractors/roster.js';
 export * from './correction-parser.js';
 export * from './prompts/index.js';

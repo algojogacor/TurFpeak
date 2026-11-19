@@ -614,7 +614,8 @@ export type AITaskType =
   | 'CLASSIFY'
   | 'EXTRACT_MATCH'
   | 'EXTRACT_GOALKEEPER'
-  | 'PARSE_CORRECTION';
+  | 'PARSE_CORRECTION'
+  | 'PARSE_ROSTER';
 
 export type AIRequestStatus =
   | 'SUCCESS'

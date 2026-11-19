@@ -37,6 +37,7 @@ import { ProviderRouter } from './ai/router.js';
 import { ImageClassifier } from './ai/classifier.js';
 import { MatchSummaryExtractor } from './ai/extractors/match.js';
 import { GoalkeeperDetailExtractor } from './ai/extractors/goalkeeper.js';
+import { RosterExtractor } from './ai/extractors/roster.js';
 import { CorrectionParser } from './ai/correction-parser.js';
 import {
   getReportVersion,
@@ -88,6 +89,7 @@ export interface FlashPeakAppConfig {
   db: Client;
   mediaClient?: FlashPeakMediaClient;
   providerRouter?: ProviderRouter;
+  rosterExtractor?: RosterExtractor;
   sender?: WhatsAppSender;
   centralGroupJid?: string;
   organizerJid?: string;
@@ -121,6 +123,7 @@ export class FlashPeakApp {
   public readonly classifier?: ImageClassifier;
   public readonly matchExtractor?: MatchSummaryExtractor;
   public readonly gkExtractor?: GoalkeeperDetailExtractor;
+  public readonly rosterExtractor?: RosterExtractor;
   public readonly correctionParser?: CorrectionParser;
   public readonly manualReportSession: ManualReportSessionManager;
   public readonly woClaimSession: WoClaimSessionManager;
@@ -164,11 +167,15 @@ export class FlashPeakApp {
 
     this.mediaClient = config.mediaClient;
     this.providerRouter = config.providerRouter;
+    this.rosterExtractor = config.rosterExtractor;
     if (this.providerRouter) {
       this.classifier = new ImageClassifier(this.providerRouter);
       this.matchExtractor = new MatchSummaryExtractor(this.providerRouter);
       this.gkExtractor = new GoalkeeperDetailExtractor(this.providerRouter);
       this.correctionParser = new CorrectionParser(this.providerRouter);
+      if (!this.rosterExtractor) {
+        this.rosterExtractor = new RosterExtractor(this.providerRouter);
+      }
     }
 
     this.registerAppCommands();
@@ -191,6 +198,7 @@ export class FlashPeakApp {
       manualReportSession: this.manualReportSession,
       woClaimSession: this.woClaimSession,
       matchdayService: this.matchdayService,
+      rosterExtractor: this.rosterExtractor,
       get sender() {
         return self.sender;
       },

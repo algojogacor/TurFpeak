@@ -46,6 +46,7 @@ import {
 } from '../reports/manual-parser.js';
 import type { ManualReportSessionManager, MatchedScorerDetail, PendingManualReport } from './manual-report-session.js';
 import type { WoClaimSessionManager } from './wo-claim-session.js';
+import type { RosterExtractor } from '../ai/extractors/roster.js';
 import type {
   ApproverType,
   ApprovalDecision,
@@ -64,6 +65,7 @@ export interface TournamentCommandDeps {
   matchdayService?: MatchdayService;
   woClaimSession?: WoClaimSessionManager;
   sender?: WhatsAppSender;
+  rosterExtractor?: RosterExtractor;
   getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
   submitApproval: (
     reportVersionId: UUID,
@@ -73,6 +75,159 @@ export interface TournamentCommandDeps {
     isOrganizer?: boolean
   ) => Promise<ApprovalOutcome>;
   findVersionByMessageKey: (messageKey: string) => Promise<ReportVersion | null>;
+}
+
+export interface ParsedRosterInput {
+  isRegistration: boolean;
+  teamName: string | undefined;
+  gkName: string | undefined;
+  starterList: string[];
+  subList: string[];
+}
+
+/**
+ * Robust and Lenient Roster Parser for Both Rigid and Natural Language Input (Deterministic Fallback)
+ */
+export function parseRosterInput(raw: string): ParsedRosterInput {
+  const norm = raw.trim();
+
+  // Check if this is an attempt to register
+  const hasGkKeyword = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
+  const hasIntiKeyword = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
+
+  if (!hasGkKeyword && !hasIntiKeyword) {
+    return {
+      isRegistration: false,
+      teamName: undefined,
+      gkName: undefined,
+      starterList: [],
+      subList: [],
+    };
+  }
+
+  const gkRegex = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+  const intiRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+  const subRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*cadangan|cadangan|subs?|substitutes?|cad)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
+
+  interface Marker {
+    type: 'GK' | 'INTI' | 'SUB';
+    matchIndex: number;
+    contentStartIndex: number;
+  }
+
+  const markers: Marker[] = [];
+
+  const gkMatch = norm.match(gkRegex);
+  if (gkMatch && gkMatch.index !== undefined) {
+    markers.push({
+      type: 'GK',
+      matchIndex: gkMatch.index,
+      contentStartIndex: gkMatch.index + gkMatch[0].length,
+    });
+  }
+
+  const intiMatch = norm.match(intiRegex);
+  if (intiMatch && intiMatch.index !== undefined) {
+    markers.push({
+      type: 'INTI',
+      matchIndex: intiMatch.index,
+      contentStartIndex: intiMatch.index + intiMatch[0].length,
+    });
+  }
+
+  const subMatch = norm.match(subRegex);
+  if (subMatch && subMatch.index !== undefined) {
+    markers.push({
+      type: 'SUB',
+      matchIndex: subMatch.index,
+      contentStartIndex: subMatch.index + subMatch[0].length,
+    });
+  }
+
+  markers.sort((a, b) => a.matchIndex - b.matchIndex);
+
+  let teamNameCandidate = '';
+  if (markers.length > 0) {
+    teamNameCandidate = norm.substring(0, markers[0].matchIndex).trim();
+  }
+
+  let teamName: string | undefined = teamNameCandidate
+    .replace(/^(?:tim|team|daftar\s+roster|daftar|roster|nama\s*tim)\s+/i, '')
+    .replace(/[|:,;.-]+$/, '')
+    .trim();
+
+  if (!teamName || teamName.length < 2) {
+    teamName = undefined;
+  }
+
+  let rawGk = '';
+  let rawInti = '';
+  let rawSub = '';
+
+  for (let i = 0; i < markers.length; i++) {
+    const cur = markers[i];
+    const nextStart = i + 1 < markers.length ? markers[i + 1].matchIndex : norm.length;
+    let content = norm.substring(cur.contentStartIndex, nextStart).trim();
+    content = content.replace(/\s*\|\s*$/, '').trim();
+
+    if (cur.type === 'GK') {
+      rawGk = content;
+    } else if (cur.type === 'INTI') {
+      rawInti = content;
+    } else if (cur.type === 'SUB') {
+      rawSub = content;
+    }
+  }
+
+  const extractNames = (str: string): string[] => {
+    // Split by newlines first so each line is treated as a separate entry
+    const lines = str.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    const results: string[] = [];
+
+    for (const line of lines) {
+      // If the line contains comma or semicolon or "dan"/"&", split by those.
+      // DO NOT split by pipe '|' or hyphen '-' since clan tags use them (e.g. AVO | Zenyth).
+      const parts = line.includes(',') || line.includes(';') || /\s+dan\s+|\s+&\s+/i.test(line)
+        ? line.split(/[,;]+|\s+dan\s+|\s+&\s+/i)
+        : [line];
+
+      for (const part of parts) {
+        const cleaned = part
+          .replace(/^\s*(?:[-•*]|\d+[\.\)]|\[\d+\])\s*/, '')
+          .replace(/[.,;]+$/, '')
+          .trim();
+        if (cleaned.length > 0 && !/^(?:dan|and|nya|adalah)$/i.test(cleaned)) {
+          results.push(cleaned);
+        }
+      }
+    }
+
+    return results;
+  };
+
+  const gkNames = extractNames(rawGk);
+  let gkName = gkNames.length > 0 ? gkNames[0] : undefined;
+  let starterList = extractNames(rawInti);
+  const subList = extractNames(rawSub);
+
+  // Fallback: If no explicit INTI keyword was provided, but multiple names follow GK (e.g. GK: Budi \n 1. Doni \n 2. Eko)
+  if (starterList.length === 0 && gkNames.length > 1) {
+    gkName = gkNames[0];
+    starterList = gkNames.slice(1);
+  }
+
+  // Clean up trailing (GK) or (Kiper) tag from gkName ONLY if in parentheses or preceded by whitespace
+  if (gkName) {
+    gkName = gkName.replace(/(?:\s*\((?:gk|kiper)\)|\s+(?:gk|kiper))$/i, '').trim();
+  }
+
+  return {
+    isRegistration: true,
+    teamName,
+    gkName,
+    starterList,
+    subList,
+  };
 }
 
 export function registerTournamentCommands(
@@ -1483,129 +1638,6 @@ export function registerTournamentCommands(
     handler: ruleHandler,
   });
 
-  // Robust and Lenient Roster Parser for Both Rigid and Natural Language Input
-  const parseRosterInput = (raw: string) => {
-    const norm = raw.trim();
-
-    // Check if this is an attempt to register
-    const hasGkKeyword = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
-    const hasIntiKeyword = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\b|:|=|\s)/i.test(norm);
-
-    if (!hasGkKeyword && !hasIntiKeyword) {
-      return {
-        isRegistration: false,
-        teamName: undefined,
-        gkName: undefined,
-        starterList: [] as string[],
-        subList: [] as string[],
-      };
-    }
-
-    const gkRegex = /(?:^|[|\n;,.]|\b)(?:gk|kiper|penjaga\s*gawang|goal\s*keeper)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
-    const intiRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*inti|inti|starters?|pemain\s*utama|lineup)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
-    const subRegex = /(?:^|[|\n;,.]|\b)(?:pemain\s*cadangan|cadangan|subs?|substitutes?|cad)(?:nya)?(?:\s*(?:adalah|:|=|nya|-)?)\s*/i;
-
-    interface Marker {
-      type: 'GK' | 'INTI' | 'SUB';
-      matchIndex: number;
-      contentStartIndex: number;
-    }
-
-    const markers: Marker[] = [];
-
-    const gkMatch = norm.match(gkRegex);
-    if (gkMatch && gkMatch.index !== undefined) {
-      markers.push({
-        type: 'GK',
-        matchIndex: gkMatch.index,
-        contentStartIndex: gkMatch.index + gkMatch[0].length,
-      });
-    }
-
-    const intiMatch = norm.match(intiRegex);
-    if (intiMatch && intiMatch.index !== undefined) {
-      markers.push({
-        type: 'INTI',
-        matchIndex: intiMatch.index,
-        contentStartIndex: intiMatch.index + intiMatch[0].length,
-      });
-    }
-
-    const subMatch = norm.match(subRegex);
-    if (subMatch && subMatch.index !== undefined) {
-      markers.push({
-        type: 'SUB',
-        matchIndex: subMatch.index,
-        contentStartIndex: subMatch.index + subMatch[0].length,
-      });
-    }
-
-    markers.sort((a, b) => a.matchIndex - b.matchIndex);
-
-    let teamNameCandidate = '';
-    if (markers.length > 0) {
-      teamNameCandidate = norm.substring(0, markers[0].matchIndex).trim();
-    }
-
-    let teamName: string | undefined = teamNameCandidate
-      .replace(/^(?:tim|team|daftar\s+roster|daftar|roster|nama\s*tim)\s+/i, '')
-      .replace(/[|:,;.-]+$/, '')
-      .trim();
-
-    if (!teamName || teamName.length < 2) {
-      teamName = undefined;
-    }
-
-    let rawGk = '';
-    let rawInti = '';
-    let rawSub = '';
-
-    for (let i = 0; i < markers.length; i++) {
-      const cur = markers[i];
-      const nextStart = i + 1 < markers.length ? markers[i + 1].matchIndex : norm.length;
-      const content = norm.substring(cur.contentStartIndex, nextStart).trim();
-
-      if (cur.type === 'GK') {
-        rawGk = content;
-      } else if (cur.type === 'INTI') {
-        rawInti = content;
-      } else if (cur.type === 'SUB') {
-        rawSub = content;
-      }
-    }
-
-    const extractNames = (str: string): string[] => {
-      return str
-        .split(/[\n|;,/]+|\s+dan\s+|\s+&\s+/i)
-        .map((item) =>
-          item
-            .replace(/^\s*(?:[-•*]|\d+[\.\)]|\[\d+\])\s*/, '')
-            .replace(/[.,;]+$/, '')
-            .trim()
-        )
-        .filter((n) => n.length > 0 && !/^(?:dan|and|nya|adalah)$/i.test(n));
-    };
-
-    const gkNames = extractNames(rawGk);
-    let gkName = gkNames.length > 0 ? gkNames[0] : undefined;
-    let starterList = extractNames(rawInti);
-    const subList = extractNames(rawSub);
-
-    // Fallback: If no explicit INTI keyword was provided, but multiple names follow GK (e.g. GK: Budi \n 1. Doni \n 2. Eko)
-    if (starterList.length === 0 && gkNames.length > 1) {
-      gkName = gkNames[0];
-      starterList = gkNames.slice(1);
-    }
-
-    return {
-      isRegistration: true,
-      teamName,
-      gkName,
-      starterList,
-      subList,
-    };
-  };
-
   // !roster [Nama Tim] [GK: ... | Inti: ... | Cadangan: ...]
   const rosterHandler = async (ctx: CommandContext) => {
     const raw = ctx.rawArgs.trim();
@@ -1641,11 +1673,51 @@ export function registerTournamentCommands(
       };
     }
 
-    const parsed = parseRosterInput(raw);
+    let parsed: {
+      isRegistration: boolean;
+      teamName?: string;
+      gkName?: string;
+      starterList: string[];
+      subList: string[];
+    };
+
+    if (deps.rosterExtractor) {
+      try {
+        const aiExtracted = await deps.rosterExtractor.extract(raw);
+        if (aiExtracted.gk_name || (aiExtracted.starter_list && aiExtracted.starter_list.length > 0)) {
+          parsed = {
+            isRegistration: true,
+            teamName: aiExtracted.team_name || undefined,
+            gkName: aiExtracted.gk_name || undefined,
+            starterList: aiExtracted.starter_list || [],
+            subList: aiExtracted.sub_list || [],
+          };
+        } else {
+          // If AI extraction did not detect registration players, check deterministic parser
+          const det = parseRosterInput(raw);
+          if (det.isRegistration) {
+            parsed = det;
+          } else {
+            parsed = {
+              isRegistration: false,
+              teamName: aiExtracted.team_name || undefined,
+              gkName: undefined,
+              starterList: [],
+              subList: [],
+            };
+          }
+        }
+      } catch (err) {
+        console.warn('[Roster] AI extractor failed, falling back to deterministic parser:', err);
+        parsed = parseRosterInput(raw);
+      }
+    } else {
+      parsed = parseRosterInput(raw);
+    }
 
     if (!parsed.isRegistration) {
       // VIEW ROSTER
-      const targetTeamName = raw.replace(/^(?:tim|team|lihat|cek)\s+/i, '').trim();
+      const targetTeamName = (parsed.teamName || raw).replace(/^(?:tim|team|lihat|cek)\s+/i, '').trim();
       const teamRes = await db.execute({
         sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
         args: [tournamentId, targetTeamName],
