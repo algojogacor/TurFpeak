@@ -18,14 +18,21 @@ export const MEDIA_ROLE_DIRS: Record<string, string> = {
   OTHER: 'private/supporting',
 };
 
-export function getDefaultConfig(): MediaServerConfig {
+export function getDefaultConfig(overrides?: Partial<MediaServerConfig>): MediaServerConfig {
+  const hmacSecret = overrides?.hmacSecret || process.env.FLASHPEAK_MEDIA_SECRET || process.env.MEDIA_SERVICE_HMAC_SECRET;
+  if (!hmacSecret) {
+    throw new Error(
+      'Media service authentication secret missing: Please configure FLASHPEAK_MEDIA_SECRET or MEDIA_SERVICE_HMAC_SECRET in environment variables'
+    );
+  }
+
   return {
-    port: parseInt(process.env.FLASHPEAK_MEDIA_PORT || '4189', 10),
-    host: process.env.FLASHPEAK_MEDIA_HOST || '127.0.0.1',
-    storageRoot: process.env.FLASHPEAK_MEDIA_STORAGE_ROOT || path.resolve(process.cwd(), 'data/flashpeak-media'),
-    quotaBytes: parseInt(process.env.FLASHPEAK_MEDIA_QUOTA_BYTES || String(5 * 1024 * 1024 * 1024), 10), // 5 GB default
-    maxFileSize: parseInt(process.env.FLASHPEAK_MEDIA_MAX_FILE_SIZE || String(10 * 1024 * 1024), 10), // 10 MB default
-    hmacSecret: process.env.FLASHPEAK_MEDIA_SECRET || process.env.MEDIA_SERVICE_HMAC_SECRET || 'e56ad9530df7d79427f1e39d089210eddf18c55d136ca4a3cec438eff86dc206',
-    allowedMimes: ['image/jpeg', 'image/png', 'image/webp'],
+    port: overrides?.port ?? parseInt(process.env.FLASHPEAK_MEDIA_PORT || '4189', 10),
+    host: overrides?.host ?? (process.env.FLASHPEAK_MEDIA_HOST || '127.0.0.1'),
+    storageRoot: overrides?.storageRoot ?? (process.env.FLASHPEAK_MEDIA_STORAGE_ROOT || path.resolve(process.cwd(), 'data/flashpeak-media')),
+    quotaBytes: overrides?.quotaBytes ?? parseInt(process.env.FLASHPEAK_MEDIA_QUOTA_BYTES || String(5 * 1024 * 1024 * 1024), 10), // 5 GB default
+    maxFileSize: overrides?.maxFileSize ?? parseInt(process.env.FLASHPEAK_MEDIA_MAX_FILE_SIZE || String(10 * 1024 * 1024), 10), // 10 MB default
+    hmacSecret,
+    allowedMimes: overrides?.allowedMimes ?? ['image/jpeg', 'image/png', 'image/webp'],
   };
 }

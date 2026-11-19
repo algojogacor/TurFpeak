@@ -16,6 +16,8 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
+import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import pino from 'pino';
 import type {
   NormalizedMessage,
   CommandResult,
@@ -128,7 +130,7 @@ export class FlashPeakApp {
   public readonly manualReportSession: ManualReportSessionManager;
   public readonly woClaimSession: WoClaimSessionManager;
   public readonly matchdayService: MatchdayService;
-  public readonly centralGroupJid?: string;
+  public centralGroupJid?: string;
   public sender?: WhatsAppSender;
 
   private quietWindowMs: number;
@@ -138,9 +140,11 @@ export class FlashPeakApp {
   private pollTimer: NodeJS.Timeout | null = null;
   private isPolling = false;
   private lastMatchdayCheck = 0;
+  private logger: pino.Logger;
 
   constructor(config: FlashPeakAppConfig) {
     this.db = config.db;
+    this.logger = pino({ level: (process.env.LOG_LEVEL as pino.LevelWithSilent) || 'silent' });
     this.centralGroupJid = config.centralGroupJid;
     this.sender = config.sender;
     this.quietWindowMs = config.quietWindowMs ?? 5000;
@@ -178,7 +182,27 @@ export class FlashPeakApp {
       }
     }
 
+    // Synchronize centralGroupJid when updated dynamically via router commands (!setgroup, !createtournament)
+    this.commandRouter.onGroupJidChanged((newJid) => {
+      this.centralGroupJid = newJid;
+      this.matchdayService.setCentralGroupJid(newJid);
+      this.logger.info({ newJid }, 'Central group JID synchronized across CommandRouter, MatchdayService, and FlashPeakApp');
+    });
+
     this.registerAppCommands();
+  }
+
+  public setCentralGroupJid(jid: string): void {
+    const normalized = jidNormalizedUser(jid);
+    this.centralGroupJid = normalized;
+    if (this.commandRouter.getCentralGroupJid() !== normalized) {
+      this.commandRouter.setCentralGroupJid(normalized);
+    }
+    this.matchdayService.setCentralGroupJid(normalized);
+  }
+
+  public getCentralGroupJid(): string | undefined {
+    return this.centralGroupJid;
   }
 
   public setSender(sender: WhatsAppSender): void {
@@ -636,6 +660,7 @@ export class FlashPeakApp {
           providerRouter: this.providerRouter,
           classifier: this.classifier,
           matchExtractor: this.matchExtractor,
+          gkExtractor: this.gkExtractor,
           centralGroupJid: this.centralGroupJid,
         },
         batch

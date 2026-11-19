@@ -136,7 +136,7 @@ async function main() {
       })
     );
   }
-  if (geminiKey && geminiKey !== 'AIzaSy_placeholder_gemini_api_key' && !geminiKey.startsWith('AIzaSy_')) {
+  if (geminiKey && geminiKey !== 'AIzaSy_placeholder_gemini_api_key' && !geminiKey.includes('placeholder')) {
     adapters.push(
       new GeminiAdapter({
         apiKey: geminiKey,

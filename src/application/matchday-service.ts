@@ -70,6 +70,10 @@ export class MatchdayService {
     this.centralGroupJid = jidNormalizedUser(jid);
   }
 
+  public getCentralGroupJid(): string {
+    return this.centralGroupJid;
+  }
+
   public setSender(sender: WhatsAppSender): void {
     this.sender = sender;
   }

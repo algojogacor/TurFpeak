@@ -54,10 +54,7 @@ function sendError(
 export function createMediaServer(
   customConfig?: Partial<MediaServerConfig>
 ): FlashPeakMediaServer {
-  const config: MediaServerConfig = {
-    ...getDefaultConfig(),
-    ...customConfig,
-  };
+  const config = getDefaultConfig(customConfig);
 
   initStorageTree(config.storageRoot);
   const db = initMediaDb(config.storageRoot);

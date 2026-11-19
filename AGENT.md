@@ -219,3 +219,15 @@ A feature is done only when:
 - Documentation updated.
 - No secrets committed.
 - No unresolved TODO hidden as success.
+
+---
+
+## 16. Mandatory Session Worklog Logging (`worklog.md`)
+
+Every agent or developer working in this repository MUST maintain and update `worklog.md` at the root of the project.
+Before any working session is considered complete:
+1. **Log Every Task/Session**: Record date, session/task ID, and purpose.
+2. **Document Concrete Changes**: Detail which files were modified and provide a concise summary of what was changed and why.
+3. **Record Empirical Verification**: Include the exact tests or dry-run scripts executed, along with concrete command outputs and evidence of success. Claims of "done" without concrete verification output are invalid.
+4. **Report New Bugs/Gaps Promptly**: If unexpected bugs or gaps outside the assigned scope are uncovered, log them explicitly in `worklog.md` with their status (e.g. `REPORTED / PENDING_APPROVAL`) and report them to the project owner before attempting uncoordinated fixes.
+

@@ -21,6 +21,7 @@ export interface CommandRouterConfig {
   organizerPhone?: string;
   identityResolver: IdentityResolver;
   logLevel?: pino.LevelWithSilent;
+  onCentralGroupJidChange?: (jid: string) => void;
 }
 
 export class CommandRouter {
@@ -30,6 +31,7 @@ export class CommandRouter {
   private identityResolver: IdentityResolver;
   private commands: Map<string, CommandDefinition> = new Map();
   private logger: pino.Logger;
+  private onCentralGroupJidChange?: (jid: string) => void;
 
   constructor(config: CommandRouterConfig) {
     this.centralGroupJid = jidNormalizedUser(
@@ -39,9 +41,14 @@ export class CommandRouter {
     this.organizerPhone = (config.organizerPhone || process.env.WA_ORGANIZER_PHONE || '').replace(/\D/g, '');
     this.identityResolver = config.identityResolver;
     this.logger = pino({ level: config.logLevel || 'silent' });
+    this.onCentralGroupJidChange = config.onCentralGroupJidChange;
 
     // Register built-in utility commands
     this.registerDefaultCommands();
+  }
+
+  public onGroupJidChanged(listener: (jid: string) => void): void {
+    this.onCentralGroupJidChange = listener;
   }
 
   /**
@@ -58,7 +65,12 @@ export class CommandRouter {
   }
 
   public setCentralGroupJid(jid: string): void {
-    this.centralGroupJid = jidNormalizedUser(jid);
+    const normalized = jidNormalizedUser(jid);
+    const changed = this.centralGroupJid !== normalized;
+    this.centralGroupJid = normalized;
+    if (changed && this.onCentralGroupJidChange) {
+      this.onCentralGroupJidChange(normalized);
+    }
   }
 
   public getCentralGroupJid(): string {
@@ -102,7 +114,8 @@ export class CommandRouter {
    * Checks whether the message sender matches configured Organizer identities.
    */
   public isSenderOrganizer(message: NormalizedMessage): boolean {
-    const normalizedSender = message.sender_normalized_address;
+    const rawSender = message.sender_raw_address || message.sender_id || '';
+    const normalizedSender = (message.sender_normalized_address || jidNormalizedUser(rawSender) || '').toLowerCase();
     const organizerList = (this.organizerJid || '')
       .split(',')
       .map((s) => s.trim().toLowerCase())
@@ -111,9 +124,9 @@ export class CommandRouter {
     if (
       organizerList.some(
         (target) =>
-          normalizedSender.toLowerCase() === target ||
-          message.sender_raw_address.toLowerCase() === target ||
-          jidNormalizedUser(message.sender_raw_address).toLowerCase() === target
+          normalizedSender === target ||
+          (rawSender && rawSender.toLowerCase() === target) ||
+          (rawSender && jidNormalizedUser(rawSender).toLowerCase() === target)
       )
     ) {
       return true;
@@ -121,7 +134,7 @@ export class CommandRouter {
 
     if (this.organizerPhone) {
       const senderDigits = normalizedSender.split('@')[0]?.replace(/\D/g, '');
-      const rawDigits = message.sender_raw_address.split('@')[0]?.replace(/\D/g, '');
+      const rawDigits = (message.sender_raw_address || message.sender_id || '').split('@')[0]?.replace(/\D/g, '');
       if (
         (senderDigits && senderDigits === this.organizerPhone) ||
         (rawDigits && rawDigits === this.organizerPhone)
@@ -156,8 +169,9 @@ export class CommandRouter {
       role = 'ORGANIZER';
     } else {
       // Resolve delegate from database
+      const rawAddress = message.sender_raw_address || message.sender_id;
       const resolution = await this.identityResolver.resolveIdentity(
-        message.sender_raw_address,
+        rawAddress,
         message.chat_id
       );
 
@@ -224,7 +238,7 @@ export class CommandRouter {
       // or explicit group setup commands (!createtournament, !setgroup),
       // or if central group has not been configured yet: adopt this group as official central group.
       if (isOrganizer && (definition.requiredRole === 'ORGANIZER' || command === 'createtournament' || command === 'setgroup' || !this.centralGroupJid)) {
-        this.centralGroupJid = normalizedChatId;
+        this.setCentralGroupJid(normalizedChatId);
         isCentralGroup = true;
         this.logger.info(
           { newCentralGroup: normalizedChatId, command },

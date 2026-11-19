@@ -22,6 +22,8 @@ import type { FlashPeakMediaClient } from '../media/client.js';
 import type { ProviderRouter } from '../ai/router.js';
 import type { ImageClassifier } from '../ai/classifier.js';
 import type { MatchSummaryExtractor } from '../ai/extractors/match.js';
+import type { GoalkeeperDetailExtractor } from '../ai/extractors/goalkeeper.js';
+import { resolveGoalkeeperIdentity, type RosterPlayerCandidate } from '../ai/extractors/gk-identity.js';
 import { validateMatchReport } from '../reports/validation.js';
 import { createReportDraft } from '../reports/versioning.js';
 import {
@@ -47,6 +49,7 @@ export interface EvidenceBatchProcessorDeps {
   providerRouter?: ProviderRouter;
   classifier?: ImageClassifier;
   matchExtractor?: MatchSummaryExtractor;
+  gkExtractor?: GoalkeeperDetailExtractor;
   centralGroupJid?: string;
 }
 
@@ -54,7 +57,7 @@ export async function processClaimedBatch(
   deps: EvidenceBatchProcessorDeps,
   batch: ClaimedBatch
 ): Promise<ProcessedBatchResult> {
-  const { db, mediaClient, providerRouter, classifier, matchExtractor, centralGroupJid } = deps;
+  const { db, mediaClient, providerRouter, classifier, matchExtractor, gkExtractor, centralGroupJid } = deps;
   const sessionId = batch.session.id;
   const fixtureId = batch.session.fixture_id;
 
@@ -91,7 +94,7 @@ export async function processClaimedBatch(
     }
 
     let mainMatchBase64: string | null = null;
-    const gkDetailAssets: Array<{ base64: string; caption?: string }> = [];
+    const gkDetailAssets: Array<{ base64: string; mime_type: string; caption?: string }> = [];
 
     for (const asset of batch.mediaAssets) {
       let base64 = '';
@@ -117,7 +120,9 @@ export async function processClaimedBatch(
       if (classification.screen_type === 'MAIN_MATCH_SUMMARY' && !mainMatchBase64) {
         mainMatchBase64 = base64;
       } else if (classification.screen_type === 'INDIVIDUAL_PLAYER_DETAIL') {
-        gkDetailAssets.push({ base64 });
+        const linkedMsg = batch.messages.find((m) => m.id === asset.source_message_id);
+        const caption = linkedMsg?.caption || linkedMsg?.text_body || undefined;
+        gkDetailAssets.push({ base64, mime_type: asset.mime_type, caption });
       }
     }
 
@@ -131,11 +136,6 @@ export async function processClaimedBatch(
         error: 'Main match summary screenshot missing',
       };
     }
-
-    const matchExtraction = await matchExtractor.extract({
-      mime_type: 'image/jpeg',
-      base64: mainMatchBase64,
-    });
 
     const fixtureRes = await db.execute({
       sql: `SELECT f.id, f.team_a_id, f.team_b_id, g.id AS game_id, ta.team_name, tb.team_name
@@ -157,6 +157,33 @@ export async function processClaimedBatch(
     const gameId = fRow[3] ? String(fRow[3]) : randomUUID();
     const teamAName = String(fRow[4] || 'Tim A');
     const teamBName = String(fRow[5] || 'Tim B');
+
+    // Query active roster for both teams to supply grounded trusted_context (FIX-CTX-001)
+    const playersRes = await db.execute({
+      sql: `SELECT team_id, nickname_raw FROM players WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
+      args: [teamAId, teamBId],
+    });
+
+    const expectedRoster: Array<{ nickname: string; team_id?: string }> = playersRes.rows.map((row) => ({
+      nickname: String((row as any).nickname_raw ?? row[1]),
+      team_id: String((row as any).team_id ?? row[0]),
+    }));
+
+    const matchExtraction = await matchExtractor.extract(
+      {
+        mime_type: 'image/jpeg',
+        base64: mainMatchBase64,
+      },
+      {
+        trusted_context: {
+          fixture_id: fixtureId,
+          team_a_name: teamAName,
+          team_b_name: teamBName,
+          expected_roster: expectedRoster,
+        },
+        correlation_id: `session-${sessionId}`,
+      }
+    );
 
     const sessionRowRes = await db.execute({
       sql: `SELECT submitting_team_id FROM report_sessions WHERE id = ? LIMIT 1`,
@@ -214,6 +241,121 @@ export async function processClaimedBatch(
       ? matchExtraction.summary_data.team_a_players
       : matchExtraction.summary_data.team_b_players;
 
+    // --- Goalkeeper Extraction, Caption Matching & Quota Validation (FIX-GK-001, FIX-GK-002) ---
+    // 1. Determine series format and expected GK screenshots (FR-GK-007)
+    const seriesRes = await db.execute({
+      sql: `SELECT s.format, s.target_wins, f.stage
+            FROM fixtures f
+            LEFT JOIN series s ON s.fixture_id = f.id
+            WHERE f.id = ? LIMIT 1`,
+      args: [fixtureId],
+    });
+
+    let expectedGkCount = 0;
+    let seriesFormat: string | null = null;
+    let isKnockoutSeries = false;
+
+    if (seriesRes.rows.length > 0) {
+      const sRow = seriesRes.rows[0];
+      const stage = String(sRow.stage || '');
+      seriesFormat = sRow.format ? String(sRow.format) : null;
+      if (seriesFormat === 'BO3') {
+        expectedGkCount = 2; // BO3 winner won 2 games -> exactly 2 GK screenshots required
+        isKnockoutSeries = true;
+      } else if (seriesFormat === 'BO5') {
+        expectedGkCount = 3; // BO5 winner won 3 games -> exactly 3 GK screenshots required
+        isKnockoutSeries = true;
+      } else if (stage === 'GROUP') {
+        expectedGkCount = teamAScore === teamBScore ? 0 : 1;
+      }
+    }
+
+    const gkWarnings: string[] = [];
+
+    // Check GK screenshot quota completeness
+    let isGkCountValid = true;
+    if (expectedGkCount > 0) {
+      if (gkDetailAssets.length < expectedGkCount) {
+        isGkCountValid = false;
+        gkWarnings.push(
+          `⚠️ Bukti kiper belum lengkap: Format ${seriesFormat || 'pertandingan'} mewajibkan ${expectedGkCount} screenshot detail kiper pemenang (berdasarkan game yang dimenangkan), tetapi baru terdeteksi ${gkDetailAssets.length} screenshot kiper.`
+        );
+      } else if (gkDetailAssets.length > expectedGkCount) {
+        gkWarnings.push(
+          `ℹ️ Screenshot kiper (${gkDetailAssets.length}) melebihi kuota format ${seriesFormat || 'pertandingan'} (${expectedGkCount}).`
+        );
+      }
+    }
+
+    // 2. Extract goalkeeper detail screenshots & match identity via caption fuzzy match (FR-GK-005, D-030)
+    const targetGkTeamId = submittingTeamId || (teamAScore > teamBScore ? teamAId : (teamBScore > teamAScore ? teamBId : teamAId));
+    const rosterRes = await db.execute({
+      sql: `SELECT id, nickname_raw, position, team_id FROM players WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
+      args: [teamAId, teamBId],
+    });
+
+    const rosterCandidates: RosterPlayerCandidate[] = rosterRes.rows
+      .filter((r: any) => String(r.team_id) === targetGkTeamId)
+      .map((r: any) => ({
+        id: String(r.id),
+        nickname: String(r.nickname_raw),
+        is_goalkeeper: String(r.position) === 'GOALKEEPER',
+      }));
+
+    const gkSavesByNickname = new Map<string, number>();
+
+    if (gkExtractor && gkDetailAssets.length > 0) {
+      for (const gkAsset of gkDetailAssets) {
+        try {
+          const gkResult = await gkExtractor.extract({
+            mime_type: gkAsset.mime_type,
+            base64: gkAsset.base64,
+          });
+
+          const extractedSaves = gkResult.summary.defense_raw ?? 0;
+
+          // Match identity using caption fuzzy match against roster
+          const idRes = resolveGoalkeeperIdentity({
+            caption: gkAsset.caption,
+            submitting_team_roster: rosterCandidates,
+          });
+
+          let matchedNick: string | null = null;
+          if (idRes.status === 'UNIQUE' && idRes.candidate_nickname) {
+            matchedNick = idRes.candidate_nickname;
+          } else {
+            // Fallback: If only 1 designated keeper in roster, match to them
+            const regKeepers = rosterCandidates.filter((p) => p.is_goalkeeper);
+            if (regKeepers.length === 1) {
+              matchedNick = regKeepers[0].nickname;
+            } else {
+              gkWarnings.push(
+                `Identitas kiper pada screenshot detail (${gkAsset.caption || 'tanpa caption'}) ambigu: ${idRes.reason}.`
+              );
+            }
+          }
+
+          if (matchedNick) {
+            const current = gkSavesByNickname.get(matchedNick) || 0;
+            gkSavesByNickname.set(matchedNick, Math.max(current, extractedSaves));
+          }
+        } catch (err) {
+          console.error('[AI] Error extracting goalkeeper detail screen:', err);
+          gkWarnings.push('Gagal mengekstrak metrik kiper dari screenshot detail.');
+        }
+      }
+    }
+
+    const resolvePlayerSaves = (nick: string, teamPlayers: any[]): number | null => {
+      const lower = nick.toLowerCase();
+      for (const [gNick, saves] of gkSavesByNickname.entries()) {
+        if (lower.includes(gNick.toLowerCase()) || gNick.toLowerCase().includes(lower)) {
+          return saves;
+        }
+      }
+      return null;
+    };
+
     const validation = await validateMatchReport(db, {
       fixture_id: fixtureId,
       game_id: gameId,
@@ -228,7 +370,7 @@ export async function processClaimedBatch(
         assists: p.assists,
         passes: p.passes,
         defense_raw: p.defense,
-        goalkeeper_saves: null,
+        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, rawPlayersForA),
       })),
       team_b_players: rawPlayersForB.map((p) => ({
         nickname_raw: p.nickname_raw,
@@ -237,9 +379,20 @@ export async function processClaimedBatch(
         assists: p.assists,
         passes: p.passes,
         defense_raw: p.defense,
-        goalkeeper_saves: null,
+        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, rawPlayersForB),
       })),
     });
+
+    // Append goalkeeper warnings to validation output
+    if (gkWarnings.length > 0) {
+      validation.warnings.push(...gkWarnings);
+    }
+
+    // If Knockout BO3/BO5 GK screenshot count is deficient, flag as NEEDS_CORRECTION
+    if (isKnockoutSeries && !isGkCountValid) {
+      validation.isValid = false;
+      validation.errors.push(...gkWarnings.filter((w) => w.startsWith('⚠️')));
+    }
 
     const draftStatus = validation.isValid ? 'PENDING_APPROVAL' : 'NEEDS_CORRECTION';
 
