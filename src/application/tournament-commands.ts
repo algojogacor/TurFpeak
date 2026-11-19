@@ -1719,6 +1719,23 @@ export function registerTournamentCommands(
     let officialTeamName: string | null = null;
     let officialDelegateId: string | null = null;
 
+    // Resolve sender's delegate ID if not already available in ctx
+    let currentDelegateId = ctx.delegateId;
+    if (!currentDelegateId && ctx.message?.sender_raw_address) {
+      try {
+        const res = await deps.identityResolver.resolveIdentity(
+          ctx.message.sender_raw_address,
+          ctx.message.chat_id
+        );
+        if (res.status === 'VERIFIED' && res.delegate) {
+          currentDelegateId = res.delegate.id;
+          ctx.delegateId = res.delegate.id;
+        }
+      } catch (resErr) {
+        console.warn('[Roster] Identity resolve error:', resErr);
+      }
+    }
+
     if (parsed.teamName) {
       const teamRes = await db.execute({
         sql: `SELECT id, team_name, delegate_id FROM teams 
@@ -1734,10 +1751,10 @@ export function registerTournamentCommands(
     }
 
     // If team name was omitted or not matched by text, try resolving from sender's delegate ID
-    if (!teamId && ctx.delegateId) {
+    if (!teamId && currentDelegateId) {
       const delTeamRes = await db.execute({
         sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND delegate_id = ? LIMIT 1`,
-        args: [tournamentId, ctx.delegateId],
+        args: [tournamentId, currentDelegateId],
       });
       if (delTeamRes.rows.length > 0) {
         teamId = String(delTeamRes.rows[0].id ?? delTeamRes.rows[0][0]);
@@ -1781,7 +1798,7 @@ export function registerTournamentCommands(
         officialTeamName = cleanName;
 
         // Auto-bind sender as official delegate
-        let delId = ctx.delegateId;
+        let delId = currentDelegateId;
         if (!delId && ctx.message?.sender_raw_address) {
           try {
             const rawAddr = ctx.message.sender_raw_address;
@@ -1803,6 +1820,8 @@ export function registerTournamentCommands(
           try {
             await deps.identityResolver.bindDelegateToTeam(newTeamId, delId);
             officialDelegateId = delId;
+            currentDelegateId = delId;
+            ctx.delegateId = delId;
           } catch (bindErr) {
             console.warn('[Roster] Auto-delegate bind error:', bindErr);
           }
@@ -1815,8 +1834,40 @@ export function registerTournamentCommands(
       }
     }
 
+    // Auto-bind delegate to existing team if team has no delegate yet
+    if (teamId && !officialDelegateId) {
+      let delId = currentDelegateId;
+      if (!delId && ctx.message?.sender_raw_address) {
+        try {
+          const rawAddr = ctx.message.sender_raw_address;
+          const addrType = rawAddr.includes('@lid') ? 'LID' : 'PHONE';
+          const displayName = `Delegasi ${officialTeamName}`;
+          const { delegate } = await deps.identityResolver.createDelegateWithIdentity(
+            displayName,
+            rawAddr,
+            addrType as any,
+            { sourceChatId: ctx.message.chat_id }
+          );
+          delId = delegate.id;
+        } catch (delErr) {
+          console.warn('[Roster] Auto-delegate creation error:', delErr);
+        }
+      }
+
+      if (delId) {
+        try {
+          await deps.identityResolver.bindDelegateToTeam(teamId, delId);
+          officialDelegateId = delId;
+          currentDelegateId = delId;
+          ctx.delegateId = delId;
+        } catch (bindErr) {
+          console.warn('[Roster] Auto-delegate bind error:', bindErr);
+        }
+      }
+    }
+
     // Authorization: must be Organizer OR team delegate
-    if (!ctx.isOrganizer && ctx.delegateId !== officialDelegateId) {
+    if (!ctx.isOrganizer && (!currentDelegateId || currentDelegateId !== officialDelegateId)) {
       return {
         success: false,
         responseText: `⛔ Hanya Panitia atau delegasi resmi dari *${officialTeamName}* yang berhak mendaftarkan roster tim ini.`,
