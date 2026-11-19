@@ -258,13 +258,19 @@ export class CommandRouter {
     this.registerCommand({
       command: 'ping',
       requiredRole: 'ANY',
-      description: 'Cek koneksi dan respon bot',
+      description: 'Cek koneksi dan kecepatan respon bot',
       allowedInDm: true,
       allowedInGroup: true,
-      handler: () => ({
-        success: true,
-        responseText: '🏓 Pong! Bot Flash Peak TMS aktif.',
-      }),
+      handler: (ctx) => {
+        const receivedAt = ctx.message?.received_at
+          ? new Date(ctx.message.received_at).getTime()
+          : Date.now();
+        const latencyMs = Math.max(1, Date.now() - receivedAt);
+        return {
+          success: true,
+          responseText: `🏓 Pong! (*${latencyMs} ms*)\nBot Flash Peak TMS aktif.`,
+        };
+      },
     });
 
     // !help
