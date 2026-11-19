@@ -58,6 +58,7 @@ import {
   type AwardsCalculationOptions,
 } from './stats/awards.js';
 import { registerTournamentCommands } from './application/tournament-commands.js';
+import { MatchdayService } from './application/matchday-service.js';
 import { resolveFixtureForMessage } from './application/fixture-resolver.js';
 import { handleReportCorrection } from './application/report-correction-coordinator.js';
 import {
@@ -115,6 +116,7 @@ export class FlashPeakApp {
   public readonly gkExtractor?: GoalkeeperDetailExtractor;
   public readonly correctionParser?: CorrectionParser;
   public readonly manualReportSession: ManualReportSessionManager;
+  public readonly matchdayService: MatchdayService;
   public readonly centralGroupJid?: string;
   public sender?: WhatsAppSender;
 
@@ -124,6 +126,7 @@ export class FlashPeakApp {
   private pollIntervalMs: number;
   private pollTimer: NodeJS.Timeout | null = null;
   private isPolling = false;
+  private lastMatchdayCheck = 0;
 
   constructor(config: FlashPeakAppConfig) {
     this.db = config.db;
@@ -138,6 +141,11 @@ export class FlashPeakApp {
     this.identityResolver = new IdentityResolver(this.db);
     this.onboardingService = new OnboardingService(this.identityResolver, this.db);
     this.manualReportSession = new ManualReportSessionManager();
+    this.matchdayService = new MatchdayService({
+      db: this.db,
+      sender: this.sender,
+      centralGroupJid: this.centralGroupJid,
+    });
     this.commandRouter = new CommandRouter({
       centralGroupJid: config.centralGroupJid,
       organizerJid: config.organizerJid,
@@ -159,6 +167,7 @@ export class FlashPeakApp {
 
   public setSender(sender: WhatsAppSender): void {
     this.sender = sender;
+    this.matchdayService.setSender(sender);
   }
 
   /**
@@ -171,6 +180,7 @@ export class FlashPeakApp {
       identityResolver: this.identityResolver,
       onboardingService: this.onboardingService,
       manualReportSession: this.manualReportSession,
+      matchdayService: this.matchdayService,
       get sender() {
         return self.sender;
       },
@@ -516,6 +526,18 @@ export class FlashPeakApp {
         }
       } catch (err) {
         console.error('[FlashPeakApp] Error processing debounce batches:', err);
+      }
+
+      // Check matchday schedule (cutoff & reminders) every ~30 seconds
+      const now = Date.now();
+      if (now - this.lastMatchdayCheck >= 30000) {
+        this.lastMatchdayCheck = now;
+        try {
+          await this.matchdayService.processDailyCutoff();
+          await this.matchdayService.checkAndSendReminders();
+        } catch (mErr) {
+          console.error('[FlashPeakApp] Error in matchday scheduler:', mErr);
+        }
       }
     }, this.pollIntervalMs);
   }

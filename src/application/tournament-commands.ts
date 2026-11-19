@@ -15,11 +15,13 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
+import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import type { CommandRouter } from '../whatsapp/router.js';
 import type { CommandContext } from '../whatsapp/types.js';
 import type { WhatsAppSender } from '../whatsapp/sender.js';
 import type { IdentityResolver } from '../identity/resolver.js';
 import type { OnboardingService } from '../identity/onboarding.js';
+import type { MatchdayService } from './matchday-service.js';
 import { createTournament } from '../competition/tournament.js';
 import { prepareDraw, revealNext } from '../competition/draw.js';
 import { generateGroupStageFixtures } from '../competition/fixtures.js';
@@ -56,6 +58,7 @@ export interface TournamentCommandDeps {
   identityResolver: IdentityResolver;
   onboardingService: OnboardingService;
   manualReportSession: ManualReportSessionManager;
+  matchdayService?: MatchdayService;
   sender?: WhatsAppSender;
   getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
   submitApproval: (
@@ -134,7 +137,14 @@ export function registerTournamentCommands(
 
     const fixturesRes = await db.execute({
       sql: `
-        SELECT f.round_code, g.group_code, ta.team_name as team_a_name, tb.team_name as team_b_name, tl.team_name as host_name
+        SELECT 
+          f.round_code, 
+          g.group_code, 
+          ta.team_name as team_a_name, 
+          tb.team_name as team_b_name, 
+          tl.team_name as host_name,
+          (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = ta.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_a_address,
+          (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address
         FROM fixtures f
         JOIN groups g ON f.group_id = g.id
         JOIN teams ta ON f.team_a_id = ta.id
@@ -150,16 +160,48 @@ export function registerTournamentCommands(
       return { success: false, responseText: '⚠️ Jadwal pertandingan belum dibuat. Jalankan *!draw* terlebih dahulu.' };
     }
 
-    const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r) => ({
-      roundCode: String(r.round_code),
-      groupCode: String(r.group_code),
-      teamAName: String(r.team_a_name),
-      teamBName: String(r.team_b_name),
-      leftSideHostName: String(r.host_name || r.team_a_name),
-    }));
+    const mentionsSet = new Set<string>();
+    const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r: any) => {
+      const rawAddrA = r.delegate_a_address ? String(r.delegate_a_address) : null;
+      const rawAddrB = r.delegate_b_address ? String(r.delegate_b_address) : null;
+
+      let phoneA: string | null = null;
+      let jidA: string | null = null;
+      if (rawAddrA) {
+        jidA = jidNormalizedUser(rawAddrA);
+        phoneA = jidA.replace(/@.*$/, '');
+        mentionsSet.add(jidA);
+      }
+
+      let phoneB: string | null = null;
+      let jidB: string | null = null;
+      if (rawAddrB) {
+        jidB = jidNormalizedUser(rawAddrB);
+        phoneB = jidB.replace(/@.*$/, '');
+        mentionsSet.add(jidB);
+      }
+
+      return {
+        roundCode: String(r.round_code),
+        groupCode: String(r.group_code),
+        teamAName: String(r.team_a_name),
+        teamBName: String(r.team_b_name),
+        leftSideHostName: String(r.host_name || r.team_a_name),
+        teamADelegatePhone: phoneA,
+        teamBDelegatePhone: phoneB,
+        teamADelegateJid: jidA,
+        teamBDelegateJid: jidB,
+      };
+    });
 
     const scheduleMsg = formatFixturesSchedule(tournamentName, scheduleItems);
-    return { success: true, responseText: scheduleMsg };
+    return {
+      success: true,
+      responseText: scheduleMsg,
+      metadata: {
+        mentions: Array.from(mentionsSet),
+      },
+    };
   };
 
   router.registerCommand({
@@ -422,7 +464,14 @@ export function registerTournamentCommands(
         // Pathway #11: Fixture Schedule Announcement
         const fixturesRes = await db.execute({
           sql: `
-            SELECT f.round_code, g.group_code, ta.team_name as team_a_name, tb.team_name as team_b_name, tl.team_name as host_name
+            SELECT 
+              f.round_code, 
+              g.group_code, 
+              ta.team_name as team_a_name, 
+              tb.team_name as team_b_name, 
+              tl.team_name as host_name,
+              (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = ta.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_a_address,
+              (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address
             FROM fixtures f
             JOIN groups g ON f.group_id = g.id
             JOIN teams ta ON f.team_a_id = ta.id
@@ -434,18 +483,46 @@ export function registerTournamentCommands(
           args: [tournamentId],
         });
 
-        const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r) => ({
-          roundCode: String(r.round_code),
-          groupCode: String(r.group_code),
-          teamAName: String(r.team_a_name),
-          teamBName: String(r.team_b_name),
-          leftSideHostName: String(r.host_name || r.team_a_name),
-        }));
+        const mentionsSet = new Set<string>();
+        const scheduleItems: FixtureScheduleDisplayItem[] = fixturesRes.rows.map((r: any) => {
+          const rawAddrA = r.delegate_a_address ? String(r.delegate_a_address) : null;
+          const rawAddrB = r.delegate_b_address ? String(r.delegate_b_address) : null;
+
+          let phoneA: string | null = null;
+          let jidA: string | null = null;
+          if (rawAddrA) {
+            jidA = jidNormalizedUser(rawAddrA);
+            phoneA = jidA.replace(/@.*$/, '');
+            mentionsSet.add(jidA);
+          }
+
+          let phoneB: string | null = null;
+          let jidB: string | null = null;
+          if (rawAddrB) {
+            jidB = jidNormalizedUser(rawAddrB);
+            phoneB = jidB.replace(/@.*$/, '');
+            mentionsSet.add(jidB);
+          }
+
+          return {
+            roundCode: String(r.round_code),
+            groupCode: String(r.group_code),
+            teamAName: String(r.team_a_name),
+            teamBName: String(r.team_b_name),
+            leftSideHostName: String(r.host_name || r.team_a_name),
+            teamADelegatePhone: phoneA,
+            teamBDelegatePhone: phoneB,
+            teamADelegateJid: jidA,
+            teamBDelegateJid: jidB,
+          };
+        });
 
         const scheduleMsg = formatFixturesSchedule(tournamentName, scheduleItems);
 
         if (deps.sender) {
-          await deps.sender.sendText(ctx.message.chat_id, scheduleMsg);
+          await deps.sender.sendText(ctx.message.chat_id, scheduleMsg, {
+            mentions: Array.from(mentionsSet),
+          });
         }
 
         return {
@@ -955,5 +1032,55 @@ export function registerTournamentCommands(
     allowedInGroup: true,
     description: 'Mengonfirmasi draf laporan pertandingan manual (Admin only)',
     handler: confirmHandler,
+  });
+
+  // !matchday / !ronde
+  router.registerCommand({
+    command: 'matchday',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat status ronde, batas waktu 19:59 WIB, dan sisa pertandingan',
+    handler: async (ctx: CommandContext) => {
+      if (!deps.matchdayService) {
+        return { success: false, responseText: '⚠️ Layanan matchday belum diaktifkan.' };
+      }
+
+      if (ctx.args[0]?.toLowerCase() === 'cutoff') {
+        if (!ctx.isOrganizer) {
+          return { success: false, responseText: '⚠️ Hanya panitia yang dapat memicu cutoff matchday manual.' };
+        }
+        const cutoffRes = await deps.matchdayService.processDailyCutoff(true);
+        if (!cutoffRes.announcementText) {
+          return {
+            success: true,
+            responseText: '✅ Evaluasi cutoff selesai. Seluruh pertandingan pada ronde aktif telah diselesaikan sebelumnya.',
+          };
+        }
+        return {
+          success: true,
+          responseText: cutoffRes.announcementText,
+          metadata: { mentions: cutoffRes.mentions },
+        };
+      }
+
+      const statusText = await deps.matchdayService.formatMatchdayStatus();
+      return { success: true, responseText: statusText };
+    },
+  });
+
+  router.registerCommand({
+    command: 'ronde',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat status ronde, batas waktu 19:59 WIB, dan sisa pertandingan',
+    handler: async (_ctx: CommandContext) => {
+      if (!deps.matchdayService) {
+        return { success: false, responseText: '⚠️ Layanan matchday belum diaktifkan.' };
+      }
+      const statusText = await deps.matchdayService.formatMatchdayStatus();
+      return { success: true, responseText: statusText };
+    },
   });
 }

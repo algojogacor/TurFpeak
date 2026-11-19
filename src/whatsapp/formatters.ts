@@ -379,6 +379,10 @@ export interface FixtureScheduleDisplayItem {
   teamAName: string;
   teamBName: string;
   leftSideHostName: string;
+  teamADelegatePhone?: string | null;
+  teamBDelegatePhone?: string | null;
+  teamADelegateJid?: string | null;
+  teamBDelegateJid?: string | null;
 }
 
 /**
@@ -412,7 +416,9 @@ export function formatFixturesSchedule(
     for (const [roundName, items] of Object.entries(rounds)) {
       lines.push(`  🔹 *${roundName}:*`);
       for (const item of items) {
-        lines.push(`    ⚽ *${item.teamAName}* vs *${item.teamBName}* (Host: ${item.leftSideHostName})`);
+        const tagA = item.teamADelegatePhone ? ` (@${item.teamADelegatePhone})` : '';
+        const tagB = item.teamBDelegatePhone ? ` (@${item.teamBDelegatePhone})` : '';
+        lines.push(`    ⚽ *${item.teamAName}*${tagA} vs *${item.teamBName}*${tagB} (Host: ${item.leftSideHostName})`);
       }
     }
   }
