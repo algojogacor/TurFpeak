@@ -129,7 +129,17 @@ describe('Natural Language Walkover (WO) Claim', () => {
         args: [now, now],
       });
       await db.execute({
-        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at) VALUES ('team-a', 'tourn-wo', 'Singa FC', 'VERIFIED', ?, ?)`,
+        sql: `INSERT INTO delegates (id, display_name, status, created_at, updated_at)
+              VALUES ('del-a', 'Delegate Singa', 'ACTIVE', ?, ?)`,
+        args: [now, now],
+      });
+      await db.execute({
+        sql: `INSERT INTO whatsapp_identities (id, delegate_id, raw_address, address_type, is_primary, created_at)
+              VALUES ('ident-a', 'del-a', '628123456789@s.whatsapp.net', 'JID', 1, ?)`,
+        args: [now],
+      });
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, delegate_id, registration_status, created_at, updated_at) VALUES ('team-a', 'tourn-wo', 'Singa FC', 'del-a', 'VERIFIED', ?, ?)`,
         args: [now, now],
       });
       await db.execute({
@@ -143,7 +153,25 @@ describe('Natural Language Walkover (WO) Claim', () => {
       });
     });
 
-    it('rejects WO claim without reason and prompts for explanation', async () => {
+    it('ignores casual group messages that do not start with ! prefix', async () => {
+      const casualMsg: NormalizedMessage = {
+        provider_message_key: 'msg-casual',
+        chat_id: groupJid,
+        sender_raw_address: '628123456789@s.whatsapp.net',
+        sender_normalized_address: '628123456789@s.whatsapp.net',
+        message_timestamp: Math.floor(Date.now() / 1000),
+        message_type: 'TEXT',
+        text_body: 'kita klaim wo ya, musuh ga aktif sesuai jadwal janjian',
+        is_from_me: false,
+      };
+
+      const outcome = await app.handleInboundMessage(casualMsg);
+      expect(outcome.handled).toBe(false);
+      expect(outcome.type).toBe('UNKNOWN');
+      expect(app.woClaimSession.hasPending(groupJid)).toBe(false);
+    });
+
+    it('rejects WO claim without reason and prompts for explanation when prefixed with !', async () => {
       const msg: NormalizedMessage = {
         provider_message_key: 'msg-wo-no-reason',
         chat_id: groupJid,
@@ -151,7 +179,7 @@ describe('Natural Language Walkover (WO) Claim', () => {
         sender_normalized_address: '628123456789@s.whatsapp.net',
         message_timestamp: Math.floor(Date.now() / 1000),
         message_type: 'TEXT',
-        text_body: 'min kami mau klaim wo untuk match 1',
+        text_body: '!min kami mau klaim wo untuk match 1',
         is_from_me: false,
       };
 
@@ -162,8 +190,8 @@ describe('Natural Language Walkover (WO) Claim', () => {
       expect(app.woClaimSession.hasPending(groupJid)).toBe(false);
     });
 
-    it('stages WO claim when reason is provided and requires organizer !ok', async () => {
-      // 1. Participant sends WO claim with reason
+    it('stages WO claim when reason is provided with ! prefix and requires organizer !ok', async () => {
+      // 1. Participant sends WO claim with reason starting with '!'
       const claimMsg: NormalizedMessage = {
         provider_message_key: 'msg-wo-with-reason',
         chat_id: groupJid,
@@ -171,7 +199,7 @@ describe('Natural Language Walkover (WO) Claim', () => {
         sender_normalized_address: '628123456789@s.whatsapp.net',
         message_timestamp: Math.floor(Date.now() / 1000),
         message_type: 'TEXT',
-        text_body: 'Min, kami klaim WO untuk Match 1 lawan Harimau FC karena lawan tidak hadir setelah toleransi 15 menit',
+        text_body: '!kita klaim wo ya, musuh ga aktif sesuai jadwal janjian',
         is_from_me: false,
       };
 
@@ -233,7 +261,7 @@ describe('Natural Language Walkover (WO) Claim', () => {
         sender_normalized_address: '628123456789@s.whatsapp.net',
         message_timestamp: Math.floor(Date.now() / 1000),
         message_type: 'TEXT',
-        text_body: 'Min ajukan klaim WO lawan Harimau FC karena terlambat 15 menit',
+        text_body: '!Min ajukan klaim WO lawan Harimau FC karena terlambat 15 menit',
         is_from_me: false,
       };
       await app.handleInboundMessage(claimMsg);

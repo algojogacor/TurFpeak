@@ -207,123 +207,38 @@ export class FlashPeakApp {
     message: NormalizedMessage,
     mediaBuffer?: Buffer | null
   ): Promise<InboundHandlingResult> {
-    // 1. Command Router Check
-    if (this.commandRouter.isCommand(message)) {
-      const commandResult = await this.commandRouter.handleMessage(message);
-      return {
-        handled: true,
-        type: 'COMMAND',
-        commandResult: commandResult || undefined,
-        replyText: commandResult?.responseText,
-      };
-    }
-
-    // 1.5 Pending Manual Report Confirmation / Correction Check
-    if (this.manualReportSession.hasPending(message.chat_id, message.sender_normalized_address)) {
-      const text = (message.text_body || message.caption || '').trim();
-      const normText = text.toLowerCase();
-      const isConfirm = ['ok', 'ya', 'confirm', 'lanjut', 'benar', 'sudah benar'].includes(normText);
-
-      if (isConfirm) {
-        const organizerId = message.sender_normalized_address || 'ORGANIZER';
-        const confirmRes = await this.manualReportSession.confirmPending(
-          this.db,
-          message.chat_id,
-          organizerId
-        );
-        return {
-          handled: true,
-          type: 'COMMAND',
-          replyText: confirmRes.success ? confirmRes.replyText : confirmRes.error,
-        };
-      }
-
-      // Check if it's a correction to the pending report
-      const isCorrection =
-        normText.includes('bukan') ||
-        normText.includes('koreksi') ||
-        normText.includes('ganti') ||
-        normText.includes('gol a') ||
-        normText.includes('gol b') ||
-        normText.includes('tim a') ||
-        normText.includes('tim b') ||
-        normText.startsWith('a:') ||
-        normText.startsWith('b:');
-
-      if (isCorrection) {
-        const organizerId = message.sender_normalized_address || 'ORGANIZER';
-        const correctionRes = this.manualReportSession.applyCorrection(
-          message.chat_id,
-          organizerId,
-          text
-        );
-        return {
-          handled: true,
-          type: 'COMMAND',
-          replyText: correctionRes.success ? correctionRes.updatedPrompt : correctionRes.error,
-        };
-      }
-    }
-
-    // 1.6 Pending WO Claim Confirmation Check
-    if (this.woClaimSession.hasPending(message.chat_id)) {
-      const text = (message.text_body || message.caption || '').trim();
-      const normText = text.toLowerCase();
-      const isOrganizer = this.commandRouter.isSenderOrganizer(message);
-
-      const isConfirm = ['ok', 'ya', 'confirm', '!ok', '!confirm', 'sah', 'setuju'].includes(normText);
-      const isReject = ['batal', '!batal', 'tolak', '!tolak', 'reject', '!reject', 'tidak'].includes(normText);
-
-      if (isConfirm) {
-        if (!isOrganizer) {
-          return {
-            handled: true,
-            type: 'WO_CLAIM',
-            replyText: '⛔ Hanya Organizer / Panitia yang berhak menyetujui klaim WO.',
-          };
-        }
-        const organizerId = message.sender_normalized_address || 'ORGANIZER';
-        const confirmRes = await this.woClaimSession.confirmPending(
-          this.db,
-          message.chat_id,
-          organizerId
-        );
-        return {
-          handled: true,
-          type: 'WO_CLAIM',
-          replyText: confirmRes.success ? confirmRes.replyText : confirmRes.error,
-        };
-      }
-
-      if (isReject) {
-        if (!isOrganizer) {
-          return {
-            handled: true,
-            type: 'WO_CLAIM',
-            replyText: '⛔ Hanya Organizer / Panitia yang berhak membatalkan atau menolak klaim WO.',
-          };
-        }
-        const rejectRes = this.woClaimSession.rejectPending(message.chat_id);
-        return {
-          handled: true,
-          type: 'WO_CLAIM',
-          replyText: rejectRes.replyText,
-        };
-      }
-    }
-
-    // 1.7 Natural Language WO Claim Reporting Check
     const rawMsgText = (message.text_body || message.caption || '').trim();
-    if (rawMsgText.length > 0) {
-      const woIntent = parseWoClaimIntent(rawMsgText);
+
+    // 1. Command Router & Prefix '!' Handler
+    // In group chats, any user-intended bot interaction MUST start with '!'
+    if (this.commandRouter.isCommand(message)) {
+      const parsed = this.commandRouter.parseCommand(message);
+
+      // If registered command keyword (e.g. !help, !ping, !schedule, !standings, !ok, !batal, !claimwo, !roster), execute via router
+      if (parsed && this.commandRouter.hasCommand(parsed.command)) {
+        const commandResult = await this.commandRouter.handleMessage(message);
+        return {
+          handled: true,
+          type: 'COMMAND',
+          commandResult: commandResult || undefined,
+          replyText: commandResult?.responseText,
+        };
+      }
+
+      // If not a registered command keyword, check for Natural Language intents prefixed with '!'
+      // e.g. "!kita klaim wo ya, musuh ga aktif sesuai jadwal janjian"
+      // or "!klaim wo match 1 karena lawan tidak hadir 15 menit"
+      const textAfterPrefix = rawMsgText.slice(1).trim();
+      const woIntent = parseWoClaimIntent(textAfterPrefix);
+
       if (woIntent.isGeneralQuestion) {
         return {
           handled: true,
           type: 'WO_CLAIM',
           replyText: [
             'ℹ️ *KETENTUAN KLAIM WALKOVER (WO):*',
-            '• Klaim WO dapat diajukan jika tim lawan tidak hadir setelah toleransi 15 menit atau menolak membuat room.',
-            '• Sertakan alasan yang jelas saat melapor (contoh: _"Min, kami klaim WO untuk Match 1 karena lawan tidak hadir setelah 15 menit"_).',
+            '• Klaim WO diajukan dengan awalan tanda seru (*!*), contoh: _"!klaim WO untuk Match 1 karena lawan tidak hadir 15 menit"_',
+            '• Sertakan alasan yang jelas saat melapor.',
             '• Setiap klaim WO akan diverifikasi dan wajib disahkan oleh Panitia turnamen via *!ok*.',
             '• Tim pemenang WO memperoleh skor 3–0 (+3 poin).',
             '💡 Ketik *!rule* untuk melihat regulasi lengkap turnamen.',
@@ -343,8 +258,8 @@ export class FlashPeakApp {
               'Mohon sertakan alasan klaim WO yang jelas agar dapat diverifikasi oleh Panitia.',
               '',
               '📌 *Contoh format pelaporan:*',
-              '• _"Min, kami ajukan klaim WO untuk Match 1 karena lawan tidak hadir setelah toleransi 15 menit."_',
-              '• _"Min, klaim WO lawan [Nama Tim] karena menolak membuat room pertandingan."_',
+              '• _"!klaim WO untuk Match 1 karena lawan tidak hadir setelah toleransi 15 menit."_',
+              '• _"!klaim WO lawan [Nama Tim] karena menolak membuat room pertandingan."_',
             ].join('\n'),
           };
         }
@@ -362,7 +277,7 @@ export class FlashPeakApp {
         const fixRes = await resolveFixtureForWoClaim(
           this.db,
           reportingDelegateId,
-          rawMsgText,
+          textAfterPrefix,
           woIntent
         );
 
@@ -417,6 +332,61 @@ export class FlashPeakApp {
             mentions,
           };
         }
+      }
+
+      // If text starts with '!' but is neither a known command nor a known NL intent,
+      // dispatch to router for UNKNOWN_COMMAND handling
+      const commandResult = await this.commandRouter.handleMessage(message);
+      return {
+        handled: true,
+        type: 'COMMAND',
+        commandResult: commandResult || undefined,
+        replyText: commandResult?.responseText,
+      };
+    }
+
+    // 1.5 Pending Manual Report Confirmation / Correction Check
+    if (this.manualReportSession.hasPending(message.chat_id, message.sender_normalized_address)) {
+      const normText = rawMsgText.toLowerCase();
+      const isConfirm = ['ok', 'ya', 'confirm', '!ok', '!confirm', 'lanjut', 'benar', 'sudah benar'].includes(normText);
+
+      if (isConfirm) {
+        const organizerId = message.sender_normalized_address || 'ORGANIZER';
+        const confirmRes = await this.manualReportSession.confirmPending(
+          this.db,
+          message.chat_id,
+          organizerId
+        );
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: confirmRes.success ? confirmRes.replyText : confirmRes.error,
+        };
+      }
+
+      const isCorrection =
+        normText.includes('bukan') ||
+        normText.includes('koreksi') ||
+        normText.includes('ganti') ||
+        normText.includes('gol a') ||
+        normText.includes('gol b') ||
+        normText.includes('tim a') ||
+        normText.includes('tim b') ||
+        normText.startsWith('a:') ||
+        normText.startsWith('b:');
+
+      if (isCorrection) {
+        const organizerId = message.sender_normalized_address || 'ORGANIZER';
+        const correctionRes = this.manualReportSession.applyCorrection(
+          message.chat_id,
+          organizerId,
+          rawMsgText
+        );
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: correctionRes.success ? correctionRes.updatedPrompt : correctionRes.error,
+        };
       }
     }
 

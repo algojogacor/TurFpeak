@@ -66,6 +66,14 @@ export class CommandRouter {
   }
 
   /**
+   * Checks whether a command name is registered.
+   */
+  public hasCommand(command: string): boolean {
+    const cmd = command.toLowerCase().trim().replace(/^!/, '');
+    return this.commands.has(cmd);
+  }
+
+  /**
    * Checks if an incoming message is a command (starts with '!').
    */
   public isCommand(message: NormalizedMessage): boolean {

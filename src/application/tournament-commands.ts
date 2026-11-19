@@ -1637,6 +1637,15 @@ export function registerTournamentCommands(
   });
 
   router.registerCommand({
+    command: 'klaimwo',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengesahkan klaim walkover (WO) 3-0 untuk tim lawan (Admin only)',
+    handler: claimWoHandler,
+  });
+
+  router.registerCommand({
     command: 'wo',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,

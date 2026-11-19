@@ -132,6 +132,25 @@ export function parseWoClaimIntent(text: string): WoIntentResult {
     'tidak respon',
     'gak respon',
     'ga respon',
+    'tidak aktif',
+    'gak aktif',
+    'ga aktif',
+    'tidak online',
+    'gak online',
+    'ga online',
+    'tidak balas',
+    'gak balas',
+    'ga balas',
+    'tidak muncul',
+    'gak muncul',
+    'ga muncul',
+    'tidak dateng',
+    'gak dateng',
+    'ga dateng',
+    'janjian',
+    'jadwal',
+    'kickoff',
+    'kick-off',
     'afk',
     'offline',
     'kurang pemain',
@@ -146,12 +165,26 @@ export function parseWoClaimIntent(text: string): WoIntentResult {
     if (connectorMatch && connectorMatch[1] && connectorMatch[1].trim().length >= 3) {
       extractedReason = connectorMatch[1].trim();
     } else {
-      for (const cue of reasonCues) {
-        if (norm.includes(cue) && !['karena', 'sebab', 'karna', 'gegara', 'gara-gara', 'alasan', 'lantaran'].includes(cue)) {
-          extractedReason = cue;
-          break;
+      // Check if separated by comma or semicolon, e.g. "kita klaim wo ya, musuh ga aktif sesuai jadwal janjian"
+      const commaParts = norm.split(/[,;\n]/);
+      if (commaParts.length > 1) {
+        const reasonPart = commaParts.find((part) =>
+          reasonCues.some((cue) => part.includes(cue) && !part.includes('klaim') && !part.includes('wo'))
+        );
+        if (reasonPart && reasonPart.trim().length >= 3) {
+          extractedReason = reasonPart.trim();
         }
       }
+
+      if (!extractedReason) {
+        for (const cue of reasonCues) {
+          if (norm.includes(cue) && !['karena', 'sebab', 'karna', 'gegara', 'gara-gara', 'alasan', 'lantaran'].includes(cue)) {
+            extractedReason = cue;
+            break;
+          }
+        }
+      }
+
       if (!extractedReason) {
         extractedReason = text.trim();
       }
@@ -245,7 +278,7 @@ export async function resolveFixtureForWoClaim(
   let delegateTeamName: string | null = null;
   if (reportingDelegateId) {
     const delRes = await db.execute({
-      sql: 'SELECT t.id, t.team_name as name FROM teams t JOIN delegates d ON d.team_id = t.id WHERE d.id = ?',
+      sql: 'SELECT t.id, t.team_name as name FROM teams t WHERE t.delegate_id = ?',
       args: [reportingDelegateId],
     });
     if (delRes.rows.length > 0) {
