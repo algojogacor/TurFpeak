@@ -690,6 +690,174 @@ export function registerTournamentCommands(
     },
   });
 
+  // !teams / !tim / !peserta / !daftartim
+  const handleTeams = async (_ctx: CommandContext) => {
+    const tRes = await db.execute(`
+      SELECT id, name, status
+      FROM tournaments
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    if (tRes.rows.length === 0) {
+      return {
+        success: false,
+        responseText: '⚠️ Belum ada turnamen yang dibuat di sistem.',
+      };
+    }
+    const tourney = tRes.rows[0];
+    const tourneyId = String(tourney.id);
+    const tourneyName = String(tourney.name);
+    const tourneyStatus = String(tourney.status);
+
+    const teamsRes = await db.execute({
+      sql: `
+        SELECT t.id, t.team_name, t.registration_status,
+               (SELECT COUNT(*) FROM players p WHERE p.team_id = t.id) as player_count
+        FROM teams t
+        WHERE t.tournament_id = ?
+        ORDER BY t.created_at ASC
+      `,
+      args: [tourneyId],
+    });
+
+    const maxSlot = 16;
+    if (teamsRes.rows.length === 0) {
+      return {
+        success: true,
+        responseText: `📋 *DAFTAR TIM TERDAFTAR*\n🏆 Turnamen: *${tourneyName}*\n⚙️ Status: *${tourneyStatus}*\n\n_Belum ada tim yang mendaftar (0 / ${maxSlot} Tim)._\n\nKetik *!roster <Nama Tim>* untuk mendaftarkan tim pertama!`,
+      };
+    }
+
+    const teamList = teamsRes.rows
+      .map((row, idx) => {
+        const name = String(row.team_name);
+        const count = Number(row.player_count || 0);
+        const status = String(row.registration_status) === 'VERIFIED' ? '✅' : '⏳';
+        return `${idx + 1}. *${name}* (${count} pemain) ${status}`;
+      })
+      .join('\n');
+
+    const remaining = Math.max(0, maxSlot - teamsRes.rows.length);
+
+    return {
+      success: true,
+      responseText: `📋 *DAFTAR TIM TERDAFTAR*\n🏆 Turnamen: *${tourneyName}*\n📊 Total: *${teamsRes.rows.length} / ${maxSlot} Tim*\n\n${teamList}\n\n💡 _Slot tersisa: ${remaining} tim_\nKetik *!roster <Nama Tim>* untuk mendaftar.`,
+    };
+  };
+
+  router.registerCommand({
+    command: 'teams',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat daftar tim yang sudah terdaftar di turnamen',
+    handler: handleTeams,
+  });
+
+  router.registerCommand({
+    command: 'tim',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat daftar tim yang sudah terdaftar di turnamen',
+    handler: handleTeams,
+  });
+
+  router.registerCommand({
+    command: 'daftartim',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat daftar tim yang sudah terdaftar di turnamen',
+    handler: handleTeams,
+  });
+
+  router.registerCommand({
+    command: 'peserta',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat daftar tim yang sudah terdaftar di turnamen',
+    handler: handleTeams,
+  });
+
+  // !status / !info / !turnamen
+  const handleStatus = async (_ctx: CommandContext) => {
+    const tRes = await db.execute(`
+      SELECT id, name, status, created_at
+      FROM tournaments
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    if (tRes.rows.length === 0) {
+      return {
+        success: false,
+        responseText: '⚠️ Belum ada turnamen aktif di sistem.',
+      };
+    }
+    const tourney = tRes.rows[0];
+    const tourneyId = String(tourney.id);
+    const tourneyName = String(tourney.name);
+    const tourneyStatus = String(tourney.status);
+
+    const teamsCountRes = await db.execute({
+      sql: 'SELECT COUNT(*) as c FROM teams WHERE tournament_id = ?',
+      args: [tourneyId],
+    });
+    const totalTeams = Number(teamsCountRes.rows[0]?.c || 0);
+    const maxSlot = 16;
+
+    let statusMsg = '';
+    if (tourneyStatus === 'DRAFT') {
+      statusMsg = 'Pendaftaran Terbuka (REGISTRATION OPEN)';
+    } else if (tourneyStatus === 'ACTIVE') {
+      statusMsg = 'Turnamen Berlangsung (LIVE / ONGOING)';
+    } else {
+      statusMsg = tourneyStatus;
+    }
+
+    return {
+      success: true,
+      responseText:
+        `🏆 *STATUS TURNAMEN: ${tourneyName}*\n\n` +
+        `📌 *Status Saat Ini:* ${statusMsg}\n` +
+        `👥 *Slot Tim Terdaftar:* ${totalTeams} / ${maxSlot} Tim\n` +
+        `⚔️ *Format:* 4 Grup (Top 2 lolos ke 8 Besar Knockout)\n\n` +
+        `Menu perintah yang dapat digunakan:\n` +
+        `• *!teams* / *!tim* - Melihat daftar tim terdaftar\n` +
+        `• *!roster* - Mendaftarkan susunan pemain tim baru\n` +
+        `• *!rule* - Melihat regulasi resmi turnamen\n` +
+        `• *!help* - Menampilkan daftar perintah lengkap`,
+    };
+  };
+
+  router.registerCommand({
+    command: 'status',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat status turnamen saat ini dan jumlah tim terdaftar',
+    handler: handleStatus,
+  });
+
+  router.registerCommand({
+    command: 'info',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat status turnamen saat ini dan jumlah tim terdaftar',
+    handler: handleStatus,
+  });
+
+  router.registerCommand({
+    command: 'turnamen',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melihat status turnamen saat ini dan jumlah tim terdaftar',
+    handler: handleStatus,
+  });
+
   // !onboarding
   router.registerCommand({
     command: 'onboarding',
