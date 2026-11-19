@@ -740,4 +740,98 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(verRes.rows[0].status).toBe('PENDING_APPROVAL');
     });
   });
+
+  describe('New Tournament Operational Commands (!rule, !roster, !claimwo)', () => {
+    it('responds to !rule with official tournament competition rules', async () => {
+      const app = createApp({ db, organizerPhone, centralGroupJid });
+      const msg = createTextMessage(regularUserJid, centralGroupJid, '!rule');
+      const res = await app.handleInboundMessage(msg);
+
+      expect(res.handled).toBe(true);
+      expect(res.commandResult?.success).toBe(true);
+      expect(res.replyText).toContain('REGULASI RESMI TURNAMEN FLASH PEAK');
+      expect(res.replyText).toContain('Format 5+5');
+      expect(res.replyText).toContain('19:59 WIB');
+      expect(res.replyText).toContain('D-031');
+    });
+
+    it('allows registering and viewing team roster with format 5+5 (1 GK, 4 Inti, up to 5 Cadangan)', async () => {
+      const app = createApp({ db, organizerPhone, centralGroupJid });
+
+      // Create tournament & team
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!createtournament Roster Cup'));
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!addteam Singa FC'));
+
+      // Register roster: 1 GK, 4 Inti, 3 Cadangan (Total 8)
+      const regMsg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        '!roster Singa FC GK: KingKiper | Inti: Striker1, Mid1, Def1, Def2 | Cadangan: Sub1, Sub2, Sub3'
+      );
+      const regRes = await app.handleInboundMessage(regMsg);
+
+      expect(regRes.handled).toBe(true);
+      expect(regRes.commandResult?.success).toBe(true);
+      expect(regRes.replyText).toContain('ROSTER TIM SINGA FC BERHASIL DIDAFTARKAN');
+      expect(regRes.replyText).toContain('KingKiper');
+      expect(regRes.replyText).toContain('Striker1');
+      expect(regRes.replyText).toContain('Sub1');
+      expect(regRes.replyText).toContain('8 / 10');
+
+      // View roster
+      const viewMsg = createTextMessage(regularUserJid, centralGroupJid, '!roster Singa FC');
+      const viewRes = await app.handleInboundMessage(viewMsg);
+
+      expect(viewRes.handled).toBe(true);
+      expect(viewRes.commandResult?.success).toBe(true);
+      expect(viewRes.replyText).toContain('ROSTER RESMI TIM: SINGA FC');
+      expect(viewRes.replyText).toContain('KingKiper');
+      expect(viewRes.replyText).toContain('Striker1');
+      expect(viewRes.replyText).toContain('Sub1');
+    });
+
+    it('executes !claimwo single forfeit and awards 3-0 win with 3 points', async () => {
+      const app = createApp({ db, organizerPhone, centralGroupJid });
+
+      // Create tournament with 8 teams and draw
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!createtournament WO Cup'));
+      for (let i = 1; i <= 8; i++) {
+        await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, `!addteam TeamWO${i}`));
+      }
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!draw'));
+
+      // Find first fixture
+      const fRes = await db.execute(`
+        SELECT f.id, ta.team_name as team_a_name, tb.team_name as team_b_name 
+        FROM fixtures f 
+        JOIN teams ta ON f.team_a_id = ta.id 
+        JOIN teams tb ON f.team_b_id = tb.id 
+        LIMIT 1
+      `);
+      const fixtureId = String(fRes.rows[0].id);
+      const teamAName = String(fRes.rows[0].team_a_name);
+      const teamBName = String(fRes.rows[0].team_b_name);
+
+      // Claim WO: Team A forfeits against Team B
+      const woMsg = createTextMessage(
+        organizerJid,
+        centralGroupJid,
+        `!claimwo ${fixtureId} ${teamAName} Lawan tidak hadir 10 menit setelah kick-off`
+      );
+      const woRes = await app.handleInboundMessage(woMsg);
+
+      expect(woRes.handled).toBe(true);
+      expect(woRes.commandResult?.success).toBe(true);
+      expect(woRes.replyText).toContain('KEPUTUSAN KLAIM WALKOVER (WO)');
+      expect(woRes.replyText).toContain(`3 Poin* untuk ${teamBName}`);
+      expect(woRes.replyText).toContain('Klasemen grup telah diperbarui');
+
+      // Verify fixture status is WALKOVER in DB
+      const checkRes = await db.execute({
+        sql: "SELECT status FROM fixtures WHERE id = ?",
+        args: [fixtureId],
+      });
+      expect(checkRes.rows[0].status).toBe('WALKOVER');
+    });
+  });
 });

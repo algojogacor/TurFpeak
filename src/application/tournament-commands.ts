@@ -26,6 +26,8 @@ import { createTournament } from '../competition/tournament.js';
 import { prepareDraw, revealNext } from '../competition/draw.js';
 import { generateGroupStageFixtures } from '../competition/fixtures.js';
 import { calculateTournamentAwards } from '../stats/awards.js';
+import { handleSingleForfeit } from '../competition/walkover.js';
+import { recalculateAndPersistGroupStandings } from '../competition/standings.js';
 import { handleManualReport } from '../reports/manual.js';
 import type { RawPlayerMatchStat } from '../reports/validation.js';
 import {
@@ -1082,5 +1084,504 @@ export function registerTournamentCommands(
       const statusText = await deps.matchdayService.formatMatchdayStatus();
       return { success: true, responseText: statusText };
     },
+  });
+
+  // !rule / !rules / !regulasi
+  const ruleHandler = async () => {
+    return {
+      success: true,
+      responseText: [
+        `📜 *REGULASI RESMI TURNAMEN FLASH PEAK*`,
+        `──────────────────────────────`,
+        `1. 👥 *Tim & Roster:*`,
+        `   • 5 vs 5 (1 Kiper + 4 Pemain Inti).`,
+        `   • Cadangan: Maksimal 5 pemain cadangan (Format 5+5, total max 10 pemain).`,
+        `   • Nickname in-game WAJIB sama persis dengan yang didaftarkan.`,
+        `   • Format daftar roster:`,
+        `     *!roster <Nama Tim> GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]*`,
+        ``,
+        `2. 🏆 *Format Kompetisi:*`,
+        `   • *Babak Grup:* Single Round-Robin (1 leg, durasi 8 menit).`,
+        `   • *Poin Grup:* Menang = 3 poin | Seri Sah = 1 poin | Kalah = 0 poin.`,
+        `   • *Fase Knockout:* Best of 3 (BO3). Grand Final: Best of 5 (BO5).`,
+        `   • Top 2 tim teratas tiap grup lolos ke fase gugur.`,
+        ``,
+        `3. ⏰ *Jadwal & Batasan Waktu (19:59 WIB):*`,
+        `   • Setiap ronde matchday dimulai dan berakhir pukul *19:59 WIB* (24 jam per ronde).`,
+        `   • Pengingat otomatis dikirim pada pukul 17:00 WIB dan 18:59 WIB.`,
+        ``,
+        `4. 🏠 *Host Room:*`,
+        `   • Tim sebelah kiri pada jadwal (*!schedule*) bertindak sebagai Host Room default.`,
+        `   • Jika host tidak memiliki room card, tim lawan dapat menggantikan menjadi host.`,
+        ``,
+        `5. ❌ *Walkover (WO) & Forfeit (D-031):*`,
+        `   • *WO Tunggal:* Lawan tidak hadir 10 menit setelah jadwal atau menolak membuat room. Tim hadir menang 3–0 (3 poin).`,
+        `   • *Double WO:* Kedua tim tidak bermain hingga pukul 19:59 WIB. Skor dicatat 0–0 dan masing-masing mendapatkan *0 poin*.`,
+        `   • Klaim WO dilaporkan ke Panitia untuk disahkan via *!claimwo*.`,
+        ``,
+        `6. 📸 *Pelaporan Skor:*`,
+        `   • Delegasi tim pemenang wajib mengirim screenshot hasil akhir match + screenshot kartu statistik kiper.`,
+        `──────────────────────────────`,
+        `💡 _Ketik *!schedule* untuk jadwal pertandingan, atau *!roster <Nama Tim>* untuk mengecek susunan pemain._`,
+      ].join('\n'),
+    };
+  };
+
+  router.registerCommand({
+    command: 'rule',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menampilkan regulasi resmi turnamen',
+    handler: ruleHandler,
+  });
+
+  router.registerCommand({
+    command: 'rules',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menampilkan regulasi resmi turnamen',
+    handler: ruleHandler,
+  });
+
+  router.registerCommand({
+    command: 'regulasi',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menampilkan regulasi resmi turnamen',
+    handler: ruleHandler,
+  });
+
+  // !roster [Nama Tim] [GK: ... | Inti: ... | Cadangan: ...]
+  router.registerCommand({
+    command: 'roster',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mendaftarkan atau melihat roster pemain tim (Format 5+5: 1 GK, 4 Inti, max 5 Cadangan)',
+    handler: async (ctx: CommandContext) => {
+      const raw = ctx.rawArgs.trim();
+
+      // Check active tournament
+      const tRes = await db.execute("SELECT id, name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
+      if (tRes.rows.length === 0) {
+        return { success: false, responseText: '⚠️ Belum ada turnamen aktif.' };
+      }
+      const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
+      const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
+
+      if (!raw) {
+        return {
+          success: true,
+          responseText: [
+            `📋 *PANDUAN PERINTAH ROSTER (FORMAT 5+5)*`,
+            `──────────────────────────────`,
+            `1. *Melihat Roster Tim:*`,
+            `   \`!roster <Nama Tim>\``,
+            `   Contoh: \`!roster Garuda FC\``,
+            ``,
+            `2. *Mendaftarkan / Memperbarui Roster:*`,
+            `   \`!roster <Nama Tim> GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2, C3]\``,
+            `   Contoh:`,
+            `   \`!roster Garuda FC GK: Ikyy | Inti: Budi, Joko, Doni, Reza | Cadangan: Rian, Kevin\``,
+            `──────────────────────────────`,
+            `💡 _Minimal 5 pemain (1 GK + 4 Inti). Maksimal 5 cadangan (Total max 10 pemain)._`,
+          ].join('\n'),
+        };
+      }
+
+      const lowerRaw = raw.toLowerCase();
+      const isRegistration = lowerRaw.includes('gk:') || lowerRaw.includes('kiper:');
+
+      if (!isRegistration) {
+        // VIEW ROSTER
+        const targetTeamName = raw;
+        const teamRes = await db.execute({
+          sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
+          args: [tournamentId, targetTeamName],
+        });
+
+        if (teamRes.rows.length === 0) {
+          return {
+            success: false,
+            responseText: `⚠️ Tim *${targetTeamName}* tidak ditemukan di turnamen *${tournamentName}*.`,
+          };
+        }
+
+        const teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
+        const officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
+
+        const playersRes = await db.execute({
+          sql: `SELECT nickname_raw, position, roster_slot, roster_type
+                FROM players
+                WHERE team_id = ? AND tournament_id = ? AND status = 'ACTIVE'
+                ORDER BY roster_slot ASC`,
+          args: [teamId, tournamentId],
+        });
+
+        if (playersRes.rows.length === 0) {
+          return {
+            success: true,
+            responseText: [
+              `📋 *ROSTER TIM: ${officialTeamName.toUpperCase()}*`,
+              `──────────────────────────────`,
+              `⚠️ Belum ada pemain yang didaftarkan untuk tim ini.`,
+              ``,
+              `*Format Pendaftaran:*`,
+              `\`!roster ${officialTeamName} GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]\``,
+            ].join('\n'),
+          };
+        }
+
+        const gk = playersRes.rows.find((r: any) => String(r.position) === 'GOALKEEPER' || Number(r.roster_slot) === 1);
+        const starters = playersRes.rows.filter((r: any) => String(r.roster_type) === 'STARTER' && String(r.position) !== 'GOALKEEPER');
+        const subs = playersRes.rows.filter((r: any) => String(r.roster_type) === 'SUBSTITUTE');
+
+        const lines: string[] = [];
+        lines.push(`📋 *ROSTER RESMI TIM: ${officialTeamName.toUpperCase()}*`);
+        lines.push(`──────────────────────────────`);
+        lines.push(`🧤 *Kiper (Slot 1):* ${gk ? String(gk.nickname_raw) : '-(belum ada)-'}`);
+        lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
+        if (starters.length === 0) {
+          lines.push(`  _(belum ada)_`);
+        } else {
+          starters.forEach((s: any, idx: number) => {
+            lines.push(`  ${idx + 2}. ${String(s.nickname_raw)}`);
+          });
+        }
+
+        lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+        if (subs.length === 0) {
+          lines.push(`  _(tidak ada cadangan)_`);
+        } else {
+          subs.forEach((s: any, idx: number) => {
+            lines.push(`  ${idx + 6}. ${String(s.nickname_raw)}`);
+          });
+        }
+        lines.push(`──────────────────────────────`);
+        lines.push(`📊 Total: *${playersRes.rows.length} / 10* pemain terdaftar.`);
+
+        return { success: true, responseText: lines.join('\n') };
+      }
+
+      // REGISTER / UPDATE ROSTER
+      // Extract team name before gk: or kiper:
+      const matchGkPrefix = raw.match(/^(.*?)(?:gk|kiper):/i);
+      const teamNamePart = matchGkPrefix ? matchGkPrefix[1].trim() : '';
+
+      if (!teamNamePart) {
+        return {
+          success: false,
+          responseText: '⚠️ Format salah: Nama tim harus dicantumkan di awal.\nContoh: `!roster Garuda FC GK: Ikyy | Inti: Budi, Joko, Doni, Reza | Cadangan: Rian`',
+        };
+      }
+
+      const teamRes = await db.execute({
+        sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
+        args: [tournamentId, teamNamePart],
+      });
+
+      if (teamRes.rows.length === 0) {
+        return {
+          success: false,
+          responseText: `⚠️ Tim *${teamNamePart}* tidak ditemukan di turnamen *${tournamentName}*.`,
+        };
+      }
+
+      const teamId = String(teamRes.rows[0].id ?? teamRes.rows[0][0]);
+      const officialTeamName = String(teamRes.rows[0].team_name ?? teamRes.rows[0][1]);
+      const officialDelegateId = teamRes.rows[0].delegate_id ? String(teamRes.rows[0].delegate_id) : null;
+
+      // Authorization: must be Organizer OR team delegate
+      if (!ctx.isOrganizer && ctx.delegateId !== officialDelegateId) {
+        return {
+          success: false,
+          responseText: `⛔ Hanya Panitia atau delegasi resmi dari *${officialTeamName}* yang berhak mendaftarkan roster tim ini.`,
+        };
+      }
+
+      // Parse fields: GK, Inti, Cadangan
+      const afterTeam = raw.slice(matchGkPrefix![0].length - 3); // starts with "gk:"
+      // Normalize separators
+      const parts = afterTeam.split(/[|;\n]+/);
+      let gkName = '';
+      const starterList: string[] = [];
+      const subList: string[] = [];
+
+      for (const part of parts) {
+        const trimmedPart = part.trim();
+        if (/^(?:gk|kiper):/i.test(trimmedPart)) {
+          const val = trimmedPart.replace(/^(?:gk|kiper):/i, '').trim();
+          if (val) gkName = val.split(/[,/]/)[0]?.trim() || '';
+        } else if (/^(?:inti|pemain|starters?):/i.test(trimmedPart)) {
+          const val = trimmedPart.replace(/^(?:inti|pemain|starters?):/i, '').trim();
+          val.split(/[,/]/).map((s) => s.trim()).filter(Boolean).forEach((s) => starterList.push(s));
+        } else if (/^(?:cadangan|subs?|substitutes?):/i.test(trimmedPart)) {
+          const val = trimmedPart.replace(/^(?:cadangan|subs?|substitutes?):/i, '').trim();
+          val.split(/[,/]/).map((s) => s.trim()).filter(Boolean).forEach((s) => subList.push(s));
+        }
+      }
+
+      if (!gkName) {
+        return {
+          success: false,
+          responseText: '⚠️ Nama Kiper (GK) wajib diisi. Contoh: `GK: Ikyy`',
+        };
+      }
+
+      if (starterList.length < 4) {
+        return {
+          success: false,
+          responseText: `⚠️ Pemain inti harus minimal 4 pemain outfield (saat ini terdeteksi: ${starterList.length}).\nContoh: \`Inti: Budi, Joko, Doni, Reza\``,
+        };
+      }
+
+      if (starterList.length > 4) {
+        // Move excess starters to subs if space permits
+        const excess = starterList.splice(4);
+        subList.unshift(...excess);
+      }
+
+      if (subList.length > 5) {
+        return {
+          success: false,
+          responseText: `⚠️ Maksimal pemain cadangan adalah 5 orang (Format 5+5). Anda memasukkan ${subList.length} cadangan.`,
+        };
+      }
+
+      // Validate all names are unique within team
+      const allNames = [gkName, ...starterList, ...subList];
+      const normalizedMap = new Set<string>();
+      for (const n of allNames) {
+        const norm = n.toLowerCase().trim();
+        if (normalizedMap.has(norm)) {
+          return {
+            success: false,
+            responseText: `⚠️ Ditemukan nama ganda di dalam roster: *"${n}"*. Setiap pemain harus memiliki nickname unik.`,
+          };
+        }
+        normalizedMap.add(norm);
+      }
+
+      // Save into players table
+      // 1. Delete previous players for this team in this tournament
+      await db.execute({
+        sql: `DELETE FROM players WHERE team_id = ? AND tournament_id = ?`,
+        args: [teamId, tournamentId],
+      });
+
+      const now = new Date().toISOString();
+
+      // Slot 1: GK
+      await db.execute({
+        sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'GOALKEEPER', 1, 'STARTER', 'ACTIVE', ?, ?)`,
+        args: [
+          randomUUID(),
+          tournamentId,
+          teamId,
+          gkName,
+          gkName.normalize('NFC'),
+          gkName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+          now,
+          now,
+        ],
+      });
+
+      // Slot 2-5: Starters
+      for (let i = 0; i < starterList.length; i++) {
+        const pName = starterList[i];
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'STARTER', 'ACTIVE', ?, ?)`,
+          args: [
+            randomUUID(),
+            tournamentId,
+            teamId,
+            pName,
+            pName.normalize('NFC'),
+            pName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+            i + 2,
+            now,
+            now,
+          ],
+        });
+      }
+
+      // Slot 6-10: Substitutes
+      for (let i = 0; i < subList.length; i++) {
+        const sName = subList[i];
+        await db.execute({
+          sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'SUBSTITUTE', 'ACTIVE', ?, ?)`,
+          args: [
+            randomUUID(),
+            tournamentId,
+            teamId,
+            sName,
+            sName.normalize('NFC'),
+            sName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+            i + 6,
+            now,
+            now,
+          ],
+        });
+      }
+
+      const lines: string[] = [];
+      lines.push(`✅ *ROSTER TIM ${officialTeamName.toUpperCase()} BERHASIL DIDAFTARKAN!*`);
+      lines.push(`──────────────────────────────`);
+      lines.push(`🧤 *Kiper (Slot 1):* ${gkName}`);
+      lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
+      starterList.forEach((s, idx) => lines.push(`  ${idx + 2}. ${s}`));
+      lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+      if (subList.length === 0) {
+        lines.push(`  _(tidak ada cadangan)_`);
+      } else {
+        subList.forEach((s, idx) => lines.push(`  ${idx + 6}. ${s}`));
+      }
+      lines.push(`──────────────────────────────`);
+      lines.push(`📊 Total Terdaftar: *${allNames.length} / 10* pemain (Format 5+5).`);
+      lines.push(`💡 _Roster ini akan otomatis dicocokkan oleh sistem saat pemrosesan skor dan penghargaan turnamen._`);
+
+      return { success: true, responseText: lines.join('\n') };
+    },
+  });
+
+  // !claimwo / !wo <fixture_id> <nama_tim_forfeit> [alasan]
+  const claimWoHandler = async (ctx: CommandContext) => {
+    if (!ctx.isOrganizer) {
+      return {
+        success: false,
+        responseText: '⛔ Perintah ini hanya dapat dijalankan oleh Panitia / Organizer.',
+      };
+    }
+
+    const parts = ctx.args;
+    if (parts.length < 2) {
+      return {
+        success: false,
+        responseText: [
+          `⚠️ *FORMAT KLAIM WALKOVER (WO):*`,
+          `\`!claimwo <fixture_id> <nama_tim_yang_forfeit> [alasan]\``,
+          ``,
+          `Contoh:`,
+          `\`!claimwo 1 Garuda FC Tidak hadir 10 menit setelah kick-off\``,
+          `\`!claimwo 2 Elang FC Menolak bertindak sebagai host room\``,
+          ``,
+          `💡 _Tim yang disebutkan adalah tim yang kalah WO. Lawannya otomatis menang 3–0 (3 poin)._`,
+        ].join('\n'),
+      };
+    }
+
+    const fixtureInput = parts[0].trim();
+    const forfeitingTeamInput = parts[1].trim();
+    const reason = parts.slice(2).join(' ').trim() || 'Lawan tidak hadir / forfeit setelah batas toleransi';
+
+    // Find fixture
+    const fRes = await db.execute({
+      sql: `
+        SELECT f.id, f.tournament_id, f.stage, f.group_id, f.team_a_id, f.team_b_id, f.status,
+               ta.team_name as team_a_name, tb.team_name as team_b_name, t.name as tournament_name
+        FROM fixtures f
+        JOIN teams ta ON f.team_a_id = ta.id
+        JOIN teams tb ON f.team_b_id = tb.id
+        JOIN tournaments t ON f.tournament_id = t.id
+        WHERE f.id = ? OR f.id LIKE ? || '%'
+        LIMIT 1
+      `,
+      args: [fixtureInput, fixtureInput],
+    });
+
+    if (fRes.rows.length === 0) {
+      return {
+        success: false,
+        responseText: `⚠️ Pertandingan dengan ID atau prefix *"${fixtureInput}"* tidak ditemukan.`,
+      };
+    }
+
+    const fixture = fRes.rows[0] as any;
+    const fixtureId = String(fixture.id);
+    const tournamentId = String(fixture.tournament_id);
+    const tournamentName = String(fixture.tournament_name);
+    const teamAId = String(fixture.team_a_id);
+    const teamBId = String(fixture.team_b_id);
+    const teamAName = String(fixture.team_a_name);
+    const teamBName = String(fixture.team_b_name);
+
+    if (fixture.status === 'COMPLETED') {
+      return {
+        success: false,
+        responseText: `⚠️ Pertandingan *${teamAName} vs ${teamBName}* sudah berstatus SELESAI (COMPLETED). Tidak dapat di-WO.`,
+      };
+    }
+
+    // Determine forfeiting team
+    let forfeitingTeamId: string | null = null;
+    let winningTeamName = '';
+    let losingTeamName = '';
+
+    const lowerInput = forfeitingTeamInput.toLowerCase();
+    if (teamAName.toLowerCase().includes(lowerInput)) {
+      forfeitingTeamId = teamAId;
+      losingTeamName = teamAName;
+      winningTeamName = teamBName;
+    } else if (teamBName.toLowerCase().includes(lowerInput)) {
+      forfeitingTeamId = teamBId;
+      losingTeamName = teamBName;
+      winningTeamName = teamAName;
+    } else {
+      return {
+        success: false,
+        responseText: `⚠️ Tim *"${forfeitingTeamInput}"* tidak cocok dengan tim peserta di pertandingan ini (*${teamAName}* vs *${teamBName}*).`,
+      };
+    }
+
+    // Execute single forfeit
+    const outcome = await handleSingleForfeit(db, fixtureId, forfeitingTeamId, reason);
+
+    // Recalculate standings if group stage
+    if (fixture.group_id) {
+      await recalculateAndPersistGroupStandings(db, tournamentId, String(fixture.group_id));
+    }
+
+    const announcement = [
+      `❌ *KEPUTUSAN KLAIM WALKOVER (WO)*`,
+      `──────────────────────────────`,
+      `🏆 *Turnamen:* ${tournamentName}`,
+      `⚔️ *Pertandingan:* *${teamAName}* vs *${teamBName}*`,
+      ``,
+      `⚠️ *Tim Forfeit / Kalah WO:* ${losingTeamName}`,
+      `🎉 *Pemenang WO:* *${winningTeamName}*`,
+      `📊 *Skor Resmi:* ${outcome.score.team_a_score}–${outcome.score.team_b_score} (*3 Poin* untuk ${winningTeamName})`,
+      `📝 *Alasan:* ${reason}`,
+      `──────────────────────────────`,
+      `📌 *Klasemen grup telah diperbarui secara otomatis.*`,
+    ].join('\n');
+
+    return {
+      success: true,
+      responseText: announcement,
+    };
+  };
+
+  router.registerCommand({
+    command: 'claimwo',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengesahkan klaim walkover (WO) 3-0 untuk tim lawan (Admin only)',
+    handler: claimWoHandler,
+  });
+
+  router.registerCommand({
+    command: 'wo',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengesahkan klaim walkover (WO) 3-0 untuk tim lawan (Admin only)',
+    handler: claimWoHandler,
   });
 }
