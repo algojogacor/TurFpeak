@@ -39,6 +39,7 @@ export interface RouterConfig {
   consecutiveFailureThreshold?: number; // default: 3
   cooldownWindowMs?: number; // default: 60,000ms
   maxRetriesPerProvider?: number; // default: 1
+  prioritizeByTask?: boolean; // default: false
   onTelemetry?: (telemetry: ProviderTelemetry) => void | Promise<void>;
 }
 
@@ -75,6 +76,7 @@ export class ProviderRouter {
 
   private breakerStatuses: Map<AIProviderName, CircuitBreakerStatus> = new Map();
   private rotationIndex = 0;
+  private readonly prioritizeByTask: boolean;
 
   constructor(config: RouterConfig) {
     if (!config.adapters || config.adapters.length === 0) {
@@ -84,6 +86,7 @@ export class ProviderRouter {
     this.failureThreshold = config.consecutiveFailureThreshold ?? 3;
     this.cooldownWindowMs = config.cooldownWindowMs ?? 60000;
     this.maxRetriesPerProvider = config.maxRetriesPerProvider ?? 1;
+    this.prioritizeByTask = config.prioritizeByTask ?? false;
     this.onTelemetry = config.onTelemetry;
 
     for (const adapter of this.adapters) {
@@ -180,10 +183,29 @@ export class ProviderRouter {
   }
 
   /**
-   * Obtains the list of adapters ordered for the next request based on rotation and availability.
+   * Obtains the list of adapters ordered for the next request based on task priority or rotation.
    */
-  private getOrderedAdapters(): ProviderAdapter[] {
+  private getOrderedAdapters(isVision = false): ProviderAdapter[] {
     const now = Date.now();
+
+    if (this.prioritizeByTask) {
+      const priorityOrder: AIProviderName[] = isVision
+        ? ['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'MISTRAL', 'COHERE', 'OLLAMA_CLOUD']
+        : ['GROQ', 'DEEPSEEK', 'NVIDIA_NIM', 'COHERE', 'MISTRAL', 'GEMINI', 'OLLAMA_CLOUD'];
+
+      const sorted = [...this.adapters].sort((a, b) => {
+        let idxA = priorityOrder.indexOf(a.name);
+        let idxB = priorityOrder.indexOf(b.name);
+        if (idxA === -1) idxA = 999;
+        if (idxB === -1) idxB = 999;
+        return idxA - idxB;
+      });
+
+      const available = sorted.filter((a) => this.isAdapterAvailable(a.name, now));
+      const unavailable = sorted.filter((a) => !this.isAdapterAvailable(a.name, now));
+      return [...available, ...unavailable];
+    }
+
     const count = this.adapters.length;
     const startIndex = this.rotationIndex % count;
     this.rotationIndex = (this.rotationIndex + 1) % count;
@@ -206,7 +228,8 @@ export class ProviderRouter {
    * Executes an AI request across the rotating provider pool with fallback chain.
    */
   public async execute<T = unknown>(request: AIRequest): Promise<AIResponse<T>> {
-    const ordered = this.getOrderedAdapters();
+    const isVision = Boolean(request.images && request.images.length > 0);
+    const ordered = this.getOrderedAdapters(isVision);
     const errors: Array<{ provider: AIProviderName; error: unknown }> = [];
     const now = Date.now();
 

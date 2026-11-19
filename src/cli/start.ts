@@ -20,6 +20,9 @@ import { GroqAdapter } from '../ai/providers/groq.js';
 import { GeminiAdapter } from '../ai/providers/gemini.js';
 import { OllamaAdapter } from '../ai/providers/ollama.js';
 import { NvidiaAdapter } from '../ai/providers/nvidia.js';
+import { DeepSeekAdapter } from '../ai/providers/deepseek.js';
+import { CohereAdapter } from '../ai/providers/cohere.js';
+import { MistralAdapter } from '../ai/providers/mistral.js';
 import type { ProviderAdapter } from '../ai/adapter.js';
 import { createApp } from '../index.js';
 import { runMigrations } from '../db/migrate.js';
@@ -95,11 +98,24 @@ async function main() {
   const ollamaUrl = process.env.OLLAMA_CLOUD_BASE_URL;
 
   const nvidiaKey = process.env.NVIDIA_API_KEY;
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  const cohereKey = process.env.COHERE_API_KEY;
+  const mistralKey = process.env.MISTRAL_API_KEY;
+
   const groqKeys = process.env.GROQ_API_KEYS
     ? process.env.GROQ_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
     : undefined;
   const nvidiaKeys = process.env.NVIDIA_API_KEYS
     ? process.env.NVIDIA_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : undefined;
+  const deepseekKeys = process.env.DEEPSEEK_API_KEYS
+    ? process.env.DEEPSEEK_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : undefined;
+  const cohereKeys = process.env.COHERE_API_KEYS
+    ? process.env.COHERE_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
+    : undefined;
+  const mistralKeys = process.env.MISTRAL_API_KEYS
+    ? process.env.MISTRAL_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean)
     : undefined;
 
   const adapters: ProviderAdapter[] = [];
@@ -108,6 +124,15 @@ async function main() {
       new GroqAdapter({
         apiKey: groqKey,
         apiKeys: groqKeys,
+      })
+    );
+  }
+  if (deepseekKey && !deepseekKey.includes('placeholder')) {
+    adapters.push(
+      new DeepSeekAdapter({
+        apiKey: deepseekKey,
+        apiKeys: deepseekKeys,
+        model: process.env.DEEPSEEK_MODEL || 'deepseek-flash',
       })
     );
   }
@@ -124,7 +149,26 @@ async function main() {
       new NvidiaAdapter({
         apiKey: nvidiaKey,
         apiKeys: nvidiaKeys,
-        model: process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        model: process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b',
+      })
+    );
+  }
+  if (cohereKey && !cohereKey.includes('placeholder')) {
+    adapters.push(
+      new CohereAdapter({
+        apiKey: cohereKey,
+        apiKeys: cohereKeys,
+        model: process.env.COHERE_MODEL || 'command-a-reasoning-08-2025',
+      })
+    );
+  }
+  if (mistralKey && !mistralKey.includes('placeholder')) {
+    adapters.push(
+      new MistralAdapter({
+        apiKey: mistralKey,
+        apiKeys: mistralKeys,
+        model: process.env.MISTRAL_MODEL || 'codestral-latest',
+        visionModel: process.env.MISTRAL_VISION_MODEL || 'pixtral-12b-2409',
       })
     );
   }
@@ -139,6 +183,7 @@ async function main() {
 
   const providerRouter = new ProviderRouter({
     adapters,
+    prioritizeByTask: true,
   });
 
   // 4. Initialize WhatsApp Connection
