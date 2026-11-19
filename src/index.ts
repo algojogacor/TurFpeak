@@ -53,6 +53,12 @@ import {
 } from './reports/manual.js';
 import { ManualReportSessionManager } from './application/manual-report-session.js';
 import {
+  WoClaimSessionManager,
+  parseWoClaimIntent,
+  resolveFixtureForWoClaim,
+  type PendingWoClaim,
+} from './application/wo-claim-session.js';
+import {
   calculateTournamentAwards,
   type TournamentAwardsSummary,
   type AwardsCalculationOptions,
@@ -94,12 +100,13 @@ export interface FlashPeakAppConfig {
 
 export interface InboundHandlingResult {
   handled: boolean;
-  type: 'COMMAND' | 'ONBOARDING' | 'CORRECTION' | 'EVIDENCE' | 'UNKNOWN';
+  type: 'COMMAND' | 'ONBOARDING' | 'CORRECTION' | 'EVIDENCE' | 'WO_CLAIM' | 'UNKNOWN';
   commandResult?: CommandResult;
   session?: ReportSession;
   draftVersion?: ReportVersion;
   replyText?: string;
   error?: string;
+  mentions?: string[];
 }
 
 export type { ProcessedBatchResult };
@@ -116,6 +123,7 @@ export class FlashPeakApp {
   public readonly gkExtractor?: GoalkeeperDetailExtractor;
   public readonly correctionParser?: CorrectionParser;
   public readonly manualReportSession: ManualReportSessionManager;
+  public readonly woClaimSession: WoClaimSessionManager;
   public readonly matchdayService: MatchdayService;
   public readonly centralGroupJid?: string;
   public sender?: WhatsAppSender;
@@ -141,6 +149,7 @@ export class FlashPeakApp {
     this.identityResolver = new IdentityResolver(this.db);
     this.onboardingService = new OnboardingService(this.identityResolver, this.db);
     this.manualReportSession = new ManualReportSessionManager();
+    this.woClaimSession = new WoClaimSessionManager();
     this.matchdayService = new MatchdayService({
       db: this.db,
       sender: this.sender,
@@ -180,6 +189,7 @@ export class FlashPeakApp {
       identityResolver: this.identityResolver,
       onboardingService: this.onboardingService,
       manualReportSession: this.manualReportSession,
+      woClaimSession: this.woClaimSession,
       matchdayService: this.matchdayService,
       get sender() {
         return self.sender;
@@ -252,6 +262,161 @@ export class FlashPeakApp {
           type: 'COMMAND',
           replyText: correctionRes.success ? correctionRes.updatedPrompt : correctionRes.error,
         };
+      }
+    }
+
+    // 1.6 Pending WO Claim Confirmation Check
+    if (this.woClaimSession.hasPending(message.chat_id)) {
+      const text = (message.text_body || message.caption || '').trim();
+      const normText = text.toLowerCase();
+      const isOrganizer = this.commandRouter.isSenderOrganizer(message);
+
+      const isConfirm = ['ok', 'ya', 'confirm', '!ok', '!confirm', 'sah', 'setuju'].includes(normText);
+      const isReject = ['batal', '!batal', 'tolak', '!tolak', 'reject', '!reject', 'tidak'].includes(normText);
+
+      if (isConfirm) {
+        if (!isOrganizer) {
+          return {
+            handled: true,
+            type: 'WO_CLAIM',
+            replyText: '⛔ Hanya Organizer / Panitia yang berhak menyetujui klaim WO.',
+          };
+        }
+        const organizerId = message.sender_normalized_address || 'ORGANIZER';
+        const confirmRes = await this.woClaimSession.confirmPending(
+          this.db,
+          message.chat_id,
+          organizerId
+        );
+        return {
+          handled: true,
+          type: 'WO_CLAIM',
+          replyText: confirmRes.success ? confirmRes.replyText : confirmRes.error,
+        };
+      }
+
+      if (isReject) {
+        if (!isOrganizer) {
+          return {
+            handled: true,
+            type: 'WO_CLAIM',
+            replyText: '⛔ Hanya Organizer / Panitia yang berhak membatalkan atau menolak klaim WO.',
+          };
+        }
+        const rejectRes = this.woClaimSession.rejectPending(message.chat_id);
+        return {
+          handled: true,
+          type: 'WO_CLAIM',
+          replyText: rejectRes.replyText,
+        };
+      }
+    }
+
+    // 1.7 Natural Language WO Claim Reporting Check
+    const rawMsgText = (message.text_body || message.caption || '').trim();
+    if (rawMsgText.length > 0) {
+      const woIntent = parseWoClaimIntent(rawMsgText);
+      if (woIntent.isGeneralQuestion) {
+        return {
+          handled: true,
+          type: 'WO_CLAIM',
+          replyText: [
+            'ℹ️ *KETENTUAN KLAIM WALKOVER (WO):*',
+            '• Klaim WO dapat diajukan jika tim lawan tidak hadir setelah toleransi 15 menit atau menolak membuat room.',
+            '• Sertakan alasan yang jelas saat melapor (contoh: _"Min, kami klaim WO untuk Match 1 karena lawan tidak hadir setelah 15 menit"_).',
+            '• Setiap klaim WO akan diverifikasi dan wajib disahkan oleh Panitia turnamen via *!ok*.',
+            '• Tim pemenang WO memperoleh skor 3–0 (+3 poin).',
+            '💡 Ketik *!rule* untuk melihat regulasi lengkap turnamen.',
+          ].join('\n'),
+        };
+      }
+
+      if (woIntent.isWoClaim) {
+        // Validation: Must include a clear reason
+        if (!woIntent.hasReason) {
+          return {
+            handled: true,
+            type: 'WO_CLAIM',
+            replyText: [
+              '⚠️ *PENGAJUAN KLAIM WALKOVER (WO)*',
+              '',
+              'Mohon sertakan alasan klaim WO yang jelas agar dapat diverifikasi oleh Panitia.',
+              '',
+              '📌 *Contoh format pelaporan:*',
+              '• _"Min, kami ajukan klaim WO untuk Match 1 karena lawan tidak hadir setelah toleransi 15 menit."_',
+              '• _"Min, klaim WO lawan [Nama Tim] karena menolak membuat room pertandingan."_',
+            ].join('\n'),
+          };
+        }
+
+        // Resolve reporting delegate & fixture
+        const resolution = await this.identityResolver.resolveIdentity(
+          message.sender_raw_address,
+          message.chat_id
+        );
+        const reportingDelegateId =
+          resolution.status === 'VERIFIED' && resolution.delegate
+            ? resolution.delegate.id
+            : null;
+
+        const fixRes = await resolveFixtureForWoClaim(
+          this.db,
+          reportingDelegateId,
+          rawMsgText,
+          woIntent
+        );
+
+        if (fixRes.error) {
+          return {
+            handled: true,
+            type: 'WO_CLAIM',
+            replyText: fixRes.error,
+          };
+        }
+
+        if (fixRes.fixture && fixRes.reportingTeam && fixRes.forfeitingTeam && fixRes.tournamentId && fixRes.tournamentName) {
+          const claim: PendingWoClaim = {
+            id: randomUUID(),
+            chatId: message.chat_id,
+            fixtureId: fixRes.fixture.id,
+            tournamentId: fixRes.tournamentId,
+            tournamentName: fixRes.tournamentName,
+            groupId: fixRes.fixture.group_id || null,
+            stage: fixRes.fixture.stage,
+            roundCode: fixRes.fixture.round_code || null,
+            teamAName: fixRes.fixture.team_a_name,
+            teamBName: fixRes.fixture.team_b_name,
+            reportingTeamId: fixRes.reportingTeam.id,
+            reportingTeamName: fixRes.reportingTeam.name,
+            forfeitingTeamId: fixRes.forfeitingTeam.id,
+            forfeitingTeamName: fixRes.forfeitingTeam.name,
+            reason: woIntent.extractedReason || 'Lawan tidak hadir / forfeit',
+            reportedByAddress: message.sender_raw_address,
+            reportedByDelegateId: reportingDelegateId,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 15 * 60 * 1000,
+          };
+
+          this.woClaimSession.stagePendingClaim(claim);
+
+          const organizerPhone =
+            (this.commandRouter as any).organizerPhone || process.env.WA_ORGANIZER_PHONE || '';
+          const promptText = this.woClaimSession.formatClaimPrompt(claim, organizerPhone);
+
+          const rawOrgJid =
+            (this.commandRouter as any).organizerJid ||
+            process.env.WA_ORGANIZER_JID ||
+            (organizerPhone ? `${organizerPhone.replace(/\D/g, '')}@s.whatsapp.net` : '');
+          const organizerJid = rawOrgJid.split(',')[0].trim();
+          const mentions = organizerJid ? [organizerJid] : [];
+
+          return {
+            handled: true,
+            type: 'WO_CLAIM',
+            replyText: promptText,
+            mentions,
+          };
+        }
       }
     }
 

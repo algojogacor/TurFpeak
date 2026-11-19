@@ -45,6 +45,7 @@ import {
   buildLineupWithScorers,
 } from '../reports/manual-parser.js';
 import type { ManualReportSessionManager, MatchedScorerDetail, PendingManualReport } from './manual-report-session.js';
+import type { WoClaimSessionManager } from './wo-claim-session.js';
 import type {
   ApproverType,
   ApprovalDecision,
@@ -61,6 +62,7 @@ export interface TournamentCommandDeps {
   onboardingService: OnboardingService;
   manualReportSession: ManualReportSessionManager;
   matchdayService?: MatchdayService;
+  woClaimSession?: WoClaimSessionManager;
   sender?: WhatsAppSender;
   getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
   submitApproval: (
@@ -1007,6 +1009,21 @@ export function registerTournamentCommands(
   // !confirm / !ok
   const confirmHandler = async (ctx: CommandContext) => {
     const organizerId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+
+    // 1. Check WO Claim Pending first
+    if (deps.woClaimSession?.hasPending(ctx.message.chat_id)) {
+      const woRes = await deps.woClaimSession.confirmPending(
+        db,
+        ctx.message.chat_id,
+        organizerId
+      );
+      if (!woRes.success) {
+        return { success: false, responseText: woRes.error };
+      }
+      return { success: true, responseText: woRes.replyText };
+    }
+
+    // 2. Check Manual Report Pending
     const confirmRes = await deps.manualReportSession.confirmPending(
       db,
       ctx.message.chat_id,
@@ -1018,12 +1035,28 @@ export function registerTournamentCommands(
     return { success: true, responseText: confirmRes.replyText };
   };
 
+  // !batal / !reject / !tolak
+  const cancelHandler = async (ctx: CommandContext) => {
+    if (deps.woClaimSession?.hasPending(ctx.message.chat_id)) {
+      const rejectRes = deps.woClaimSession.rejectPending(ctx.message.chat_id);
+      return { success: true, responseText: rejectRes.replyText };
+    }
+    if (deps.manualReportSession.hasPending(ctx.message.chat_id)) {
+      deps.manualReportSession.clearPending(ctx.message.chat_id);
+      return { success: true, responseText: '❌ Draf laporan pertandingan manual telah dibatalkan oleh Admin.' };
+    }
+    return {
+      success: false,
+      responseText: '⚠️ Tidak ada pengajuan klaim WO atau draf manual yang sedang menunggu konfirmasi.',
+    };
+  };
+
   router.registerCommand({
     command: 'confirm',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mengonfirmasi draf laporan pertandingan manual (Admin only)',
+    description: 'Mengonfirmasi klaim WO atau draf laporan manual (Admin only)',
     handler: confirmHandler,
   });
 
@@ -1032,8 +1065,35 @@ export function registerTournamentCommands(
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mengonfirmasi draf laporan pertandingan manual (Admin only)',
+    description: 'Mengonfirmasi klaim WO atau draf laporan manual (Admin only)',
     handler: confirmHandler,
+  });
+
+  router.registerCommand({
+    command: 'batal',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Membatalkan / menolak pengajuan klaim WO atau draf laporan manual (Admin only)',
+    handler: cancelHandler,
+  });
+
+  router.registerCommand({
+    command: 'reject',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Membatalkan / menolak pengajuan klaim WO atau draf laporan manual (Admin only)',
+    handler: cancelHandler,
+  });
+
+  router.registerCommand({
+    command: 'tolak',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Membatalkan / menolak pengajuan klaim WO atau draf laporan manual (Admin only)',
+    handler: cancelHandler,
   });
 
   // !matchday / !ronde

@@ -91,23 +91,10 @@ export class CommandRouter {
   }
 
   /**
-   * Evaluates message authorization, verifies group scope, and dispatches command.
+   * Checks whether the message sender matches configured Organizer identities.
    */
-  public async handleMessage(message: NormalizedMessage): Promise<CommandResult | null> {
-    const parsed = this.parseCommand(message);
-    if (!parsed) {
-      return null;
-    }
-
-    const { command, args, rawArgs } = parsed;
-    const normalizedChatId = jidNormalizedUser(message.chat_id);
+  public isSenderOrganizer(message: NormalizedMessage): boolean {
     const normalizedSender = message.sender_normalized_address;
-
-    // 1. Role Resolution & Authorization
-    let role: UserRole = 'UNKNOWN';
-    let isOrganizer = false;
-
-    // Check if sender is organizer (by JID match, LID match, or phone digits)
     const organizerList = (this.organizerJid || '')
       .split(',')
       .map((s) => s.trim().toLowerCase())
@@ -121,17 +108,38 @@ export class CommandRouter {
           jidNormalizedUser(message.sender_raw_address).toLowerCase() === target
       )
     ) {
-      isOrganizer = true;
-    } else if (this.organizerPhone) {
+      return true;
+    }
+
+    if (this.organizerPhone) {
       const senderDigits = normalizedSender.split('@')[0]?.replace(/\D/g, '');
       const rawDigits = message.sender_raw_address.split('@')[0]?.replace(/\D/g, '');
       if (
         (senderDigits && senderDigits === this.organizerPhone) ||
         (rawDigits && rawDigits === this.organizerPhone)
       ) {
-        isOrganizer = true;
+        return true;
       }
     }
+
+    return false;
+  }
+
+  /**
+   * Evaluates message authorization, verifies group scope, and dispatches command.
+   */
+  public async handleMessage(message: NormalizedMessage): Promise<CommandResult | null> {
+    const parsed = this.parseCommand(message);
+    if (!parsed) {
+      return null;
+    }
+
+    const { command, args, rawArgs } = parsed;
+    const normalizedChatId = jidNormalizedUser(message.chat_id);
+
+    // 1. Role Resolution & Authorization
+    let role: UserRole = 'UNKNOWN';
+    const isOrganizer = this.isSenderOrganizer(message);
 
     let delegateId: string | null = null;
     let teamId: string | null = null;

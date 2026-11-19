@@ -230,7 +230,7 @@ async function main() {
         // Process message through TMS orchestrator
         const outcome = await app.handleInboundMessage(normalized, mediaBuffer);
         if (outcome.replyText) {
-          const mentions = outcome.commandResult?.metadata?.mentions as string[] | undefined;
+          const mentions = outcome.mentions || (outcome.commandResult?.metadata?.mentions as string[] | undefined);
           await sender.sendQuote(normalized.chat_id, outcome.replyText, msg, { mentions });
         }
       }
