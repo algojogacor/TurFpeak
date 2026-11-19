@@ -1567,7 +1567,7 @@ export function registerTournamentCommands(
         `──────────────────────────────`,
         `1. 👥 *Tim & Roster:*`,
         `   • Format 5 vs 5 (1 Kiper + 4 Pemain Inti).`,
-        `   • Cadangan: Maksimal 5 pemain cadangan (Format 5+5, total max 10 pemain). Tim dengan hanya 5 pemain tanpa cadangan tetap diizinkan.`,
+        `   • Cadangan: Maksimal 3 pemain cadangan (Format 5+3, total max 8 pemain). Tim dengan hanya 5 pemain tanpa cadangan tetap diizinkan.`,
         `   • 🚫 *Karakter Unik (No Duplicate):* DILARANG menggunakan karakter yang sama dalam 1 tim (contoh: Dilarang double Ford, double Moco, dll). Setiap pemain wajib memakai karakter berbeda!`,
         `   • 1 Pemain hanya boleh terdaftar & membela 1 tim di turnamen.`,
         `   • Nickname in-game WAJIB sama persis dengan yang didaftarkan.`,
@@ -1654,7 +1654,7 @@ export function registerTournamentCommands(
       return {
         success: true,
         responseText: [
-          `📋 *PANDUAN PERINTAH ROSTER (FORMAT 5+5)*`,
+          `📋 *PANDUAN PERINTAH ROSTER (FORMAT 5+3)*`,
           `──────────────────────────────`,
           `1. *Melihat Roster Tim:*`,
           `   \`!roster <Nama Tim>\``,
@@ -1667,7 +1667,7 @@ export function registerTournamentCommands(
           `   • *Format Bahasa Santai:*`,
           `     \`!roster tim Garuda FC kipernya Ikyy, pemain intinya Budi, Joko, Doni, Reza, cadangannya Rian, Kevin\``,
           `──────────────────────────────`,
-          `💡 _Minimal 5 pemain (1 GK + 4 Inti). Maksimal 5 cadangan (Total max 10 pemain)._`,
+          `💡 _Minimal 5 pemain (1 GK + 4 Inti). Maksimal 3 cadangan (Total max 8 pemain)._`,
           `🚫 *Aturan Karakter:* Dilarang menggunakan karakter kembar dalam 1 tim saat tanding (misal: dilarang double Ford).`,
         ].join('\n'),
       };
@@ -1772,7 +1772,7 @@ export function registerTournamentCommands(
         });
       }
 
-      lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+      lines.push(`🪑 *Pemain Cadangan (Slot 6–8):*`);
       if (subs.length === 0) {
         lines.push(`  _(tidak ada cadangan)_`);
       } else {
@@ -1781,7 +1781,7 @@ export function registerTournamentCommands(
         });
       }
       lines.push(`──────────────────────────────`);
-      lines.push(`📊 Total: *${playersRes.rows.length} / 10* pemain terdaftar.`);
+      lines.push(`📊 Total: *${playersRes.rows.length} / 8* pemain terdaftar (Format 5+3).`);
 
       return { success: true, responseText: lines.join('\n') };
     }
@@ -1966,15 +1966,21 @@ export function registerTournamentCommands(
       parsed.subList.unshift(...excess);
     }
 
-    if (parsed.subList.length > 5) {
+    if (parsed.subList.length > 3) {
       return {
         success: false,
-        responseText: `⚠️ Maksimal pemain cadangan adalah 5 orang (Format 5+5). Anda memasukkan ${parsed.subList.length} cadangan.`,
+        responseText: `⚠️ Pendaftaran ditolak karena kelebihan pemain! Maksimal pemain cadangan adalah 3 orang (Format 5+3: 1 Kiper, 4 Inti, maks 3 Cadangan). Anda memasukkan ${parsed.subList.length} cadangan.`,
       };
     }
 
-    // Validate all names are unique within team
+    // Validate total players does not exceed 8
     const allNames = [parsed.gkName, ...parsed.starterList, ...parsed.subList];
+    if (allNames.length > 8) {
+      return {
+        success: false,
+        responseText: `⚠️ Pendaftaran ditolak karena kelebihan pemain! Format turnamen adalah 5+3 (total maksimal 8 pemain: 1 Kiper, 4 Inti, maks 3 Cadangan). Anda memasukkan ${allNames.length} pemain.`,
+      };
+    }
     const normalizedMap = new Set<string>();
     for (const n of allNames) {
       const normN = n.toLowerCase().trim();
@@ -2047,7 +2053,7 @@ export function registerTournamentCommands(
       });
     }
 
-    // Slot 6-10: Substitutes
+    // Slot 6-8: Substitutes
     for (let i = 0; i < parsed.subList.length; i++) {
       const sName = parsed.subList[i];
       await db.execute({
@@ -2073,14 +2079,14 @@ export function registerTournamentCommands(
     lines.push(`🧤 *Kiper (Slot 1):* ${parsed.gkName}`);
     lines.push(`🏃 *Pemain Inti (Slot 2–5):*`);
     parsed.starterList.forEach((s, idx) => lines.push(`  ${idx + 2}. ${s}`));
-    lines.push(`🪑 *Pemain Cadangan (Slot 6–10):*`);
+    lines.push(`🪑 *Pemain Cadangan (Slot 6–8):*`);
     if (parsed.subList.length === 0) {
       lines.push(`  _(tidak ada cadangan)_`);
     } else {
       parsed.subList.forEach((s, idx) => lines.push(`  ${idx + 6}. ${s}`));
     }
     lines.push(`──────────────────────────────`);
-    lines.push(`📊 Total Terdaftar: *${allNames.length} / 10* pemain (Format 5+5).`);
+    lines.push(`📊 Total Terdaftar: *${allNames.length} / 8* pemain (Format 5+3).`);
     lines.push(`🚫 *Aturan Karakter Unik:* Dilarang menggunakan karakter yang sama dalam 1 tim saat tanding (contoh: dilarang double Ford, double Moco, dll).`);
     lines.push(`💡 _Nickname di atas harus sama persis dengan yang digunakan di dalam game._`);
 
@@ -2092,7 +2098,7 @@ export function registerTournamentCommands(
     requiredRole: 'ANY',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mendaftarkan atau melihat roster pemain tim (Format 5+5: 1 GK, 4 Inti, max 5 Cadangan)',
+    description: 'Mendaftarkan atau melihat roster pemain tim (Format 5+3: 1 GK, 4 Inti, max 3 Cadangan)',
     handler: rosterHandler,
   });
 

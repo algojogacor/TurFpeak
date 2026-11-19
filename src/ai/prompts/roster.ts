@@ -30,7 +30,7 @@ TEAM ROSTER STRUCTURE:
 - Team Name: The name of the esports team (e.g., "Garuda FC", "AVO Esports").
 - Goalkeeper (GK / Kiper): Exactly 1 player designated as goalkeeper / kiper / slot 1.
 - Starters (Inti / Outfield): The starting lineup outfield players (slots 2-5, typically 4 players).
-- Substitutes (Cadangan / Subs): The substitute or reserve players (up to 5 players).
+- Substitutes (Cadangan / Subs): The substitute or reserve players (up to 3 players, Format 5+3: 1 GK, 4 Starters, max 3 Substitutes).
 
 CRITICAL RULES FOR ESPORTS PLAYER NAMES:
 1. Preserve every player nickname exactly as written, including Unicode characters, decorative glyphs (e.g. 〆, 么, 彡, ★, 丨), punctuation, spaces, and clan tags.

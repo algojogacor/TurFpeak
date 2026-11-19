@@ -773,7 +773,7 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(res.handled).toBe(true);
       expect(res.commandResult?.success).toBe(true);
       expect(res.replyText).toContain('REGULASI RESMI TURNAMEN FLASH PEAK');
-      expect(res.replyText).toContain('Format 5+5');
+      expect(res.replyText).toContain('Format 5+3');
       expect(res.replyText).toContain('19:59 WIB');
       expect(res.replyText).toContain('D-031');
       expect(res.replyText).toContain('Karakter Unik');
@@ -801,7 +801,7 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(regRes.replyText).toContain('KingKiper');
       expect(regRes.replyText).toContain('Striker1');
       expect(regRes.replyText).toContain('Sub1');
-      expect(regRes.replyText).toContain('8 / 10');
+      expect(regRes.replyText).toContain('8 / 8');
       expect(regRes.replyText).toContain('Karakter Unik');
 
       // View roster
@@ -837,7 +837,7 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(nlRes.replyText).toContain('Budi');
       expect(nlRes.replyText).toContain('Reza');
       expect(nlRes.replyText).toContain('Rian');
-      expect(nlRes.replyText).toContain('7 / 10');
+      expect(nlRes.replyText).toContain('7 / 8');
 
       // 2. Multiline registration with numbers and bullet points
       const multilineText = [
@@ -859,7 +859,7 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       expect(multiRes.replyText).toContain('EagleGK');
       expect(multiRes.replyText).toContain('P1');
       expect(multiRes.replyText).toContain('C1');
-      expect(multiRes.replyText).toContain('7 / 10');
+      expect(multiRes.replyText).toContain('7 / 8');
 
       // 3. Reject duplicate player across teams (Rule 2.7)
       // Attempt to register 'Budi' (already in Garuda FC) into a new roster

@@ -447,5 +447,32 @@ describe('Roster AI Extractor & Parser Tests', () => {
       expect(res?.responseText).toContain('GARUDA FC');
       expect(res?.responseText).toContain('AVO | Zenyth');
     });
+
+    it('rejects registration when substitutes exceed 3 players in Format 5+3 (kelebihan pemain)', async () => {
+      registerTournamentCommands(router, mockDeps);
+
+      const res = await router.handleMessage(
+        createMsg('!roster Garuda FC GK: Kiper1 | Inti: P1, P2, P3, P4 | Cadangan: Sub1, Sub2, Sub3, Sub4')
+      );
+
+      expect(res).toBeDefined();
+      expect(res?.success).toBe(false);
+      expect(res?.responseText).toContain('kelebihan pemain');
+      expect(res?.responseText).toContain('Maksimal pemain cadangan adalah 3 orang');
+    });
+
+    it('accepts registration with exactly 3 substitutes (Format 5+3: 8/8 players)', async () => {
+      registerTournamentCommands(router, mockDeps);
+
+      const res = await router.handleMessage(
+        createMsg('!roster Garuda FC GK: Kiper1 | Inti: P1, P2, P3, P4 | Cadangan: Sub1, Sub2, Sub3')
+      );
+
+      expect(res).toBeDefined();
+      expect(res?.success).toBe(true);
+      expect(res?.responseText).toContain('BERHASIL DIDAFTARKAN');
+      expect(res?.responseText).toContain('Pemain Cadangan (Slot 6–8)');
+      expect(res?.responseText).toContain('Total Terdaftar: *8 / 8* pemain (Format 5+3)');
+    });
   });
 });
