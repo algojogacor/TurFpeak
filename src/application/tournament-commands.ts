@@ -1191,41 +1191,60 @@ export function registerTournamentCommands(
 
   // !rule / !rules / !regulasi
   const ruleHandler = async () => {
+    let tournamentTitle = 'GOJIHA TURNAMEN';
+    try {
+      const tRes = await db.execute("SELECT name FROM tournaments WHERE status NOT IN ('COMPLETED', 'ARCHIVED') ORDER BY created_at DESC LIMIT 1");
+      if (tRes.rows.length > 0 && tRes.rows[0].name) {
+        tournamentTitle = String(tRes.rows[0].name).toUpperCase();
+      }
+    } catch {}
+
     return {
       success: true,
       responseText: [
-        `📜 *REGULASI RESMI TURNAMEN FLASH PEAK*`,
+        `📜 *REGULASI RESMI TURNAMEN FLASH PEAK — ${tournamentTitle}*`,
         `──────────────────────────────`,
         `1. 👥 *Tim & Roster:*`,
-        `   • 5 vs 5 (1 Kiper + 4 Pemain Inti).`,
-        `   • Cadangan: Maksimal 5 pemain cadangan (Format 5+5, total max 10 pemain).`,
+        `   • Format 5 vs 5 (1 Kiper + 4 Pemain Inti).`,
+        `   • Cadangan: Maksimal 5 pemain cadangan (Format 5+5, total max 10 pemain). Tim dengan hanya 5 pemain tanpa cadangan tetap diizinkan.`,
+        `   • 1 Pemain hanya boleh terdaftar & membela 1 tim di turnamen.`,
         `   • Nickname in-game WAJIB sama persis dengan yang didaftarkan.`,
-        `   • Format daftar roster:`,
+        `   • Dilarang keras mengganti nickname selama turnamen berlangsung.`,
+        `   • Format pendaftaran roster:`,
         `     *!roster <Nama Tim> GK: [Nama GK] | Inti: [P1, P2, P3, P4] | Cadangan: [C1, C2]*`,
         ``,
         `2. 🏆 *Format Kompetisi:*`,
-        `   • *Babak Grup:* Single Round-Robin (1 leg, durasi 8 menit).`,
+        `   • *Babak Grup:* Single Round-Robin (1 leg, durasi laga 8 menit).`,
         `   • *Poin Grup:* Menang = 3 poin | Seri Sah = 1 poin | Kalah = 0 poin.`,
-        `   • *Fase Knockout:* Best of 3 (BO3). Grand Final: Best of 5 (BO5).`,
-        `   • Top 2 tim teratas tiap grup lolos ke fase gugur.`,
+        `   • *Tie-Breaker Grup:* 1. Poin ➔ 2. Selisih Gol ➔ 3. Gol Dicetak ➔ 4. Head-to-Head.`,
+        `   • Top 2 tim teratas tiap grup lolos ke Fase Knockout.`,
+        `   • *Fase Knockout:* Best of 3 (BO3, first to 2 wins). Grand Final: Best of 5 (BO5, first to 3 wins).`,
+        `   • Tidak ada hasil seri di fase gugur; laga seri in-game langsung di-replay.`,
         ``,
         `3. ⏰ *Jadwal & Batasan Waktu (19:59 WIB):*`,
-        `   • Setiap ronde matchday dimulai dan berakhir pukul *19:59 WIB* (24 jam per ronde).`,
+        `   • Setiap ronde/matchday berdurasi 24 jam, dimulai & berakhir pukul *19:59 WIB*.`,
+        `   • Toleransi keterlambatan (*grace period*): 10 menit dari waktu kickoff/janjian.`,
         `   • Pengingat otomatis dikirim pada pukul 17:00 WIB dan 18:59 WIB.`,
         ``,
-        `4. 🏠 *Host Room:*`,
+        `4. 🏠 *Host Room & Room Card:*`,
         `   • Tim sebelah kiri pada jadwal (*!schedule*) bertindak sebagai Host Room default.`,
-        `   • Jika host tidak memiliki room card, tim lawan dapat menggantikan menjadi host.`,
+        `   • Jika host tidak memiliki room card, tim lawan dapat berinisiatif menjadi host.`,
+        `   • Jika lawan menolak menjadi pengganti host, lawan berhak klaim kemenangan WO.`,
+        `   • Jika KEDUA tim sama-sama tidak dapat menyediakan room: Double WO (0 poin).`,
         ``,
         `5. ❌ *Walkover (WO) & Forfeit (D-031):*`,
-        `   • *WO Tunggal:* Lawan tidak hadir 10 menit setelah jadwal atau menolak membuat room. Tim hadir menang 3–0 (3 poin).`,
-        `   • *Double WO:* Kedua tim tidak bermain hingga pukul 19:59 WIB. Skor dicatat 0–0 dan masing-masing mendapatkan *0 poin*.`,
-        `   • Klaim WO dilaporkan ke Panitia untuk disahkan via *!claimwo*.`,
+        `   • *WO Tunggal:* Lawan terlambat >10 menit atau menolak bikin room. Pemenang dapat skor 3–0 (+3 poin).`,
+        `   • *Double WO:* Kedua tim tidak bermain hingga pukul 19:59 WIB. Skor 0–0 dan *keduanya mendapat 0 poin*.`,
+        `   • Klaim WO wajib menyertakan alasan jelas dan disahkan Panitia melalui *!ok*.`,
         ``,
-        `6. 📸 *Pelaporan Skor:*`,
-        `   • Delegasi tim pemenang wajib mengirim screenshot hasil akhir match + screenshot kartu statistik kiper.`,
+        `6. 📸 *Pelaporan Skor & Bukti Pertandingan:*`,
+        `   • Delegasi tim pemenang wajib mengirim:`,
+        `     1. Screenshot hasil akhir match (skor & statistik multi-pemain).`,
+        `     2. Screenshot kartu statistik Kiper (tuliskan nickname kiper di caption/teks).`,
+        `   • Nilai *DEFENSE* pada ringkasan kiper dihitung sebagai penyelamatan (saves).`,
+        `   • Laporan skor diverifikasi oleh kedua delegasi dan disahkan oleh Panitia turnamen.`,
         `──────────────────────────────`,
-        `💡 _Ketik *!schedule* untuk jadwal pertandingan, atau *!roster <Nama Tim>* untuk mengecek susunan pemain._`,
+        `💡 _Ketik *!schedule* untuk jadwal tanding, *!standings* untuk klasemen, atau *!awards* untuk daftar topskor._`,
       ].join('\n'),
     };
   };
