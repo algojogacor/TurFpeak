@@ -417,6 +417,44 @@ export function registerTournamentCommands(
       }
 
       try {
+        // Pre-flight check: total teams & verified teams
+        const totalTeamsRes = await db.execute({
+          sql: `SELECT 
+                  COUNT(*) as total_teams,
+                  SUM(CASE WHEN registration_status = 'VERIFIED' THEN 1 ELSE 0 END) as verified_teams
+                FROM teams 
+                WHERE tournament_id = ?`,
+          args: [tournamentId],
+        });
+
+        const totalTeams = Number(totalTeamsRes.rows[0]?.total_teams || 0);
+        const verifiedTeams = Number(totalTeamsRes.rows[0]?.verified_teams || 0);
+
+        if (totalTeams < 8) {
+          return {
+            success: false,
+            responseText: `⚠️ Belum cukup tim untuk melakukan undian (minimal 8 tim).\nSaat ini baru terdaftar: *${totalTeams} / 8* tim.\nGunakan *!addteam <Nama Tim>* untuk menambah tim.`,
+          };
+        }
+
+        if (verifiedTeams < totalTeams) {
+          const pendingCount = totalTeams - verifiedTeams;
+          return {
+            success: false,
+            responseText: [
+              `⚠️ *ONBOARDING DELEGASI BELUM LENGKAP!*`,
+              `──────────────────────────────`,
+              `Sistem mendeteksi ada langkah yang terlewat:`,
+              `Terdapat *${pendingCount}* dari *${totalTeams}* tim yang belum memverifikasi delegasi resminya.`,
+              ``,
+              `Jadwal pertandingan memerlukan nomor delegasi resmi agar bot dapat me-mention perwakilan tim saat jadwal dan peringatan batas waktu diumumkan.`,
+              ``,
+              `📌 *Solusi (Langkah Selanjutnya):*`,
+              `Ketik *!onboarding* di grup ini sekarang untuk menghubungkan delegasi tim secara bertahap.`,
+            ].join('\n'),
+          };
+        }
+
         // Prepare the draw (or resume existing draw)
         const draw = await prepareDraw(db, tournamentId);
 

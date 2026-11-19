@@ -107,6 +107,29 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
     expect(res.replyText).toContain('minimal 8 tim');
   });
 
+  it('warns organizer when !draw is called with 8 teams but !onboarding was forgotten', async () => {
+    const app = createApp({
+      db,
+      organizerPhone,
+      centralGroupJid,
+    });
+
+    // Create tournament and add 8 unverified teams (pending delegate)
+    await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!createtournament Forgotten Onboarding'));
+    for (let i = 1; i <= 8; i++) {
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, `!addteam ForgottenTeam${i}`));
+    }
+
+    // Call !draw without onboarding
+    const drawMsg = createTextMessage(organizerJid, centralGroupJid, '!draw');
+    const res = await app.handleInboundMessage(drawMsg);
+
+    expect(res.handled).toBe(true);
+    expect(res.commandResult?.success).toBe(false);
+    expect(res.replyText).toContain('ONBOARDING DELEGASI BELUM LENGKAP');
+    expect(res.replyText).toContain('!onboarding');
+  });
+
   it('successfully executes !draw, creates groups & fixtures, and announces schedule', async () => {
     const app = createApp({
       db,
