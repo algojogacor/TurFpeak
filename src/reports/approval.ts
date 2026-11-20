@@ -337,6 +337,13 @@ export async function organizerOverrideLock(
 /**
  * Organizer reopen report (FR-APR-004).
  * Transitions report from LOCKED back to NEEDS_CORRECTION so new corrections can be applied.
+ *
+ * FIX2-APR-002 (approval reset): reopening now also deletes the old approvals
+ * bound to this report version. Without the reset, a single fresh vote after
+ * reopen would complete the old 3-party consensus and re-LOCK the report
+ * without it ever being re-validated, defeating the purpose of reopening.
+ * After a reopen, the approval count genuinely starts from zero (0/3) per the
+ * spirit of FR-APR-003 (fresh consensus on every corrected version).
  */
 export async function organizerReopenReport(
   db: Client,
@@ -356,6 +363,13 @@ export async function organizerReopenReport(
     reason: input.reason,
   });
 
+  // Reset the old approvals: the next consensus must be built from zero.
+  const resetRes = await db.execute({
+    sql: 'DELETE FROM approvals WHERE report_version_id = ?',
+    args: [version.id],
+  });
+  const resetCount = Number(resetRes.rowsAffected);
+
   // Record audit trail
   await db.execute({
     sql: `
@@ -372,8 +386,8 @@ export async function organizerReopenReport(
       'ORGANIZER_REOPEN_REPORT',
       'report_versions',
       version.id,
-      JSON.stringify({ status: version.status }),
-      JSON.stringify({ status: 'NEEDS_CORRECTION' }),
+      JSON.stringify({ status: version.status, approvals_reset: resetCount }),
+      JSON.stringify({ status: 'NEEDS_CORRECTION', approvals: 0 }),
       input.reason,
       correlationId,
       now,

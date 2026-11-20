@@ -319,11 +319,10 @@ async function main() {
       'report status becomes NEEDS_CORRECTION after reopen'
     );
 
-    // 4. approval flow works again after reopen — the reopened version
-    //    accepts votes (previous approvals were reset by reopen via
-    //    updateReportVersionStatus; a single TEAM_A vote re-recorded leads
-    //    back to consensus because TEAM_B/ORGANIZER approvals still exist on
-    //    the approvals table bound to the same version id).
+    // 4. approval flow works again after reopen — FIX2-APR-002 (approval reset):
+    //    the reopened version starts from 0 approvals (old votes deleted), so a
+    //    single TEAM_A vote is ACCEPTED but does NOT re-lock; full 3-party
+    //    consensus must be rebuilt.
     const approvalAfter = await submitReportApproval(db, {
       report_version_id: rvId,
       approver_type: 'TEAM_A',
@@ -331,8 +330,16 @@ async function main() {
       decision: 'APPROVE',
     });
     assert(
-      approvalAfter.isLocked === true,
-      'approval accepted again after reopen (correction path unblocked; consensus re-locks)'
+      approvalAfter.isLocked === false,
+      'single vote after reopen accepted but does NOT re-lock (approvals reset to zero)'
+    );
+    const approvalsCnt = (await db.execute({
+      sql: 'SELECT COUNT(*) as c FROM approvals WHERE report_version_id = ?',
+      args: [rvId],
+    })).rows[0] as any;
+    assert(
+      Number(approvalsCnt.c) === 1,
+      'approvals table holds exactly the 1 new vote (old ones deleted by reopen)'
     );
 
     // 5. !override force-lock — test on a version that is NOT yet locked.
