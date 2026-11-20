@@ -130,13 +130,13 @@ export async function claimDebounceBatch(
     mapRowToInboundMessage(r as unknown as Record<string, unknown>)
   );
 
-  // 4. Fetch linked media assets
+  // 4. Fetch linked media assets (parameterized IN (...) — FIX2-SQL-001)
   const mediaAssets: MediaAsset[] = [];
   if (messages.length > 0) {
-    const messageIds = messages.map((m) => `'${m.id}'`).join(',');
+    const placeholders = messages.map(() => '?').join(',');
     const mediaResult = await db.execute({
-      sql: `SELECT * FROM media_assets WHERE source_message_id IN (${messageIds}) ORDER BY created_at ASC`,
-      args: [],
+      sql: `SELECT * FROM media_assets WHERE source_message_id IN (${placeholders}) ORDER BY created_at ASC`,
+      args: messages.map((m) => m.id),
     });
 
     for (const r of mediaResult.rows) {
@@ -196,6 +196,13 @@ export async function completeDebounceBatch(
 /**
  * Recovers orphaned leases on application restart / worker crash.
  * Restart-safe: resumes pending sessions without losing buffered messages.
+ *
+ * FIX2-LEASE-001: at boot the previous worker is gone by definition, so ALL
+ * sessions stuck in PROCESSING are recovered immediately — including those
+ * whose lease is nominally still alive (the lease owner no longer exists to
+ * finish them). This avoids waiting out the remaining ~30s lease passively;
+ * expired-lease reclaim by claimDebounceBatch remains as an extra safety net
+ * during runtime.
  */
 export async function recoverOrphanedLeases(
   db: Client,
@@ -205,10 +212,8 @@ export async function recoverOrphanedLeases(
   const result = await db.execute({
     sql: `UPDATE report_sessions
           SET status = 'COLLECTING', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-          WHERE status = 'PROCESSING'
-            AND lease_expires_at IS NOT NULL
-            AND lease_expires_at <= ?`,
-    args: [nowIso, nowIso],
+          WHERE status = 'PROCESSING'`,
+    args: [nowIso],
   });
 
   return Number(result.rowsAffected);

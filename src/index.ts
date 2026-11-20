@@ -34,6 +34,7 @@ import {
 import {
   resetSessionDebounce,
   claimDebounceBatch,
+  recoverOrphanedLeases,
 } from './ingestion/debounce.js';
 import { ProviderRouter } from './ai/router.js';
 import { ImageClassifier } from './ai/classifier.js';
@@ -750,6 +751,20 @@ export class FlashPeakApp {
   public start(): void {
     if (this.isPolling) return;
     this.isPolling = true;
+
+    // FIX2-LEASE-001: actively recover orphaned PROCESSING leases at boot so a
+    // session interrupted by a restart is re-queued immediately instead of
+    // waiting for its ~30s lease to passively expire.
+    recoverOrphanedLeases(this.db)
+      .then((recovered) => {
+        if (recovered > 0) {
+          this.logger.info({ recovered }, 'Recovered orphaned debounce leases at startup');
+        }
+      })
+      .catch((err) => {
+        console.error('[FlashPeakApp] Error recovering orphaned leases at startup:', err);
+      });
+
     this.pollTimer = setInterval(async () => {
       try {
         const batchResults = await this.processDueDebounceBatches();
