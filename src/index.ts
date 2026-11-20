@@ -722,11 +722,48 @@ export class FlashPeakApp {
       };
     }
 
+    // FIX2-KO-003 (audit 20 Nov 2026, temuan 3.1 Critical): ko_game_evidence.source_message_id
+    // and media_assets.source_message_id both have FK REFERENCES inbound_messages(id), but this
+    // path used to pass the WhatsApp provider_message_key — which is NOT a row UUID — so every
+    // journal INSERT failed with SQLITE FOREIGN KEY constraint and the photo pipeline was dead.
+    // Fix: capture the inbound message row FIRST (idempotent, like the group-stage path at
+    // captureInboundMessage) and use the row UUID as sourceMessageId everywhere below.
+    const captureRes = await captureInboundMessage(this.db, {
+      provider_message_key: message.provider_message_key,
+      chat_id: message.chat_id,
+      sender_raw_address: message.sender_raw_address,
+      delegate_id: delegateId,
+      message_timestamp: message.message_timestamp,
+      message_type: message.message_type,
+      text_body: message.text_body,
+      caption: message.caption,
+      reply_to_key: message.reply_to_key,
+    });
+    const sourceMessageRowId = captureRes.message.id;
+
     // Resolve the target series fixture:
     // 1) explicit fixture id from the caption, else
     // 2) the sender's team's active knockout fixture, else
     // 3) the single active knockout fixture of the latest tournament.
-    let fixtureId = explicitFixtureId?.trim() || '';
+    // FIX2-KO-004 (audit temuan 3.2 High): an explicit caption arg is validated as a real
+    // fixture id BEFORE use (a stray word like "MOCK" must not be treated as a fixture id),
+    // and an ambiguous implicit resolution is rejected with a chooser list instead of
+    // silently defaulting to the oldest series.
+    let fixtureId = '';
+    const explicitArg = (explicitFixtureId || '').trim();
+    if (explicitArg) {
+      const validRes = await this.db.execute({
+        sql: `SELECT id FROM fixtures WHERE id = ? LIMIT 1`,
+        args: [explicitArg],
+      });
+      if (validRes.rows.length === 0) {
+        return {
+          handled: true,
+          replyText: `⚠️ ID fixture *"${explicitArg}"* tidak ditemukan. Kirim foto dengan caption *!kogame <fixture_id>* menggunakan ID fixture yang benar (lihat *!schedule*).`,
+        };
+      }
+      fixtureId = explicitArg;
+    }
     if (!fixtureId) {
       const teamId = resolved.status === 'VERIFIED' && resolved.team ? resolved.team.id : null;
       if (teamId) {
@@ -741,14 +778,38 @@ export class FlashPeakApp {
       }
     }
     if (!fixtureId) {
+      // FIX2-KO-004 (audit temuan 3.2 High): never default silently to the oldest
+      // active series. If MORE than one active knockout fixture exists, reply with
+      // a chooser list so the delegate explicitly states the target; auto-pick the
+      // single one only when it is truly unambiguous.
       const fRes = await this.db.execute({
-        sql: `SELECT f.id FROM fixtures f
+        sql: `SELECT f.id, f.round_code, ta.team_name AS team_a_name, tb.team_name AS team_b_name
+              FROM fixtures f
               JOIN tournaments t ON f.tournament_id = t.id
+              JOIN teams ta ON f.team_a_id = ta.id
+              JOIN teams tb ON f.team_b_id = tb.id
               WHERE f.stage = 'KNOCKOUT' AND t.status NOT IN ('COMPLETED', 'ARCHIVED')
                 AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
-              ORDER BY f.created_at ASC LIMIT 1`,
+              ORDER BY f.created_at ASC`,
       });
-      if (fRes.rows.length > 0) fixtureId = String(fRes.rows[0].id);
+      if (fRes.rows.length === 1) {
+        fixtureId = String(fRes.rows[0].id);
+      } else if (fRes.rows.length > 1) {
+        const lines = fRes.rows.map((r) => {
+          const row = r as unknown as Record<string, unknown>;
+          return `• *${String(row.team_a_name)}* vs *${String(row.team_b_name)}* (${String(row.round_code)}) — \`${String(row.id)}\``;
+        });
+        return {
+          handled: true,
+          replyText: [
+            '⚠️ Ada beberapa series knockout aktif — sebutkan ID fixture secara eksplisit:',
+            ...lines,
+            '',
+            'Contoh: kirim ulang foto dengan caption `!kogame <fixture_id> <skor_a>-<skor_b>`.',
+            'Daftar ID fixture juga bisa dilihat via *!schedule*.',
+          ].join('\n'),
+        };
+      }
     }
 
     if (!fixtureId) {
@@ -797,7 +858,8 @@ export class FlashPeakApp {
           filename: message.media_metadata?.fileName || `${message.provider_message_key}.jpg`,
           mimeType: message.media_metadata?.mimetype || 'image/jpeg',
           mediaRole: 'MAIN_MATCH',
-          sourceMessageId: message.provider_message_key,
+          // FIX2-KO-003: inbound_messages row UUID (FK-safe), NOT provider_message_key.
+          sourceMessageId: sourceMessageRowId,
           uploadedByDelegateId: delegateId,
         });
         mediaAssetId = asset.id;
@@ -841,7 +903,8 @@ export class FlashPeakApp {
         teamBScore: extractedB,
         submittedByDelegateId: delegateId,
         mediaAssetId,
-        sourceMessageId: message.provider_message_key,
+        // FIX2-KO-003: inbound_messages row UUID (FK-safe), NOT provider_message_key.
+        sourceMessageId: sourceMessageRowId,
         extractionJson: JSON.stringify({
           raw: extraction.raw_extraction,
           summary: extraction.summary_data,
@@ -971,6 +1034,9 @@ export class FlashPeakApp {
       approver_id: approverId,
       decision,
       is_organizer: isOrganizer,
+      // FIX2-APR-003: verify ORGANIZER authority against configured organizer
+      // identities (WA_ORGANIZER_JID / WA_ORGANIZER_PHONE), not string patterns.
+      allowed_organizer_ids: this.commandRouter.getOrganizerIdentities(),
     });
   }
 

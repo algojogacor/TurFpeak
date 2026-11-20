@@ -52,7 +52,7 @@ export function getGroupCode(index: number): string {
 /**
  * Programmatic group sizing (FR-COMP-010, D-026/027).
  * Batches of 5, remainder groups of 4. NEVER < 4 or > 5.
- * 
+ *
  * Sizing rules:
  * - For total registered teams < 8: REJECT with clear descriptive error.
  *   "Jumlah tim belum cukup untuk membentuk minimal 2 grup, minimal 8 tim"
@@ -60,44 +60,70 @@ export function getGroupCode(index: number): string {
  * - Always forms groups of either 5 or 4 teams.
  * - Exactly 2 teams qualify per group regardless of size (FR-COMP-011).
  */
-export function computeGroupSizing(totalTeams: number): GroupConfigJson {
+export interface GroupSizingOptions {
+  /**
+   * Target group size the organizer wants (e.g. 5 for "semua grup 5 tim").
+   * Sizing fills groups of `target` first, then one step lower to absorb the
+   * remainder. Must be 4 or 5 (FR-COMP-010: only these sizes are legal).
+   */
+  targetGroupSize?: number;
+}
+
+export function computeGroupSizing(
+  totalTeams: number,
+  options?: GroupSizingOptions
+): GroupConfigJson {
   if (totalTeams < 8) {
     throw new Error(
       'Jumlah tim belum cukup untuk membentuk minimal 2 grup, minimal 8 tim'
     );
   }
 
-  // Find non-negative integers g5 and g4 such that 5*g5 + 4*g4 == totalTeams,
-  // maximizing the number of 5-team groups (forming in batches of 5).
-  let g5 = Math.floor(totalTeams / 5);
-  let g4 = -1;
+  // FIX2-COMP-DYN: dynamic target group size. Default stays the FR-COMP-010
+  // behaviour (5 first, remainder 4). With targetGroupSize the algorithm fills
+  // groups of the target size first, then the SMALLER legal size absorbs the
+  // remainder — so "semua grup 5" needs a team count expressible as 5a + 4b
+  // (e.g. 10/20/25/40), exactly the constraint documented in the FAQ.
+  const target = options?.targetGroupSize ?? 5;
+  if (target !== 5 && target !== 4) {
+    throw new Error(
+      `Ukuran grup target (${target}) tidak valid — hanya 4 atau 5 tim per grup yang diizinkan (FR-COMP-010)`
+    );
+  }
+  const secondary = target === 5 ? 4 : 5;
 
-  while (g5 >= 0) {
-    const remainder = totalTeams - 5 * g5;
-    if (remainder % 4 === 0) {
-      g4 = remainder / 4;
+  // Find non-negative integers gT (target-size groups) and gS (secondary-size
+  // groups) such that T*gT + S*gS == totalTeams, maximizing gT (batches of the
+  // target size first, like the original 5-first/4-remainder behaviour).
+  let gT = Math.floor(totalTeams / target);
+  let gS = -1;
+
+  while (gT >= 0) {
+    const remainder = totalTeams - target * gT;
+    if (remainder % secondary === 0) {
+      gS = remainder / secondary;
       break;
     }
-    g5--;
+    gT--;
   }
 
-  if (g4 === -1) {
+  if (gS === -1) {
     throw new Error(
-      `Jumlah tim (${totalTeams}) tidak dapat dibagi menjadi kombinasi grup 4 dan 5`
+      `Jumlah tim (${totalTeams}) tidak dapat dibagi menjadi kombinasi grup ${target} dan ${secondary}`
     );
   }
 
-  const numGroups = g5 + g4;
+  const numGroups = gT + gS;
   if (numGroups < 2) {
     throw new Error(
       'Jumlah tim belum cukup untuk membentuk minimal 2 grup, minimal 8 tim'
     );
   }
 
-  // Put 5-team groups first, then 4-team remainder groups
+  // Put target-size groups first, then remainder/secondary-size groups
   const groupSizes: number[] = [
-    ...Array<number>(g5).fill(5),
-    ...Array<number>(g4).fill(4),
+    ...Array<number>(gT).fill(target),
+    ...Array<number>(gS).fill(secondary),
   ];
 
   const groupCodes = groupSizes.map((_, i) => getGroupCode(i));
@@ -179,7 +205,7 @@ export function buildRevealSequence(
 export async function prepareDraw(
   db: Client,
   tournamentId: string,
-  options?: { forceNew?: boolean }
+  options?: { forceNew?: boolean; groupSizing?: GroupSizingOptions }
 ): Promise<GroupDraw> {
   // Check for existing draw for this tournament
   const existingResult = await db.execute({
@@ -238,7 +264,7 @@ export async function prepareDraw(
   }
 
   // Programmatic group sizing
-  const groupConfig = computeGroupSizing(verifiedTeams.length);
+  const groupConfig = computeGroupSizing(verifiedTeams.length, options?.groupSizing);
 
   // Cryptographically secure shuffle
   const shuffledTeams = cryptoFisherYates(verifiedTeams);

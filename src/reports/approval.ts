@@ -37,6 +37,13 @@ export interface SubmitApprovalInput {
   is_organizer?: boolean;
   rejection_reason?: string;
   correlation_id?: string;
+  /**
+   * FIX2-APR-003 (audit temuan 3.3): configured organizer identities
+   * (normalized JIDs / phone digits, from WA_ORGANIZER_JID / WA_ORGANIZER_PHONE).
+   * Required for ORGANIZER-type approvals so authority is verified against
+   * configuration instead of loose string patterns on the approver id.
+   */
+  allowed_organizer_ids?: string[];
 }
 
 export interface ApprovalOutcome {
@@ -70,10 +77,26 @@ async function verifyApproverAuthority(
   fixtureId: UUID,
   approverType: ApproverType,
   approverId: string,
-  isOrganizerExplicit?: boolean
+  isOrganizerExplicit?: boolean,
+  allowedOrganizerIds?: string[]
 ): Promise<{ authorized: boolean; reason?: string }> {
   if (approverType === 'ORGANIZER') {
-    if (isOrganizerExplicit || approverId === 'ORGANIZER' || approverId.startsWith('org_') || approverId.includes('organizer')) {
+    // FIX2-APR-003 (audit temuan 3.3 Medium): the old check accepted any id
+    // starting with "org_" or merely CONTAINING "organizer" — arbitrary text
+    // could pass as an organizer voice. Authority is now derived from identity:
+    // either the caller explicitly asserted organizer AND the id is one of the
+    // configured organizer identities (WA_ORGANIZER_JID / WA_ORGANIZER_PHONE,
+    // resolved by CommandRouter.isSenderOrganizer upstream), or the bare
+    // system constant 'ORGANIZER' used by internal/admin paths.
+    // When no identities are configured at all (unit-test / admin-tool context),
+    // an explicit is_organizer assertion remains the trust boundary — same as
+    // the production router path where only the configured organizer can set it.
+    const hasConfiguredIds = (allowedOrganizerIds ?? []).length > 0;
+    const allowed = new Set<string>(['ORGANIZER', ...(allowedOrganizerIds ?? [])]);
+    if (allowed.has(approverId)) {
+      return { authorized: true };
+    }
+    if (isOrganizerExplicit && !hasConfiguredIds) {
       return { authorized: true };
     }
     return {
@@ -156,7 +179,8 @@ export async function submitReportApproval(
     version.fixture_id,
     input.approver_type,
     input.approver_id,
-    input.is_organizer
+    input.is_organizer,
+    input.allowed_organizer_ids
   );
 
   if (!auth.authorized) {

@@ -655,15 +655,37 @@ export function registerTournamentCommands(
     },
   });
 
-  // !draw [tournament_id]
+  // !draw [tournament_id] [size=4|5]
   router.registerCommand({
     command: 'draw',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mengundi pembagian grup secara acak dan membuat jadwal pertandingan (Admin only)',
+    description: 'Mengundi pembagian grup secara acak dan membuat jadwal pertandingan (Admin only). Opsi: size=4|5 untuk memilih ukuran grup target (default 5).',
     handler: async (ctx: CommandContext) => {
-      let tournamentId = ctx.args[0]?.trim();
+      // FIX2-COMP-DYN: dynamic group sizing. Args may contain an optional
+      // `size=<4|5>` flag (default 5 = FR-COMP-010 behaviour); remaining args
+      // are the optional tournament_id as before.
+      const rawArgsList = ctx.rawArgs.trim().split(/\s+/).filter(Boolean);
+      let targetGroupSize: 4 | 5 = 5;
+      const positionalArgs: string[] = [];
+      for (const arg of rawArgsList) {
+        const sizeMatch = arg.match(/^size[=\s](\d+)$/i) ?? null;
+        if (sizeMatch) {
+          const requested = Number(sizeMatch[1]);
+          if (requested !== 4 && requested !== 5) {
+            return {
+              success: false,
+              responseText: '⚠️ Ukuran grup hanya boleh *4* atau *5* tim per grup (FR-COMP-010). Contoh: `!draw size=5`.',
+            };
+          }
+          targetGroupSize = requested as 4 | 5;
+        } else {
+          positionalArgs.push(arg);
+        }
+      }
+
+      let tournamentId = positionalArgs[0]?.trim() || '';
       let tournamentName = '';
 
       if (tournamentId) {
@@ -735,7 +757,9 @@ export function registerTournamentCommands(
         }
 
         // Prepare the draw (or resume existing draw)
-        const draw = await prepareDraw(db, tournamentId);
+        const draw = await prepareDraw(db, tournamentId, {
+          groupSizing: { targetGroupSize },
+        });
 
         if (draw.status === 'COMPLETED') {
           const groupsRes = await db.execute({
@@ -896,9 +920,28 @@ export function registerTournamentCommands(
             : `${summaryMsg}\n\n${scheduleMsg}`,
         };
       } catch (err: any) {
+        // FIX2-COMP-DYN: sizing failures carry actionable guidance (which team
+        // counts work for the requested target size) instead of a bare error.
+        const msg = err.message || String(err);
+        if (msg.includes('tidak dapat dibagi menjadi kombinasi grup')) {
+          const nearTargets = [targetGroupSize, targetGroupSize === 5 ? 4 : 5];
+          const feasible = [8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 24, 25, 28, 30, 35, 40, 45]
+            .filter((n) => n % 5 === 0 || n % 4 === 0 || (n - 5) % 4 === 0 || (n - 4) % 5 === 0);
+          return {
+            success: false,
+            responseText: [
+              `⚠️ ${msg}`,
+              '',
+              `Dengan ukuran grup target *${targetGroupSize}* (grup ${nearTargets.join(' dan ')}), jumlah tim harus bisa dinyatakan sebagai kombinasi \`${targetGroupSize}a + ${targetGroupSize === 5 ? 4 : 5}b\`.`,
+              `Contoh jumlah tim yang cocok: ${feasible.slice(0, 8).join(', ')}…`,
+              '',
+              'Solusi: tambah/kurangi tim ke jumlah terdekat yang cocok, atau undi ulang dengan ukuran grup lain (`!draw size=4` / `!draw size=5`).',
+            ].join('\n'),
+          };
+        }
         return {
           success: false,
-          responseText: `⚠️ Gagal menjalankan undian: ${err.message || String(err)}`,
+          responseText: `⚠️ Gagal menjalankan undian: ${msg}`,
         };
       }
     },
