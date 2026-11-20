@@ -142,7 +142,10 @@ async function main() {
     const msg: NormalizedMessage = {
       message_id: `msg-${Date.now()}-${Math.random()}`,
       chat_id: centralGroupJid,
-      sender_id: organizerJid,
+      // MERGE-ALIGN: kontrak NormalizedMessage (sender_raw_address); field
+      // legacy sender_id telah dihapus oleh PR #3 (BUGFIX-TS-002).
+      sender_raw_address: organizerJid,
+      sender_normalized_address: organizerJid,
       sender_phone: organizerPhone,
       is_group: true,
       text_body: text,

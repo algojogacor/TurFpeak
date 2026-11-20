@@ -1,5 +1,37 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Merge Koordinasi 4 PR ke master (Task: flash-peak-tms-analyze-and-merge-prs-v1)
+
+### Konteks Sesi
+Sesi ini menganalisis 4 PR terbuka (PR #1–#4) untuk menentukan urutan merge yang aman, mendeteksi konflik, lalu mengeksekusi merge bertahap dengan test ulang di master setelah tiap tahap. Seluruh analisa dilakukan secara lokal (clone + fetch semua head branch) SEBELUM tombol merge pertama ditekan, termasuk simulasi merge penuh (dry-run) dengan test + typecheck di tiap tahap.
+
+### Fakta kunci dari analisa lokal
+- **PR #4 ⊇ PR #2**: branch PR #4 dibuat DI ATAS head PR #2 (`bf1d98a`, terverifikasi `git merge-base --is-ancestor`) + 1 commit docs murni (`cara-penggunaan.md` + worklog). Dokumentasinya sudah akurat terhadap command final PR #2; `!help` tidak perlu sinkron kode karena outputnya dirender dinamis dari command registry.
+- **PR #1**: 4 file artifact read-only baru (`second-opinion-audit-artifacts/`), nol perubahan kode produksi, tidak overlap dengan PR lain. Diputuskan MERGE (bukan close) sebagai referensi historis — laporan temuan tidak ter-superseded oleh fix, dan `dryrun_e2e.ts`-nya dipakai PR #2 sebagai verifikasi lintas-branch.
+- **PR #2 ∩ PR #3**: 4 file sama, tapi hunk disjoint (PR #2: baris 24–89/2244–2532/2675+; PR #3: 2581–2601 + router 114–175) → auto-merge bersih.
+- **Konflik git yang nyata hanya `worklog.md`** (gaya prepend, semua sesi menambah entri di atas) → di-resolve dengan union blok sesi (script `scripts/resolve_worklog.py` di luar repo, di sesi agent): zero konten hilang, urut terbaru-dulu.
+- **Konflik semantik lintas-PR (tak terdeteksi git/vitest)**: 2 script dry-run buatan PR #2 (`audit_sync_central_group.ts` Scenario 4; `dryrun_knockout_stage.ts`) membangun `NormalizedMessage` dengan field legacy `sender_id`; setelah PR #3 menghapus fallback `|| sender_id` (BUGFIX-TS-002), `sender_raw_address` jadi undefined → crash `.split()` di `isSenderOrganizer`. Terdeteksi HANYA lewat dry-run sweep (15/17 gagal 2). Fix: alignment mekanis ke kontrak tipe — persis gaya yang PR #3 sendiri pakai untuk kasus yang sama pada 2 dry-run lama.
+
+### Urutan merge yang dieksekusi + hasil test di master setelah tiap tahap
+| Tahap | PR | Merge SHA | tsc master | vitest master |
+|---|---|---|---|---|
+| 0 | (baseline master `16c97bb`) | — | 5 error (2 bug TS pre-existing) | 223/223 |
+| 1 | PR #1 audit artifacts | `dcf12ba` | 5 error (identik; bukan regresi) | 223/223 |
+| 2 | PR #2 9 findings + KO pipeline | `2de0417` | 5 error (identik; bukan regresi) | 223/223 |
+| 3 | PR #3 2 bug TS (branch di-update dulu: merge master + union worklog → push `4d7c781`) | `47531a6` | **0 error** | 223/223 |
+| 4 | PR #4 cara-penggunaan (branch di-update dulu: merge master, auto-clean → push `12d046e`) | `fd5c2e0` | **0 error** | 223/223 |
+| 5 | Commit alignment 2 dry-run + entri worklog ini | (commit ini) | **0 error** | 223/223 + dry-run 17/17 |
+
+Alasan urutan: (1) PR #1 zero-risk masuk duluan supaya laporan audit hidup di master sebagai referensi sebelum fix-nya masuk; (2) PR #2 sebagai PR fungsional inti; (3) PR #3 setelah PR #2 — hunks disjoint dan fix-nya sekaligus membersihkan warisan `sender_id` yang dibawa PR #2; (4) PR #4 terakhir — tinggal menambah commit docs karena basisnya sudah ada di master.
+
+### Verifikasi final di HEAD master
+- `npx tsc --noEmit`: **0 error**.
+- `npm test`: **18 file / 223/223 PASS**.
+- Sweep 17 dry-run (12 audit lama + `dryrun_knockout_stage` + `dryrun_fix2_items` + `dryrun_ko_pipeline_v2` + `dryrun_fix_preexisting_ts_bugs` + `dryrun_e2e` second-opinion): **17/17 PASS** (sebelum alignment: 15/17).
+
+### Catatan
+- Token GHP dipakai via file chmod-600 di luar repo (tidak pernah di-commit, tidak pernah ditampilkan ulang). Token pernah tercantum sebagai teks di chat — owner disarankan revoke/rotate setelah sesi ini.
+
 ## [2026-11-20] Sesi Dokumentasi: Panduan Penggunaan Bot untuk Organizer & Delegasi (Task: flash-peak-tms-cara-penggunaan-doc-v1, Branch: docs/cara-penggunaan)
 
 ### Konteks Sesi

@@ -126,7 +126,11 @@ async function main() {
   const setMsg: NormalizedMessage = {
     message_id: 'msg-set-1',
     chat_id: group3Jid,
-    sender_id: organizerJid,
+    // MERGE-ALIGN: pesan dibangun sesuai kontrak NormalizedMessage
+    // (sender_raw_address) — field legacy sender_id dihapus oleh PR #3
+    // (BUGFIX-TS-002), sehingga fallback sender_id tidak lagi tersedia.
+    sender_raw_address: organizerJid,
+    sender_normalized_address: organizerJid,
     sender_phone: organizerPhone,
     is_group: true,
     text_body: '!setgroup',
