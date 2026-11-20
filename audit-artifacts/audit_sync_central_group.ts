@@ -45,7 +45,9 @@ async function main() {
   const setgroupMsg: NormalizedMessage = {
     message_id: 'msg-setgroup-1',
     chat_id: group1Jid,
-    sender_id: organizerJid,
+    // BUGFIX-TS-002 dry-run alignment: sender_raw_address per the type contract.
+    sender_raw_address: organizerJid,
+    sender_normalized_address: organizerJid,
     sender_phone: organizerPhone,
     is_group: true,
     text_body: '!setgroup',
@@ -92,7 +94,9 @@ async function main() {
   const createMsg: NormalizedMessage = {
     message_id: 'msg-create-1',
     chat_id: group3Jid,
-    sender_id: organizerJid,
+    // BUGFIX-TS-002 dry-run alignment: sender_raw_address per the type contract.
+    sender_raw_address: organizerJid,
+    sender_normalized_address: organizerJid,
     sender_phone: organizerPhone,
     is_group: true,
     text_body: '!createtournament Flash Peak Winter Cup',

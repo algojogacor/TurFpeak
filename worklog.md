@@ -230,6 +230,41 @@ Sesi ini adalah tindak lanjut dari laporan second-opinion audit independen `flas
 
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Independen: Fix 2 Bug TypeScript Pre-Existing dari master (Task: flash-peak-tms-fix-preexisting-ts-bugs-v1, Branch: fix/preexisting-ts-bugs → PR baru)
+
+### Konteks Sesi
+Sesi ini memperbaiki **2 bug TypeScript pre-existing di master** yang saya temukan dan laporkan sendiri saat typecheck di sesi PR #2 (branch fix/second-opinion-findings), namun saat itu sengaja TIDAK diperbaiki karena di luar scope task (sesuai aturan kerja: dilaporkan dulu, status REPORTED). Keduanya sudah ada SEBELUM PR #2 dan bukan regresi darinya. Sesi ini mengerjakan fix-nya sebagai task tersendiri di **branch baru `fix/preexisting-ts-bugs` dari master terkini `16c97bb`** (independen dari PR #2 yang masih berjalan; tanpa merge).
+
+Saat typecheck di master murni awal sesi, kedua bug terkonfirmasi persis seperti laporan sebelumnya (5 baris error): 1× `PendingWoClaim.id` + 4× `sender_id`.
+
+---
+
+### [BUGFIX-TS-001] PendingWoClaim.id tidak terisi di jalur !claimwo
+- **Status**: Selesai & Terverifikasi
+- **File**: `src/application/tournament-commands.ts` (handler `!claimwo`, konstruksi `PendingWoClaim`)
+- **Akar masalah** (dianalisis dulu sebelum fix): interface `PendingWoClaim` (src/application/wo-claim-session.ts) mensyaratkan field `id: string`, dan jalur natural-language WO-claim di `src/index.ts` SUDAH mengisinya dengan `id: randomUUID()` — tapi handler command `!claimwo` di tournament-commands.ts lupa mengisi field itu. Sesi WO di-keying per `chatId` (bukan per id) sehingga `id` saat ini tidak pernah *dibaca* oleh wo-claim-session (stagePendingClaim/getPending/confirmPending/rejectPending semua pakai chatId) — namun kontrak tipe terlanggar dan jika ada referensi `claim.id` di masa depan (mis. untuk audit/korelasi) akan mendapat `undefined` di jalur `!claimwo` saja, tidak di jalur NL. Perbedaan perilaku antar-dua jalur input yang sama fungsi inilah risiko laten yang sebenarnya.
+- **Fix**: generate `id: randomUUID()` di titik konstruksi claim di handler `!claimwo` — konsisten persis dengan jalur NL yang sudah benar (`randomUUID` sudah di-import). Tidak ada tempat lain yang perlu diubah karena tidak ada konsumen id saat ini; kedua jalur kini menghasilkan claim dengan id identik dalam format dan semantik.
+- **Bukti & Verifikasi** (`npx tsx audit-artifacts/dryrun_fix_preexisting_ts_bugs.ts` — T1, 8/8 PASS): delegasi `!claimwo` → pending claim tersedia di sesi; **`pending.id` string non-kosong dengan format UUID valid** (sebelum fix: undefined); `reportedByAddress` = sender_raw_address delegasi; organizer `!ok` → klaim disahkan, WO 3-0 tercatat di `games` (is_walkover=1); pending ter-clear. End-to-end jalur `!claimwo` utuh tanpa regresi (dry-run lama `audit_rbac_wo_claim.ts` juga tetap PASS).
+
+---
+
+### [BUGFIX-TS-002] Properti sender_id dipakai di 4 lokasi padahal tidak ada di NormalizedMessage
+- **Status**: Selesai & Terverifikasi
+- **File**: `src/application/tournament-commands.ts` (1 lokasi: reportedByAddress di `!claimwo`), `src/whatsapp/router.ts` (3 lokasi: `isSenderOrganizer` ×2, `handleMessage` delegate resolution)
+- **Akar masalah** (dianalisis dulu sebelum fix): keempat lokasi memakai pola fallback `message.sender_raw_address || message.sender_id`, tapi `sender_id` **tidak pernah ada** di tipe `NormalizedMessage` — field yang tersedia adalah `sender_raw_address` (required, `string`), `sender_normalized_address`, `participant`, dll. Ini field warisan dari pra-refactor normalisasi pesan (sisa nama lama). Analisis normalizer (src/whatsapp/normalizer.ts): `sender_raw_address = msg.key.participant || msg.key.remoteJid || ''` dan pesan tanpa `remoteJid` langsung di-drop (`return null`) — jadi **setiap NormalizedMessage yang ada di runtime pasti punya sender_raw_address non-kosong** (minimum remoteJid). Kesimpulan akar masalah: **bukan** tipe yang kurang field (menambah `sender_id` ke tipe hanya agar tsc diam adalah salah kaprah — tidak ada produser yang mengisi field itu); akar masalahnya adalah 4 referensi ke field yang tidak pernah ada → fallback mati yang tampaknya aman di typecheck lama.
+- **Fix**: hapus fallback `|| message.sender_id` di keempat lokasi; nilai yang dipakai kini murni `sender_raw_address` yang required dan dijamin non-kosong. Perilaku runtime tidak berubah untuk pesan hasil normalizer (nilai `undefined || x` tidak pernah tercapai); yang berubah hanya hilangnya referensi property ilegal.
+- **Temuan turunan penting selama verifikasi**: 2 dry-run lama (`audit_sync_central_group.ts`, `audit_roomcard_commands.ts`) ternyata membangun `NormalizedMessage` buatan dengan field ilegal `sender_id`/`sender_phone` **tanpa** `sender_raw_address` — selama ini jalurnya "bekerja" justru karena fallback `|| sender_id` menutup `undefined`. Setelah fallback dihapus, kecurangan itu tersingkap dan dry-run crash di `isSenderOrganizer`. Dry-run lama inilah bukti nyata kenapa pemakaian field yang tidak ada di tipe itu berbahaya. Keduanya diperbaiki dengan membangun pesan **sesuai kontrak tipe** (`sender_raw_address` + `sender_normalized_address`), bukan dengan menghidupkan kembali field ilegal.
+- **Bukti & Verifikasi** (`dryrun_fix_preexisting_ts_bugs.ts` — T2, 8/8 PASS): (A) `isSenderOrganizer` mengenali organizer via JID dari `sender_raw_address`, menolak non-organizer; (B) jalur fallback nomor telepon (`rawDigits` — lokasi fix kedua di router) mengenali organizer via organizerPhone tanpa kecocokan JID; (C) command dari delegasi non-organizer terproses via `handleMessage` → `resolveIdentity(sender_raw_address)` VERIFIED (nilai valid, bukan undefined); (D) jalur `!claimwo` (lokasi ke-4) aman dengan `reportedByAddress` terisi valid. Keempat lokasi terbukti menerima nilai valid saat runtime — bukan sekadar typecheck lolos.
+- **Regression penuh sesi ini**: `tsc --noEmit` **0 error** (sebelumnya 5 — target task tercapai); full vitest suite **223/223 PASS** (18 file); sweep 13 dry-run audit-artifacts **13/13 PASS** (termasuk `audit_rbac_wo_claim.ts`, `audit_roomcard_commands.ts`, `audit_sync_central_group.ts` yang menjangkau jalur-jalur terdampak, dan dry-run baru `dryrun_fix_preexisting_ts_bugs.ts`).
+
+---
+
+### Catatan Tambahan
+1. Branch `fix/preexisting-ts-bugs` dibuat **dari master terkini** (bukan dari branch PR #2) karena task ini independen; PR baru dibuka ke master dan **tidak di-merge** — menunggu review Arya, konsisten dengan proses sebelumnya.
+2. PR #2 (`fix/second-opinion-findings`) tidak disentuh sama sekali di sesi ini; kedua bug fix ini akan berujung konflik minimal dengan PR #2 karena perubahan di area yang sama (`tournament-commands.ts` `!claimwo`) bersifat tambahan baris `id: randomUUID()` dan penghapusan fallback — mudah di-resolve saat merge.
+
+# Worklog — Flash Peak TMS (TurFpeak)
+
 ## [2026-11-20] Sesi Perbaikan Temuan Audit Independen (Task: flash-peak-tms-fix-audit-findings-v1)
 
 ### Konteks Sesi
