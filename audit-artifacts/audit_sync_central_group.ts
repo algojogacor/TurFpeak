@@ -87,8 +87,10 @@ async function main() {
   console.log('Result Scenario 2: PASS');
 
   // 4. Organizer runs !createtournament in group 3
+  // FIX2-GROUP-001: admin commands in a non-official group are now REJECTED
+  // (no silent auto-adopt). !setgroup remains the explicit official switch.
   const group3Jid = '120363333333333333@g.us';
-  console.log('\n--- Scenario 3: Organizer runs !createtournament in Group 3 ---');
+  console.log('\n--- Scenario 3: Organizer runs !createtournament in unofficial Group 3 (FIX2-GROUP-001) ---');
   const createMsg: NormalizedMessage = {
     message_id: 'msg-create-1',
     chat_id: group3Jid,
@@ -103,19 +105,42 @@ async function main() {
 
   const createRes = await app.handleInboundMessage(createMsg);
   console.log('Command Handled:', createRes.handled);
-  console.log('Updated State:');
+  console.log('Response:', createRes.replyText);
+  console.log('State (must remain group 2):');
   console.log(' - app.getCentralGroupJid():', app.getCentralGroupJid());
   console.log(' - commandRouter.getCentralGroupJid():', app.commandRouter.getCentralGroupJid());
   console.log(' - matchdayService.getCentralGroupJid():', app.matchdayService.getCentralGroupJid());
 
+  if (!createRes.replyText || !createRes.replyText.includes('grup turnamen resmi')) {
+    throw new Error('FIX2-GROUP-001: !createtournament in unofficial group must be rejected with a clear message');
+  }
+  if (app.getCentralGroupJid() !== group2Jid ||
+      app.commandRouter.getCentralGroupJid() !== group2Jid ||
+      app.matchdayService.getCentralGroupJid() !== group2Jid) {
+    throw new Error(`FIX2-GROUP-001: central group must NOT auto-switch to ${group3Jid}`);
+  }
+  console.log('Result Scenario 3: PASS (rejected, no auto-adopt)');
+
+  // 5. !setgroup in group 3 remains the explicit way to switch official group
+  console.log('\n--- Scenario 4: !setgroup in Group 3 switches official group explicitly ---');
+  const setMsg: NormalizedMessage = {
+    message_id: 'msg-set-1',
+    chat_id: group3Jid,
+    sender_id: organizerJid,
+    sender_phone: organizerPhone,
+    is_group: true,
+    text_body: '!setgroup',
+    timestamp: new Date(),
+  };
+  await app.handleInboundMessage(setMsg);
   if (app.getCentralGroupJid() !== group3Jid ||
       app.commandRouter.getCentralGroupJid() !== group3Jid ||
       app.matchdayService.getCentralGroupJid() !== group3Jid) {
-    throw new Error(`Synchronization failed after !createtournament: expected ${group3Jid}`);
+    throw new Error(`Synchronization failed after !setgroup: expected ${group3Jid}`);
   }
-  console.log('Result Scenario 3: PASS');
+  console.log('Result Scenario 4: PASS');
 
-  console.log('\n=== AUDIT CONCLUSION: FIX-SYNC-001 ===');
+  console.log('\n=== AUDIT CONCLUSION: FIX-SYNC-001 + FIX2-GROUP-001 ===');
   console.log('ALL SYNCHRONIZATION TESTS PASSED SUCCESSFULLY!');
 }
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { runMigrations } from '../src/db/migrate.js';
 
-describe('Database Migrations (001_initial.sql)', () => {
+describe('Database Migrations (001_initial.sql + later versioned migrations)', () => {
   let db: Client;
 
   beforeEach(() => {
@@ -16,16 +16,16 @@ describe('Database Migrations (001_initial.sql)', () => {
     db.close();
   });
 
-  it('successfully applies 001_initial.sql and records it in _migrations', async () => {
+  it('successfully applies all pending migrations and records them in _migrations', async () => {
     const result = await runMigrations(db);
 
     expect(result.applied).toContain('001_initial.sql');
     expect(result.skipped).toEqual([]);
 
-    // Check _migrations table
+    // Check _migrations table: every migration file in the directory is applied
     const migrationRows = await db.execute('SELECT id, name FROM _migrations');
-    expect(migrationRows.rows.length).toBe(1);
-    expect(migrationRows.rows[0]?.[0]).toBe('001_initial');
+    expect(migrationRows.rows.length).toBe(result.applied.length);
+    expect(migrationRows.rows.map((r) => String(r[0]))).toContain('001_initial');
 
     // Query sqlite_master to verify tables were created
     const tablesResult = await db.execute(
@@ -47,6 +47,7 @@ describe('Database Migrations (001_initial.sql)', () => {
       'group_members',
       'groups',
       'inbound_messages',
+      'ko_game_evidence',
       'media_assets',
       'player_game_stats',
       'players',
@@ -67,14 +68,16 @@ describe('Database Migrations (001_initial.sql)', () => {
   });
 
   it('is idempotent on repeated runs', async () => {
-    // First run
+    // First run applies the full pending set
     const firstRun = await runMigrations(db);
-    expect(firstRun.applied.length).toBe(1);
+    expect(firstRun.applied.length).toBeGreaterThan(0);
+    expect(firstRun.applied).toContain('001_initial.sql');
 
-    // Second run
+    // Second run applies nothing; everything is skipped
     const secondRun = await runMigrations(db);
     expect(secondRun.applied.length).toBe(0);
     expect(secondRun.skipped).toContain('001_initial.sql');
+    expect(secondRun.skipped).toEqual(firstRun.applied);
   });
 
   it('enforces table foreign key constraints when inserting related rows', async () => {

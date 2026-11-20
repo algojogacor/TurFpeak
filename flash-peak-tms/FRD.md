@@ -136,7 +136,7 @@ Default room host recommendation is the fixture's left-side team; this is adviso
 ### FR-FIX-006 — Double room-card unavailability
 If BOTH teams in a fixture are unable to provide a room card (neither the designated host nor a willing substitute host exists):
 - Group Stage: record as a double walkover — zero points to both teams, no player statistics recorded. This is distinct from a genuine in-game draw (which still earns 1 point each per existing draw policy) because no game was actually played.
-- Knockout (BO3/BO5): the fixture MUST be rescheduled; it cannot be resolved as a walkover or a draw because "no drawn series" applies in KO and there is no fair administrative score. If rescheduling fails repeatedly for the same fixture, escalate to organizer for manual ruling.
+- Knockout (BO3/BO5): BOTH teams are declared losers (double loss, revised 20 Nov 2026; previously mandatory reschedule). The fixture cannot be resolved as a draw because "no drawn series" applies in KO, and no fair administrative winner exists — so both teams lose and the team scheduled to meet the winner of this fixture in the next round advances automatically without playing (bye). No player statistics are recorded.
 
 ## 7. Report ingestion and debounce
 

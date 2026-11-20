@@ -325,18 +325,38 @@ export async function resolveFixtureForWoClaim(
   }
 
   // 4. Resolve by team name mentioned in text
+  // FIX2-WO-002: this fallback previously let ANY group member stage a WO claim
+  // on behalf of an unrelated team. Now the sender must be a verified delegate
+  // of the reporting team before the claim is staged; the organizer "!ok" gate
+  // remains as a second layer.
   const teamsRes = await db.execute({
-    sql: 'SELECT id, team_name as name FROM teams WHERE tournament_id = ?',
+    sql: 'SELECT id, team_name as name, delegate_id FROM teams WHERE tournament_id = ?',
     args: [tournamentId],
   });
 
   const lowerText = text.toLowerCase();
-  const matchedTeams = (teamsRes.rows as unknown as { id: string; name: string }[]).filter(
+  const matchedTeams = (teamsRes.rows as unknown as { id: string; name: string; delegate_id: string | null }[]).filter(
     (t) => lowerText.includes(t.name.toLowerCase())
   );
 
   if (matchedTeams.length > 0) {
     const team = matchedTeams[0];
+
+    // Sender must be a verified delegate; which team they belong to is
+    // validated below against the reporting side of the resolved fixture.
+    if (!reportingDelegateId) {
+      return {
+        error: [
+          '⚠️ *Klaim WO Tidak Dapat Diproses*',
+          '',
+          'Hanya delegasi resmi tim yang dapat mengajukan klaim walkover atas nama timnya.',
+          'Identitas Anda belum terverifikasi sebagai delegasi terdaftar.',
+          '',
+          '💡 _Jika Anda adalah delegasi resmi, hubungi Panitia untuk verifikasi identitas. Panitia juga dapat mencatat WO langsung via *!claimwo*._',
+        ].join('\n'),
+      };
+    }
+
     const fixtureRes = await db.execute({
       sql: `
         SELECT f.id, f.tournament_id, f.stage, f.group_id, f.round_code,
@@ -363,6 +383,29 @@ export async function resolveFixtureForWoClaim(
       const reportingTeam = isTeamA
         ? { id: fix.team_b_id, name: fix.team_b_name }
         : { id: fix.team_a_id, name: fix.team_a_name };
+
+      // FIX2-WO-002: the sender must be the verified delegate of the REPORTING
+      // team (the team benefiting from the claim), not just any delegate.
+      const reportingTeamRes = await db.execute({
+        sql: 'SELECT delegate_id FROM teams WHERE id = ?',
+        args: [reportingTeam.id],
+      });
+      const reportingDelegate = reportingTeamRes.rows.length > 0
+        ? (reportingTeamRes.rows[0].delegate_id ? String((reportingTeamRes.rows[0] as any).delegate_id) : null)
+        : null;
+
+      if (!reportingDelegate || reportingDelegate !== reportingDelegateId) {
+        return {
+          error: [
+            '⚠️ *Klaim WO Tidak Dapat Diproses*',
+            '',
+            `Anda bukan delegasi resmi dari tim *${reportingTeam.name}* (tim yang mengajukan klaim).`,
+            'Klaim walkover hanya dapat diajukan oleh delegasi tim yang terlibat dalam pertandingan ini.',
+            '',
+            '💡 _Panitia dapat mencatat WO langsung via *!claimwo* bila diperlukan._',
+          ].join('\n'),
+        };
+      }
 
       return {
         fixture: fix,

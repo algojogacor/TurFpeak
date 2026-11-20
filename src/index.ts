@@ -34,6 +34,7 @@ import {
 import {
   resetSessionDebounce,
   claimDebounceBatch,
+  recoverOrphanedLeases,
 } from './ingestion/debounce.js';
 import { ProviderRouter } from './ai/router.js';
 import { ImageClassifier } from './ai/classifier.js';
@@ -61,6 +62,11 @@ import {
   resolveFixtureForWoClaim,
   type PendingWoClaim,
 } from './application/wo-claim-session.js';
+import {
+  applyKoGameEvidence,
+  getKoSeriesContext,
+  deriveOpenGameSlot,
+} from './application/ko-evidence-pipeline.js';
 import {
   calculateTournamentAwards,
   type TournamentAwardsSummary,
@@ -226,6 +232,18 @@ export class FlashPeakApp {
       get sender() {
         return self.sender;
       },
+      get providerRouter() {
+        return self.providerRouter;
+      },
+      get classifier() {
+        return self.classifier;
+      },
+      get matchExtractor() {
+        return self.matchExtractor;
+      },
+      get mediaClient() {
+        return self.mediaClient;
+      },
       getStandingsTable: this.getStandingsTable.bind(this),
       submitApproval: this.submitApproval.bind(this),
       findVersionByMessageKey: this.findVersionByMessageKey.bind(this),
@@ -240,6 +258,22 @@ export class FlashPeakApp {
     mediaBuffer?: Buffer | null
   ): Promise<InboundHandlingResult> {
     const rawMsgText = (message.text_body || message.caption || '').trim();
+
+    // 0. Interactive knockout per-game evidence (FIX2-KO-002):
+    // a photo captioned "!kogame" runs the dedicated KO pipeline and never
+    // enters the BO1 group-stage debounce/evidence flow.
+    if (rawMsgText.toLowerCase().startsWith('!kogame')) {
+      const fixtureArg = rawMsgText.slice('!kogame'.length).trim().split(/\s+/)[0] || '';
+      const koRes = await this.handleKoGameEvidenceMessage(message, mediaBuffer, fixtureArg);
+      if (koRes.handled) {
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: koRes.replyText,
+          mentions: koRes.mentions,
+        };
+      }
+    }
 
     // 1. Command Router & Prefix '!' Handler
     // In group chats, any user-intended bot interaction MUST start with '!'
@@ -644,6 +678,234 @@ export class FlashPeakApp {
   }
 
   /**
+   * Interactive knockout per-game evidence flow (FIX2-KO-002).
+   *
+   * Handles a photo whose caption starts with "!kogame": classifies the
+   * screenshot, extracts the score, applies it to the correct game slot of
+   * the knockout series (slot derived from persisted state, never from user
+   * input), and returns the per-game reply (result + running series score +
+   * next-game request or series-completion announcement).
+   *
+   * Dispatched from handleInboundMessage BEFORE the generic evidence-capture
+   * path so knockout photos never enter the BO1 group-stage debounce
+   * pipeline.
+   */
+  public async handleKoGameEvidenceMessage(
+    message: NormalizedMessage,
+    mediaBuffer: Buffer | null | undefined,
+    explicitFixtureId?: string
+  ): Promise<{ handled: boolean; replyText?: string; mentions?: string[] }> {
+    const caption = (message.caption || message.text_body || '').trim();
+    const normCaption = caption.toLowerCase();
+
+    if (!normCaption.startsWith('!kogame')) {
+      return { handled: false };
+    }
+    if (!mediaBuffer) {
+      return {
+        handled: true,
+        replyText: '📸 Kirim screenshot hasil game sebagai foto dengan caption *!kogame* (teks saja tidak bisa diproses). Contoh: foto skor + caption `!kogame`.',
+      };
+    }
+
+    // Resolve delegate identity (RBAC: only verified delegates or organizer)
+    const resolved = await this.identityResolver.resolveIdentity(
+      message.sender_raw_address,
+      message.chat_id
+    );
+    const delegateId = resolved.status === 'VERIFIED' && resolved.delegate ? resolved.delegate.id : null;
+    const isOrg = this.commandRouter.isSenderOrganizer(message);
+    if (!delegateId && !isOrg) {
+      return {
+        handled: true,
+        replyText: '⚠️ Hanya delegasi resmi tim peserta (atau Panitia) yang dapat melaporkan hasil game knockout.',
+      };
+    }
+
+    // Resolve the target series fixture:
+    // 1) explicit fixture id from the caption, else
+    // 2) the sender's team's active knockout fixture, else
+    // 3) the single active knockout fixture of the latest tournament.
+    let fixtureId = explicitFixtureId?.trim() || '';
+    if (!fixtureId) {
+      const teamId = resolved.status === 'VERIFIED' && resolved.team ? resolved.team.id : null;
+      if (teamId) {
+        const fRes = await this.db.execute({
+          sql: `SELECT f.id FROM fixtures f
+                WHERE f.stage = 'KNOCKOUT' AND (f.team_a_id = ? OR f.team_b_id = ?)
+                  AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+                ORDER BY f.created_at ASC LIMIT 1`,
+          args: [teamId, teamId],
+        });
+        if (fRes.rows.length > 0) fixtureId = String(fRes.rows[0].id);
+      }
+    }
+    if (!fixtureId) {
+      const fRes = await this.db.execute({
+        sql: `SELECT f.id FROM fixtures f
+              JOIN tournaments t ON f.tournament_id = t.id
+              WHERE f.stage = 'KNOCKOUT' AND t.status NOT IN ('COMPLETED', 'ARCHIVED')
+                AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+              ORDER BY f.created_at ASC LIMIT 1`,
+      });
+      if (fRes.rows.length > 0) fixtureId = String(fRes.rows[0].id);
+    }
+
+    if (!fixtureId) {
+      return {
+        handled: true,
+        replyText: '⚠️ Tidak ada pertandingan knockout aktif yang menunggu hasil. Pastikan fase knockout sudah dimulai (*!startknockout*) dan sertakan ID fixture di caption bila ada beberapa pertandingan aktif: `!kogame <fixture_id>`.',
+      };
+    }
+
+    const ctxInfo = await getKoSeriesContext(this.db, fixtureId);
+    if (!ctxInfo) {
+      return {
+        handled: true,
+        replyText: `⚠️ Series knockout tidak ditemukan untuk fixture *"${fixtureId}"*. Pastikan ID fixture benar (lihat *!schedule*).`,
+      };
+    }
+
+    // Classify + extract using the generic AI components
+    if (!this.providerRouter || !this.classifier || !this.matchExtractor) {
+      return {
+        handled: true,
+        replyText: '⚠️ Pipeline AI belum terkonfigurasi. Gunakan *!kores <fixture_id> <game_no> <skor_a>-<skor_b>* (Panitia) untuk mencatat hasil game.',
+      };
+    }
+
+    const base64 = mediaBuffer.toString('base64');
+
+    const classification = await this.classifier.classify(
+      { mime_type: 'image/jpeg', base64 },
+      { caption }
+    );
+
+    if (classification.screen_type !== 'MAIN_MATCH_SUMMARY') {
+      return {
+        handled: true,
+        replyText: '⚠️ Screenshot ini tidak terdeteksi sebagai *ringkasan hasil pertandingan*. Kirim screenshot skor akhir game (main match summary) dengan caption *!kogame*.',
+      };
+    }
+
+    // Upload to media service (journal link; failures do not block recording)
+    let mediaAssetId: string | null = null;
+    if (this.mediaClient) {
+      try {
+        const asset = await this.mediaClient.uploadMedia({
+          buffer: mediaBuffer,
+          filename: message.media_metadata?.fileName || `${message.provider_message_key}.jpg`,
+          mimeType: message.media_metadata?.mimetype || 'image/jpeg',
+          mediaRole: 'MAIN_MATCH',
+          sourceMessageId: message.provider_message_key,
+          uploadedByDelegateId: delegateId,
+        });
+        mediaAssetId = asset.id;
+      } catch (err) {
+        console.error('[KO-Evidence] Media upload failed (continuing without asset link):', err);
+      }
+    }
+
+    // Extract the score with trusted context
+    const extraction = await this.matchExtractor.extract(
+      { mime_type: 'image/jpeg', base64 },
+      {
+        trusted_context: {
+          fixture_id: fixtureId,
+          team_a_name: ctxInfo.teamAName,
+          team_b_name: ctxInfo.teamBName,
+          expected_roster: [],
+        },
+        correlation_id: `ko-evidence-${fixtureId}`,
+      }
+    );
+
+    // The extractor reports scores from the perspective of the screenshot's
+    // left/right team. Orient to fixture team_a/team_b using the same
+    // convention as the BO1 processor: team_a_name match on the left side.
+    // The extraction schema provides team_a_score/team_b_score already mapped
+    // to the trusted_context team order.
+    const extractedA = extraction.summary_data.team_a_score;
+    const extractedB = extraction.summary_data.team_b_score;
+    if (extractedA === null || extractedA === undefined || extractedB === null || extractedB === undefined) {
+      return {
+        handled: true,
+        replyText: '⚠️ Skor tidak terbaca dari screenshot. Kirim ulang screenshot skor akhir yang jelas, atau minta Panitia mencatat via *!kores <fixture_id> <game_no> <skor_a>-<skor_b>*.',
+      };
+    }
+
+    try {
+      const outcome = await applyKoGameEvidence(this.db, {
+        fixtureId,
+        teamAScore: extractedA,
+        teamBScore: extractedB,
+        submittedByDelegateId: delegateId,
+        mediaAssetId,
+        sourceMessageId: message.provider_message_key,
+        extractionJson: JSON.stringify({
+          raw: extraction.raw_extraction,
+          summary: extraction.summary_data,
+        }),
+      });
+
+      // Grand Final completed via the delegate photo pipeline -> tournament over.
+      if (
+        outcome.status === 'SERIES_COMPLETE' &&
+        ctxInfo.roundCode === 'FINAL' &&
+        outcome.winnerTeamId
+      ) {
+        await this.db.execute({
+          sql: `UPDATE tournaments SET status = 'COMPLETED', updated_at = ? WHERE id = ?`,
+          args: [new Date().toISOString(), ctxInfo.tournamentId],
+        });
+      }
+
+      // Build the interactive per-game reply
+      const lines: string[] = [];
+      if (outcome.status === 'SERIES_COMPLETE') {
+        const winnerName = outcome.winnerTeamId === ctxInfo.teamAId ? ctxInfo.teamAName : ctxInfo.teamBName;
+        lines.push('🏆 *HASIL GAME KNOCKOUT TERCATAT — SERIES SELESAI!*');
+        lines.push('──────────────────────────────');
+        lines.push(`⚔️ *${ctxInfo.teamAName}* vs *${ctxInfo.teamBName}* (${ctxInfo.roundCode || 'KNOCKOUT'}, ${outcome.seriesFormat})`);
+        lines.push(`🎮 Game ke-${outcome.gameNumber}: ${ctxInfo.teamAName} ${extractedA} — ${extractedB} ${ctxInfo.teamBName}`);
+        lines.push(`📊 *Skor Series Final:* ${outcome.seriesScore.team_a} — ${outcome.seriesScore.team_b}`);
+        lines.push(`🏆 Pemenang series: *${winnerName}*`);
+        lines.push('');
+        if (ctxInfo.roundCode === 'FINAL') {
+          lines.push('👑 *GRAND FINAL selesai — turnamen tamat!* Ketik *!awards* untuk rekap penghargaan.');
+        } else {
+          lines.push('💡 _Panitia memicu ronde berikutnya dengan *!startknockout* setelah semua series ronde ini selesai._');
+        }
+      } else if (outcome.status === 'SERIES_ALREADY_COMPLETE') {
+        lines.push(outcome.message);
+      } else if (outcome.status === 'NEEDS_REVIEW') {
+        lines.push(outcome.message);
+      } else if (outcome.status === 'DUPLICATE') {
+        lines.push(outcome.message);
+      } else {
+        lines.push('✅ *HASIL GAME KNOCKOUT TERCATAT*');
+        lines.push('──────────────────────────────');
+        lines.push(`⚔️ *${ctxInfo.teamAName}* vs *${ctxInfo.teamBName}* (${ctxInfo.roundCode || 'KNOCKOUT'}, ${outcome.seriesFormat})`);
+        if (outcome.seriesOutcome?.is_replay_required) {
+          lines.push(`🔁 Game ke-${outcome.gameNumber} seri ${extractedA}-${extractedB} — wajib replay pada slot yang sama (D-028). Kirim screenshot hasil replay dengan caption *!kogame*.`);
+        } else {
+          lines.push(`🎮 Game ke-${outcome.gameNumber}: ${ctxInfo.teamAName} ${extractedA} — ${extractedB} ${ctxInfo.teamBName}`);
+          lines.push(`📊 *Skor Series:* ${outcome.seriesScore.team_a} — ${outcome.seriesScore.team_b}`);
+          lines.push(`➡️ Series belum selesai — kirim screenshot *game ke-${outcome.nextGameNumber}* dengan caption *!kogame*.`);
+          lines.push(`💡 _${outcome.seriesFormat}: first to ${outcome.targetWins} wins._`);
+        }
+      }
+
+      return { handled: true, replyText: lines.join('\n') };
+    } catch (err: any) {
+      return {
+        handled: true,
+        replyText: `⚠️ Gagal memproses bukti game knockout: ${err.message || String(err)}`,
+      };
+    }
+  }
+
+  /**
    * Processes all due sliding debounce batches atomically.
    */
   public async processDueDebounceBatches(): Promise<ProcessedBatchResult[]> {
@@ -750,6 +1012,20 @@ export class FlashPeakApp {
   public start(): void {
     if (this.isPolling) return;
     this.isPolling = true;
+
+    // FIX2-LEASE-001: actively recover orphaned PROCESSING leases at boot so a
+    // session interrupted by a restart is re-queued immediately instead of
+    // waiting for its ~30s lease to passively expire.
+    recoverOrphanedLeases(this.db)
+      .then((recovered) => {
+        if (recovered > 0) {
+          this.logger.info({ recovered }, 'Recovered orphaned debounce leases at startup');
+        }
+      })
+      .catch((err) => {
+        console.error('[FlashPeakApp] Error recovering orphaned leases at startup:', err);
+      });
+
     this.pollTimer = setInterval(async () => {
       try {
         const batchResults = await this.processDueDebounceBatches();

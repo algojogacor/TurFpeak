@@ -195,16 +195,20 @@ async function main() {
   }
   console.log('Result Test 5: PASS\n');
 
-  // 6. Scenario D2: Knockout Stage both teams have no card (habis -> Mandatory Reschedule)
-  console.log('--- Test 6: !roomcard habis in Knockout Stage (Mandatory Reschedule) ---');
+  // 6. Scenario D2: Knockout Stage both teams have no card (habis -> DOUBLE LOSS per D-032 revised 20 Nov 2026)
+  console.log('--- Test 6: !roomcard habis in Knockout Stage (Double Loss, D-032 revised) ---');
   const res6 = await sendCmd(`!roomcard ${fix3Id} habis`);
   console.log(res6.replyText);
-  if (!res6.replyText?.includes('WAJIB RESCHEDULE (KNOCKOUT)') || !res6.replyText?.includes('D-032')) {
-    throw new Error('Test 6 Failed: Knockout Reschedule incorrect');
+  if (!res6.replyText?.includes('KALAH GANDA') || !res6.replyText?.includes('D-032 revisi 20 Nov 2026')) {
+    throw new Error('Test 6 Failed: Knockout double-loss message incorrect');
   }
   const fCheck5 = await db.execute({ sql: `SELECT status, scheduled_at FROM fixtures WHERE id = ?`, args: [fix3Id] });
-  if (fCheck5.rows[0]?.status !== 'SCHEDULED' || fCheck5.rows[0]?.scheduled_at !== null) {
-    throw new Error('DB assertion failed for Test 6: fixture status should remain SCHEDULED with scheduled_at cleared');
+  if (fCheck5.rows[0]?.status !== 'WALKOVER') {
+    throw new Error('DB assertion failed for Test 6: fixture should be resolved as WALKOVER (double loss, no winner)');
+  }
+  const gCheck6 = await db.execute({ sql: `SELECT winner_team_id, is_walkover, walkover_type FROM games WHERE fixture_id = ? AND game_number = 1`, args: [fix3Id] });
+  if (gCheck6.rows[0]?.winner_team_id !== null || gCheck6.rows[0]?.is_walkover !== 1) {
+    throw new Error('DB assertion failed for Test 6: game should record double walkover with no winner');
   }
   console.log('Result Test 6: PASS\n');
 

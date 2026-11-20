@@ -242,25 +242,31 @@ export class CommandRouter {
     let isCentralGroup = Boolean(this.centralGroupJid && normalizedChatId === this.centralGroupJid);
 
     if (isGroup && !isCentralGroup) {
-      // If an authorized ORGANIZER is running an administrative command (role ORGANIZER),
-      // or explicit group setup commands (!createtournament, !setgroup),
-      // or if central group has not been configured yet: adopt this group as official central group.
-      if (isOrganizer && (definition.requiredRole === 'ORGANIZER' || command === 'createtournament' || command === 'setgroup' || !this.centralGroupJid)) {
+      // FIX2-GROUP-001: no silent auto-adoption of a new official group from
+      // arbitrary admin commands. Only !setgroup may establish/switch the
+      // official group, plus the initial bootstrap case where no official group
+      // has been configured at all yet (first-run onboarding).
+      const isExplicitSetGroup = command === 'setgroup';
+      const isInitialBootstrap = !this.centralGroupJid;
+
+      if (isOrganizer && (isExplicitSetGroup || isInitialBootstrap)) {
         this.setCentralGroupJid(normalizedChatId);
         isCentralGroup = true;
         this.logger.info(
-          { newCentralGroup: normalizedChatId, command },
-          'Central tournament group automatically established by organizer'
+          { newCentralGroup: normalizedChatId, command, bootstrap: isInitialBootstrap },
+          'Central tournament group established by organizer'
         );
       } else {
         this.logger.warn(
-          { chatId: normalizedChatId, centralGroup: this.centralGroupJid },
+          { chatId: normalizedChatId, centralGroup: this.centralGroupJid, command },
           'Command rejected: outside central tournament group scope'
         );
         return {
           success: false,
           error: 'UNAUTHORIZED_GROUP',
-          responseText: '⚠️ Perintah hanya dapat diproses di dalam grup turnamen resmi.',
+          responseText: isOrganizer
+            ? '⚠️ Perintah hanya dapat diproses di dalam grup turnamen resmi. Jalankan *!setgroup* di grup resmi terlebih dahulu untuk menetapkan grup ini.'
+            : '⚠️ Perintah hanya dapat diproses di dalam grup turnamen resmi.',
         };
       }
     }

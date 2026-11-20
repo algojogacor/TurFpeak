@@ -155,23 +155,27 @@ export class MatchdayService {
     const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
     const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
 
-    // Query distinct rounds in group stage
+    // Query distinct rounds across group and knockout stages (FIX2-KO-001:
+    // matchday status must also describe the active knockout round)
     const roundsRes = await this.db.execute({
-      sql: `SELECT DISTINCT round_code 
-            FROM fixtures 
-            WHERE tournament_id = ? AND stage = 'GROUP' AND round_code IS NOT NULL
-            ORDER BY round_code ASC`,
+      sql: `SELECT DISTINCT round_code
+            FROM fixtures
+            WHERE tournament_id = ? AND round_code IS NOT NULL
+              AND stage IN ('GROUP', 'KNOCKOUT')
+            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END, round_code ASC`,
       args: [tournamentId],
     });
 
     const allRounds = roundsRes.rows.map((r) => String(r[0] ?? (r as any).round_code));
 
-    // Earliest round with uncompleted matches
+    // Earliest round with uncompleted matches (group rounds first, then knockout)
     const unfinRes = await this.db.execute({
-      sql: `SELECT round_code 
-            FROM fixtures 
-            WHERE tournament_id = ? AND stage = 'GROUP' AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
-            ORDER BY round_code ASC LIMIT 1`,
+      sql: `SELECT round_code
+            FROM fixtures
+            WHERE tournament_id = ? AND round_code IS NOT NULL
+              AND stage IN ('GROUP', 'KNOCKOUT')
+              AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END, round_code ASC LIMIT 1`,
       args: [tournamentId],
     });
 
@@ -339,7 +343,7 @@ export class MatchdayService {
     const lines: string[] = [];
     const mentionsSet = new Set<string>();
 
-    const roundLabel = currentRoundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1').replace(/_/g, ' ');
+    const roundLabel = this.formatRoundLabel(currentRoundCode);
 
     if (expiredFixtures.length > 0) {
       lines.push(`⌛ *BATAS WAKTU MATCHDAY BERAKHIR (19:59 WIB)*`);
@@ -447,7 +451,7 @@ export class MatchdayService {
       return { sent: false, pendingCount: 0 };
     }
 
-    const roundLabel = currentRoundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1').replace(/_/g, ' ');
+    const roundLabel = this.formatRoundLabel(currentRoundCode);
     const mentionsSet = new Set<string>();
 
     const lines: string[] = [];
@@ -506,6 +510,17 @@ export class MatchdayService {
   }
 
   /**
+   * Formats a round code into a human label. Group rounds become
+   * "Ronde N"; knockout rounds keep their bracket label (FIX2-KO-001).
+   */
+  private formatRoundLabel(roundCode: string): string {
+    if (/^ROUND_(\d+)$/i.test(roundCode)) {
+      return roundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1');
+    }
+    return roundCode.replace(/_/g, ' ');
+  }
+
+  /**
    * Formats a comprehensive matchday status for user display (!matchday).
    */
   public async formatMatchdayStatus(): Promise<string> {
@@ -527,7 +542,7 @@ export class MatchdayService {
       ].join('\n');
     }
 
-    const roundLabel = currentRoundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1').replace(/_/g, ' ');
+    const roundLabel = this.formatRoundLabel(currentRoundCode);
     const fixtures = await this.getRoundFixturesWithDelegates(tournamentId, currentRoundCode);
 
     const completed = fixtures.filter((f) => ['COMPLETED', 'WALKOVER'].includes(f.status));
