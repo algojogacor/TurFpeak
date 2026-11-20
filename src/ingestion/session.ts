@@ -37,6 +37,7 @@ export function mapRowToReportSession(row: Record<string, unknown>): ReportSessi
     version: Number(row.version ?? 1),
     lease_owner: row.lease_owner ? String(row.lease_owner) : null,
     lease_expires_at: row.lease_expires_at ? String(row.lease_expires_at) : null,
+    ai_retry_count: Number(row.ai_retry_count ?? 0),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -117,6 +118,7 @@ export async function findOrCreateReportSession(
     version: 1,
     lease_owner: null,
     lease_expires_at: null,
+    ai_retry_count: 0,
     created_at: nowIso,
     updated_at: nowIso,
   };

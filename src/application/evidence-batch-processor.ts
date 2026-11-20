@@ -17,9 +17,11 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { Client } from '@libsql/client';
 import type { ClaimedBatch } from '../ingestion/debounce.js';
-import { completeDebounceBatch } from '../ingestion/debounce.js';
+import { completeDebounceBatch, rescheduleDebounceRetry } from '../ingestion/debounce.js';
 import type { FlashPeakMediaClient } from '../media/client.js';
 import type { ProviderRouter } from '../ai/router.js';
+import { AllProvidersFailedError } from '../ai/router.js';
+import { AIMalformedResponseError } from '../ai/adapter.js';
 import type { ImageClassifier } from '../ai/classifier.js';
 import type { MatchSummaryExtractor } from '../ai/extractors/match.js';
 import type { GoalkeeperDetailExtractor } from '../ai/extractors/goalkeeper.js';
@@ -30,17 +32,26 @@ import {
   formatMatchReportSummary,
   type MatchReportSummaryParams,
 } from '../whatsapp/formatters.js';
-import { formatAIFailureMessage } from '../whatsapp/failure.js';
+import {
+  formatAIFailureMessage,
+  formatAIRetryPendingMessage,
+  formatAIRetriesExhaustedMessage,
+  formatUnreadableEvidenceMessage,
+} from '../whatsapp/failure.js';
 import type { UUID, ReportVersion } from '../shared/types/index.js';
 
 export interface ProcessedBatchResult {
   sessionId: UUID;
   fixtureId: UUID;
   targetChatId?: string;
-  status: 'DRAFT_CREATED' | 'NEEDS_CORRECTION' | 'AI_FAILED' | 'NO_MEDIA';
+  status: 'DRAFT_CREATED' | 'NEEDS_CORRECTION' | 'AI_FAILED' | 'AI_RETRY_SCHEDULED' | 'NO_MEDIA';
   draftVersion?: ReportVersion;
   whatsappSummary?: string;
   error?: string;
+  /** True when this result was an automatic AI retry attempt (provider outage). */
+  isAIRetry?: boolean;
+  /** True when the retry budget is exhausted and manual verification is required. */
+  retriesExhausted?: boolean;
 }
 
 export interface EvidenceBatchProcessorDeps {
@@ -51,6 +62,10 @@ export interface EvidenceBatchProcessorDeps {
   matchExtractor?: MatchSummaryExtractor;
   gkExtractor?: GoalkeeperDetailExtractor;
   centralGroupJid?: string;
+  /** Max automatic retries per session after AllProvidersFailedError (default 3). */
+  aiMaxRetries?: number;
+  /** Delay before the next automatic retry attempt (default 60s, aligned with router cooldown). */
+  aiRetryDelayMs?: number;
 }
 
 export async function processClaimedBatch(
@@ -58,8 +73,11 @@ export async function processClaimedBatch(
   batch: ClaimedBatch
 ): Promise<ProcessedBatchResult> {
   const { db, mediaClient, providerRouter, classifier, matchExtractor, gkExtractor, centralGroupJid } = deps;
+  const aiMaxRetries = deps.aiMaxRetries ?? 3;
+  const aiRetryDelayMs = deps.aiRetryDelayMs ?? 60_000;
   const sessionId = batch.session.id;
   const fixtureId = batch.session.fixture_id;
+  const retryCount = batch.session.ai_retry_count;
 
   const chatRes = await db.execute({
     sql: 'SELECT chat_id FROM inbound_messages WHERE report_session_id = ? ORDER BY message_timestamp DESC LIMIT 1',
@@ -123,6 +141,21 @@ export async function processClaimedBatch(
         const linkedMsg = batch.messages.find((m) => m.id === asset.source_message_id);
         const caption = linkedMsg?.caption || linkedMsg?.text_body || undefined;
         gkDetailAssets.push({ base64, mime_type: asset.mime_type, caption });
+      } else if (classification.screen_type === 'UNREADABLE') {
+        // AI responded but could not read the image: participant-side fix needed.
+        // Terminal for this attempt (no provider-outage retry): ask for a clearer photo.
+        await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
+        return {
+          sessionId,
+          fixtureId,
+          targetChatId,
+          status: 'NEEDS_CORRECTION',
+          whatsappSummary: formatUnreadableEvidenceMessage({
+            sessionId,
+            reason: classification.reason || 'Klasifikasi AI: gambar tidak terbaca',
+          }),
+          error: `Screenshot classified UNREADABLE: ${classification.reason}`,
+        };
       }
     }
 
@@ -133,6 +166,12 @@ export async function processClaimedBatch(
         fixtureId,
         targetChatId,
         status: 'NEEDS_CORRECTION',
+        whatsappSummary: formatUnreadableEvidenceMessage({
+          sessionId,
+          reason:
+            'Screenshot skor akhir pertandingan (main match summary) tidak terdeteksi di laporan ini. ' +
+            'Pastikan kamu mengirim screenshot halaman skor akhir, bukan hanya halaman detail pemain.',
+        }),
         error: 'Main match summary screenshot missing',
       };
     }
@@ -461,6 +500,97 @@ export async function processClaimedBatch(
       whatsappSummary,
     };
   } catch (err) {
+    // ── Failure cause differentiation ──────────────────────────────────────────
+    // The router wraps every adapter error into AllProvidersFailedError, so the
+    // true cause lives in its `errors[]` entries. Classify by the inner errors:
+    // an outage (network/5xx/timeout on all providers) is retryable, while an
+    // AIMalformedResponseError means at least one provider ANSWERED but produced
+    // an unusable extraction for this screenshot — a participant-side resend is
+    // the actionable fix, not a retry.
+    const innerErrors =
+      err instanceof AllProvidersFailedError
+        ? err.errors.map((e) => e.error).filter((e): e is Error => e instanceof Error)
+        : [];
+    const allMalformed =
+      innerErrors.length > 0 && innerErrors.every((e) => e instanceof AIMalformedResponseError);
+    const isOutage = err instanceof AllProvidersFailedError && !allMalformed;
+
+    // (d) Every provider answered but none could produce a valid extraction for
+    //     this screenshot: ask for a clearer photo. Not an outage, no retry loop.
+    if (allMalformed) {
+      await completeDebounceBatch(db, sessionId, 'FAILED');
+      return {
+        sessionId,
+        fixtureId,
+        targetChatId,
+        status: 'AI_FAILED',
+        whatsappSummary: formatUnreadableEvidenceMessage({
+          sessionId,
+          reason: `Hasil pembacaan AI tidak valid: ${innerErrors[0].message}`,
+        }),
+        error: String(err),
+      };
+    }
+
+    // (b) All providers failed (outage) but the retry budget is not exhausted:
+    //     reschedule via the existing debounce queue and tell the participant the
+    //     system will retry automatically (no manual action yet).
+    if (isOutage && retryCount < aiMaxRetries) {
+      const rescheduled = await rescheduleDebounceRetry(db, sessionId, aiRetryDelayMs);
+      return {
+        sessionId,
+        fixtureId,
+        targetChatId,
+        status: 'AI_RETRY_SCHEDULED',
+        whatsappSummary: formatAIRetryPendingMessage({
+          sessionId,
+          attemptNumber: rescheduled.ai_retry_count,
+          maxRetries: aiMaxRetries,
+          nextRetryAt: new Date(rescheduled.debounce_due_at),
+        }),
+        error: String(err),
+        isAIRetry: true,
+      };
+    }
+
+    // (c) All providers failed AND the retry budget is exhausted: terminal.
+    //     This is the only path that asks for manual verification (FR-FAIL-002).
+    if (isOutage) {
+      await completeDebounceBatch(db, sessionId, 'FAILED');
+      return {
+        sessionId,
+        fixtureId,
+        targetChatId,
+        status: 'AI_FAILED',
+        whatsappSummary: formatAIRetriesExhaustedMessage({
+          sessionId,
+          attemptNumber: retryCount,
+          includeAdminCommandHint: true,
+        }),
+        error: String(err),
+        retriesExhausted: true,
+      };
+    }
+
+    // Direct AIMalformedResponseError (thrown without router wrapping, e.g. by
+    // schema validation right after a successful response).
+    if (err instanceof AIMalformedResponseError) {
+      await completeDebounceBatch(db, sessionId, 'FAILED');
+      return {
+        sessionId,
+        fixtureId,
+        targetChatId,
+        status: 'AI_FAILED',
+        whatsappSummary: formatUnreadableEvidenceMessage({
+          sessionId,
+          reason: `Hasil pembacaan AI tidak valid: ${err.message}`,
+        }),
+        error: String(err),
+      };
+    }
+
+    // Unexpected error (DB failure, media service down, bug): keep the previous
+    // standardized failure notice so nothing silently disappears.
     await completeDebounceBatch(db, sessionId, 'FAILED');
     const failMsg = formatAIFailureMessage({
       sessionId,
