@@ -49,7 +49,6 @@ import {
   evaluateSeriesProgress,
 } from '../../src/competition/series.js';
 import {
-  recordGenuineDraw,
   handleGroupDoubleWalkover,
   handleKnockoutDoubleRoomCardFailure,
   handleSingleForfeit,
@@ -713,12 +712,31 @@ describe('Competition Engine (Fase 3)', () => {
         });
       }
 
-      // 1. Record genuine in-game draw
-      const drawOutcome = await recordGenuineDraw(db, f1Id, 1);
-      expect(drawOutcome.action).toBe('GENUINE_DRAW_RECORDED');
-      expect(drawOutcome.points_awarded.team_a_points).toBe(1);
-      expect(drawOutcome.points_awarded.team_b_points).toBe(1);
-      expect(drawOutcome.generates_player_statistics).toBe(true);
+      // 1. Genuine in-game draw via the OFFICIAL path: a completed game with
+      // is_draw=1 (as written by onReportLocked) is translated by
+      // computeGroupStandings into 1 point each (FR-CALC-001).
+      // (recordGenuineDraw was removed as dead code — FIX2-DEADCODE-001 —
+      // because the standings path is the single official draw route.)
+      const standingsDraw = computeGroupStandings(tournament.id, 'group-x', [
+        { team_id: 'tA', team_name: 'Team A' },
+        { team_id: 'tB', team_name: 'Team B' },
+      ], [
+        {
+          id: 'game-draw-1',
+          fixture_id: f1Id,
+          team_a_id: 'tA',
+          team_b_id: 'tB',
+          team_a_score: 1,
+          team_b_score: 1,
+          winner_team_id: null,
+          is_draw: 1,
+          is_walkover: 0,
+          walkover_type: 'NONE',
+          status: 'COMPLETED',
+        },
+      ]);
+      expect(standingsDraw.find((s) => s.team_id === 'tA')!.points).toBe(1);
+      expect(standingsDraw.find((s) => s.team_id === 'tB')!.points).toBe(1);
 
       // 2. Record double walkover (double room card unavailable)
       const doubleWoOutcome = await handleGroupDoubleWalkover(
@@ -731,12 +749,9 @@ describe('Competition Engine (Fase 3)', () => {
       expect(doubleWoOutcome.points_awarded.team_b_points).toBe(0);
       expect(doubleWoOutcome.generates_player_statistics).toBe(false);
 
-      // Explicit inequality assertion:
-      expect(doubleWoOutcome.points_awarded.team_a_points).not.toBe(
-        drawOutcome.points_awarded.team_a_points
-      );
+      // Explicit inequality assertion: draw (1 point) != double walkover (0 points)
       expect(doubleWoOutcome.points_awarded.team_a_points).toBe(0);
-      expect(drawOutcome.points_awarded.team_a_points).toBe(1);
+      expect(standingsDraw.find((s) => s.team_id === 'tA')!.points).toBe(1);
     });
 
     it('triggers mandatory reschedule on Knockout double room-card failure (D-032)', async () => {
