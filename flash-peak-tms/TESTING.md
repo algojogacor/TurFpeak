@@ -122,7 +122,7 @@ Also test:
 - Group standings and tiebreakers.
 - Draw (genuine in-game tie) gives one point each.
 - Both-teams-no-room-card in Group Stage gives ZERO points each (double walkover), not 1 point each — explicitly test this is distinguished from a genuine draw.
-- Both-teams-no-room-card in Knockout triggers mandatory reschedule, not a walkover or draw result.
+- Both-teams-no-room-card in Knockout records a DOUBLE LOSS (both teams lose, no winner, revised 20 Nov 2026) — not a walkover, not a draw, not a reschedule; the next-round pairing of that fixture advances via automatic bye (test the bye path end-to-end).
 - Room host forfeit: designated host has no room card, opponent unwilling to substitute-host → opponent is awarded the win (test both directions — left-side team lacking a card, and right-side team lacking a card).
 - Room host substitution: designated host has no room card, opponent willing to host → match proceeds normally with opponent hosting, no forfeit.
 - Left/right side balance: for a full round-robin group (both 5-team and 4-team sizes), verify every team's left-side count vs. right-side count across its own fixtures differs by at most 1, never e.g. 3 lefts and 0 rights for a team with 3 group fixtures.

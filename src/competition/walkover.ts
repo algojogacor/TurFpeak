@@ -20,7 +20,7 @@ import { getSeriesByFixture } from './series.js';
 export type WalkoverResolutionAction =
   | 'GENUINE_DRAW_RECORDED'
   | 'GROUP_DOUBLE_WALKOVER_RECORDED'
-  | 'KNOCKOUT_RESCHEDULE_REQUIRED'
+  | 'KNOCKOUT_DOUBLE_LOSS_RECORDED'
   | 'SINGLE_FORFEIT_RECORDED';
 
 export interface WalkoverOutcome {
@@ -169,13 +169,20 @@ export async function handleGroupDoubleWalkover(
 }
 
 /**
- * Handles Knockout Stage double room-card unavailability (FR-FIX-006, D-032).
- * Crucial invariant: MUST BE RESCHEDULED! Never a walkover or draw.
+ * Handles Knockout Stage double room-card unavailability / double no-show
+ * (FR-FIX-006, D-032 as revised 20 Nov 2026 by the organizer).
+ *
+ * REVISED RULE (replaces the old mandatory-reschedule ruling): when BOTH
+ * teams in a Knockout fixture are absent or cannot provide a room card, BOTH
+ * teams are declared LOSERS (double loss). The fixture produces NO winner, so
+ * the team scheduled to meet the winner of this fixture in the next round
+ * advances automatically (bye/walkover) — !startknockout's next-round
+ * generator recognizes a completed double-loss fixture and grants the bye.
  */
 export async function handleKnockoutDoubleRoomCardFailure(
   db: Client,
   fixtureId: string,
-  reason: string = 'Kedua tim di babak Knockout tidak dapat menyediakan room card; wajib reschedule (D-032)'
+  reason: string = 'Kedua tim di babak Knockout tidak hadir / tidak dapat menyediakan room card; keduanya dinyatakan kalah (D-032 revisi 20 Nov 2026)'
 ): Promise<WalkoverOutcome> {
   const fixtureResult = await db.execute({
     sql: 'SELECT id, tournament_id, stage, team_a_id, team_b_id FROM fixtures WHERE id = ?',
@@ -188,6 +195,8 @@ export async function handleKnockoutDoubleRoomCardFailure(
 
   const fixture = fixtureResult.rows[0] as unknown as Record<string, unknown>;
   const stage = String(fixture.stage);
+  const teamAId = String(fixture.team_a_id);
+  const teamBId = String(fixture.team_b_id);
 
   if (stage !== 'KNOCKOUT') {
     throw new Error(
@@ -197,9 +206,51 @@ export async function handleKnockoutDoubleRoomCardFailure(
 
   const now: ISODateString = new Date().toISOString();
 
-  // Fixture status remains SCHEDULED / flagged for rescheduling
+  // Both teams lose: mark the fixture WALKOVER (resolved, no winner) with a
+  // game record carrying the double-loss outcome. No series winner is set,
+  // which is exactly what the next-round generator uses to detect a bye.
   await db.execute({
-    sql: "UPDATE fixtures SET status = 'SCHEDULED', scheduled_at = NULL, updated_at = ? WHERE id = ?",
+    sql: "UPDATE fixtures SET status = 'WALKOVER', updated_at = ? WHERE id = ?",
+    args: [now, fixtureId],
+  });
+
+  const gameResult = await db.execute({
+    sql: 'SELECT id FROM games WHERE fixture_id = ? AND game_number = 1',
+    args: [fixtureId],
+  });
+
+  let gameId: UUID;
+  if (gameResult.rows.length > 0) {
+    gameId = String(gameResult.rows[0]?.[0] ?? (gameResult.rows[0] as { id?: unknown }).id);
+    await db.execute({
+      sql: `
+        UPDATE games
+        SET team_a_score = 0, team_b_score = 0, winner_team_id = NULL,
+            is_draw = 0, is_walkover = 1, walkover_type = 'DOUBLE_ROOM_CARD_UNAVAILABLE',
+            status = 'WALKOVER', updated_at = ?
+        WHERE id = ?
+      `,
+      args: [now, gameId],
+    });
+  } else {
+    gameId = randomUUID();
+    await db.execute({
+      sql: `
+        INSERT INTO games (
+          id, fixture_id, series_id, game_number, status,
+          team_a_score, team_b_score, winner_team_id, is_draw,
+          is_walkover, walkover_type, evidence_status, created_at, updated_at
+        )
+        VALUES (?, ?, NULL, 1, 'WALKOVER', 0, 0, NULL, 0, 1, 'DOUBLE_ROOM_CARD_UNAVAILABLE', 'MISSING', ?, ?)
+      `,
+      args: [gameId, fixtureId, now, now],
+    });
+  }
+
+  // If a series row exists, close it without a winner (double loss).
+  await db.execute({
+    sql: `UPDATE series SET status = 'COMPLETED', winner_team_id = NULL, updated_at = ?
+          WHERE fixture_id = ?`,
     args: [now, fixtureId],
   });
 
@@ -216,11 +267,11 @@ export async function handleKnockoutDoubleRoomCardFailure(
       randomUUID(),
       'SYSTEM',
       'COMPETITION_ENGINE',
-      'KNOCKOUT_RESCHEDULE_REQUIRED',
+      'KNOCKOUT_DOUBLE_LOSS_RECORDED',
       'FIXTURE',
       fixtureId,
-      null,
-      JSON.stringify({ status: 'SCHEDULED', requires_reschedule: true }),
+      JSON.stringify({ team_a_id: teamAId, team_b_id: teamBId }),
+      JSON.stringify({ status: 'WALKOVER', winner: null, both_teams_lose: true }),
       reason,
       randomUUID(),
       now,
@@ -228,13 +279,14 @@ export async function handleKnockoutDoubleRoomCardFailure(
   });
 
   return {
-    action: 'KNOCKOUT_RESCHEDULE_REQUIRED',
+    action: 'KNOCKOUT_DOUBLE_LOSS_RECORDED',
     fixture_id: fixtureId,
-    is_reschedule_required: true,
+    game_id: gameId,
+    is_reschedule_required: false,
     points_awarded: { team_a_points: 0, team_b_points: 0 },
     score: { team_a_score: 0, team_b_score: 0 },
     winner_team_id: null,
-    loser_team_id: null,
+    loser_team_id: null, // Both teams lose; no single loser column can carry two ids
     walkover_type: 'DOUBLE_ROOM_CARD_UNAVAILABLE',
     generates_player_statistics: false,
     reason,
@@ -494,7 +546,7 @@ export async function evaluateRoomHostAvailability(
       const outcome = await handleKnockoutDoubleRoomCardFailure(
         db,
         fixtureId,
-        'Kedua tim tidak memiliki room card untuk pertandingan Knockout; wajib reschedule'
+        'Kedua tim tidak memiliki room card untuk pertandingan Knockout; keduanya dinyatakan kalah (double loss)'
       );
       return {
         match_can_proceed: false,

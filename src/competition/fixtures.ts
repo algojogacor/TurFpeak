@@ -295,6 +295,12 @@ export async function generateKnockoutFixtures(
     throw new Error('Minimal 2 tim yang lolos untuk membentuk bracket Knockout');
   }
 
+  // D-032 revised safety net: a team can never be paired against itself.
+  const uniqueTeamIds = new Set(qualifiers.map((q) => q.team_id));
+  if (uniqueTeamIds.size !== qualifiers.length) {
+    throw new Error('Bracket tidak valid: ada tim yang dipasangkan dengan dirinya sendiri (kualifikasi duplikat).');
+  }
+
   // Separate group winners and runners-up
   const winners = qualifiers.filter((q) => q.group_rank === 1);
   const runnersUp = qualifiers.filter((q) => q.group_rank === 2);

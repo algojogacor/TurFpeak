@@ -35,6 +35,11 @@ import {
   getSeriesByFixture,
   evaluateSeriesProgress,
 } from '../competition/series.js';
+import {
+  applyKoGameEvidence,
+  getKoSeriesContext,
+  deriveOpenGameSlot,
+} from './ko-evidence-pipeline.js';
 import { calculateTournamentAwards } from '../stats/awards.js';
 import { handleSingleForfeit, evaluateRoomHostAvailability } from '../competition/walkover.js';
 import { recalculateAndPersistGroupStandings } from '../competition/standings.js';
@@ -84,6 +89,10 @@ export interface TournamentCommandDeps {
   woClaimSession?: WoClaimSessionManager;
   sender?: WhatsAppSender;
   rosterExtractor?: RosterExtractor;
+  providerRouter?: import('../ai/router.js').ProviderRouter;
+  classifier?: import('../ai/classifier.js').ImageClassifier;
+  matchExtractor?: import('../ai/extractors/match.js').MatchSummaryExtractor;
+  mediaClient?: import('../media/client.js').FlashPeakMediaClient;
   getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
   submitApproval: (
     reportVersionId: UUID,
@@ -2374,9 +2383,9 @@ export function registerTournamentCommands(
 
     const evalRes = await evaluateRoomHostAvailability(db, fixtureId, input);
 
-    // If match resulted in walkover or reschedule, update standings if group stage
+    // If match resulted in walkover or double loss, update standings if group stage
     if (!evalRes.match_can_proceed && evalRes.walkover_outcome) {
-      if (fixture.group_id && evalRes.walkover_outcome.action !== 'KNOCKOUT_RESCHEDULE_REQUIRED') {
+      if (fixture.group_id && evalRes.walkover_outcome.action !== 'KNOCKOUT_DOUBLE_LOSS_RECORDED') {
         await recalculateAndPersistGroupStandings(db, tournamentId, String(fixture.group_id));
       }
 
@@ -2397,18 +2406,19 @@ export function registerTournamentCommands(
         };
       }
 
-      if (outcome.action === 'KNOCKOUT_RESCHEDULE_REQUIRED') {
+      if (outcome.action === 'KNOCKOUT_DOUBLE_LOSS_RECORDED') {
         return {
           success: true,
           responseText: [
-            `⚠️ *KEPUTUSAN KARTU ROOM: WAJIB RESCHEDULE (KNOCKOUT)*`,
+            `❌ *KEPUTUSAN KARTU ROOM: KALAH GANDA (DOUBLE LOSS — KNOCKOUT)*`,
             `──────────────────────────────`,
             `🏆 *Turnamen:* ${tournamentName}`,
             `⚔️ *Pertandingan:* *${teamAName}* vs *${teamBName}* (${stage})`,
             ``,
             `⚠️ *Alasan:* ${outcome.reason}`,
-            `📅 *Status:* Pertandingan *WAJIB DIJADWAL ULANG (RESCHEDULE)* oleh panitia sesuai aturan D-032.`,
-            `💡 _Knockout tidak mengenal walkover ganda atau skor imbang._`,
+            `📉 *Keputusan:* KEDUA tim dinyatakan KALAH — tidak ada pemenang dari pertandingan ini (D-032 revisi 20 Nov 2026).`,
+            `➡️ *Konsekuensi:* Tim yang seharusnya bertemu pemenang pertandingan ini di ronde berikutnya otomatis LOLOS tanpa bertanding (bye).`,
+            `💡 _Panitia memicu ronde berikutnya dengan *!startknockout*; pasangan penerima bye akan ditampilkan otomatis._`,
           ].join('\n'),
         };
       }
@@ -2796,6 +2806,150 @@ export function registerTournamentCommands(
           ? String((currentRoundRes.rows[0] as any).round_code)
           : null;
 
+        // Collect per-fixture results of the current KO round, including
+        // double-loss fixtures (D-032 revised): a COMPLETED series without a
+        // winner yields NO qualifier but grants a BYE to its pairing slot.
+        const roundFixturesRes = await db.execute({
+          sql: `SELECT f.id AS fixture_id, f.round_code, f.team_a_id, f.team_b_id, f.status,
+                       s.winner_team_id, s.status AS series_status,
+                       ta.team_name AS team_a_name, tb.team_name AS team_b_name
+                FROM fixtures f
+                LEFT JOIN series s ON s.fixture_id = f.id
+                JOIN teams ta ON f.team_a_id = ta.id
+                JOIN teams tb ON f.team_b_id = tb.id
+                WHERE f.tournament_id = ? AND f.stage = 'KNOCKOUT'
+                ORDER BY f.created_at ASC`,
+          args: [tournamentId],
+        });
+
+        interface RoundFixtureRow {
+          fixture_id: string;
+          round_code: string;
+          team_a_id: string;
+          team_b_id: string;
+          status: string;
+          winner_team_id: string | null;
+          series_status: string | null;
+          team_a_name: string;
+          team_b_name: string;
+        }
+        const roundFixtures = roundFixturesRes.rows.map((r: any) => ({
+          fixture_id: String(r.fixture_id),
+          round_code: String(r.round_code || ''),
+          team_a_id: String(r.team_a_id),
+          team_b_id: String(r.team_b_id),
+          status: String(r.status),
+          winner_team_id: r.winner_team_id ? String(r.winner_team_id) : null,
+          series_status: r.series_status ? String(r.series_status) : null,
+          team_a_name: String(r.team_a_name),
+          team_b_name: String(r.team_b_name),
+        })) as RoundFixtureRow[];
+
+        const currentRoundFixtures = roundFixtures.filter(
+          (f) => f.round_code === currentRoundCode
+        );
+
+        // Qualifiers for the next round: series winners, plus BYE recipients
+        // (pairing partner of a double-loss fixture) flagged as bye.
+        interface NextRoundSeed {
+          team_id: string;
+          team_name: string;
+          from_double_loss_bye: boolean;
+          double_loss_pairing?: string;
+        }
+        const seeds: NextRoundSeed[] = [];
+        const byeMessages: string[] = [];
+
+        for (const f of currentRoundFixtures) {
+          if (f.winner_team_id) {
+            const winnerName = f.winner_team_id === f.team_a_id ? f.team_a_name : f.team_b_name;
+            seeds.push({ team_id: f.winner_team_id, team_name: winnerName, from_double_loss_bye: false });
+          } else if (f.status === 'WALKOVER' && (f.series_status === 'COMPLETED' || f.series_status === null)) {
+            // Double-loss fixture (D-032 revised): no winner. The pairing
+            // partner of this fixture advances automatically (bye).
+            const fixtureIndex = currentRoundFixtures.indexOf(f);
+            const partner = currentRoundFixtures[fixtureIndex % 2 === 0 ? fixtureIndex + 1 : fixtureIndex - 1];
+            if (partner && partner.winner_team_id) {
+              const byeTeamName = partner.winner_team_id === partner.team_a_id ? partner.team_a_name : partner.team_b_name;
+              seeds.push({
+                team_id: partner.winner_team_id,
+                team_name: byeTeamName,
+                from_double_loss_bye: true,
+                double_loss_pairing: `${f.team_a_name} vs ${f.team_b_name}`,
+              });
+              byeMessages.push(
+                `➡️ *BYE OTOMATIS:* *${byeTeamName}* lolos ke ronde berikutnya tanpa bertanding — pasangannya (${f.team_a_name} vs ${f.team_b_name}) berakhir KALAH GANDA (D-032 revisi 20 Nov 2026).`
+              );
+            }
+          }
+        }
+
+        // Dedup seeds: a bye recipient may already be present as a series
+        // winner (same team). A self-match (team vs itself) must never be
+        // generated — generateKnockoutFixtures also guards this.
+        const uniqueSeeds: NextRoundSeed[] = [];
+        const seenTeamIds = new Set<string>();
+        for (const s of seeds) {
+          if (seenTeamIds.has(s.team_id)) continue;
+          seenTeamIds.add(s.team_id);
+          uniqueSeeds.push(s);
+        }
+
+        // If dedup leaves <= 1 unique team, that team is the CHAMPION directly
+        // (e.g. both semi-finals ended in double loss but one had a winner
+        // paired against the double-loss fixture, or every remaining opponent
+        // is gone). Crown them and complete the tournament.
+        if (uniqueSeeds.length <= 1) {
+          const champion = uniqueSeeds[0];
+          if (champion) {
+            const nowIso = new Date().toISOString();
+            await db.execute({
+              sql: `UPDATE tournaments SET status = 'COMPLETED', updated_at = ? WHERE id = ?`,
+              args: [nowIso, tournamentId],
+            });
+            await db.execute({
+              sql: `INSERT INTO audit_events (
+                      id, actor_type, actor_id, event_type, entity_type, entity_id,
+                      before_json, after_json, reason, correlation_id, created_at
+                    ) VALUES (?, 'ORGANIZER', ?, 'KNOCKOUT_CHAMPION_BY_DEFAULT', 'TOURNAMENT', ?, ?, ?, ?, ?, ?)`,
+              args: [
+                randomUUID(),
+                ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER',
+                tournamentId,
+                JSON.stringify({ round: currentRoundCode }),
+                JSON.stringify({ champion_team_id: champion.team_id, status: 'COMPLETED' }),
+                `Sole surviving qualifier after double-loss fixtures (${byeMessages.length} bye); crowned champion by default (D-032 revised).`,
+                randomUUID(),
+                nowIso,
+              ],
+            });
+
+            const championMsg = formatKnockoutNextRoundMessage({
+              tournamentName,
+              isGrandFinal: true,
+              isChampionship: true,
+              nextRoundFixtures: [],
+              winnerTeamNames: [champion.team_name],
+            });
+            const fullChampionMsg = byeMessages.length > 0
+              ? `${championMsg}\n\n${byeMessages.join('\n')}`
+              : championMsg;
+            if (deps.sender) {
+              await deps.sender.sendText(ctx.message.chat_id, fullChampionMsg);
+            }
+            return {
+              success: true,
+              responseText: deps.sender
+                ? `👑 Tidak ada lawan tersisa — *${champion.team_name}* dinobatkan JUARA secara otomatis (double-loss berantai).`
+                : fullChampionMsg,
+            };
+          }
+          return {
+            success: false,
+            responseText: '⚠️ Tidak ada tim tersisa untuk ronde berikutnya (semua pertandingan berakhir double loss). Panitia perlu menetapkan juara secara manual.',
+          };
+        }
+
         // Grand Final already played -> tournament over
         if (currentRoundCode === 'FINAL') {
           return {
@@ -2804,27 +2958,7 @@ export function registerTournamentCommands(
           };
         }
 
-        const winnersRes = await db.execute({
-          sql: `SELECT s.winner_team_id, t.team_name, g.group_code
-                FROM series s
-                JOIN fixtures f ON s.fixture_id = f.id
-                JOIN teams t ON s.winner_team_id = t.id
-                LEFT JOIN groups g ON (
-                  SELECT gm.group_id FROM group_members gm WHERE gm.team_id = t.id LIMIT 1
-                ) = g.id
-                WHERE f.tournament_id = ? AND f.stage = 'KNOCKOUT'
-                ORDER BY f.created_at ASC`,
-          args: [tournamentId],
-        });
-
-        interface WinnerRow { team_id: string; team_name: string; group_code: string | null }
-        const winners: WinnerRow[] = winnersRes.rows.map((r: any) => ({
-          team_id: String(r.winner_team_id),
-          team_name: String(r.team_name),
-          group_code: r.group_code ? String(r.group_code) : null,
-        }));
-
-        if (winners.length < 2) {
+        if (seeds.length < 2) {
           return {
             success: false,
             responseText: '⚠️ Jumlah pemenang series belum cukup untuk membentuk ronde knockout berikutnya.',
@@ -2832,7 +2966,14 @@ export function registerTournamentCommands(
         }
 
         // Reuse bracket pairing rules from generateKnockoutFixtures by seeding
-        // winners alternately as "rank 1" and "rank 2" qualifiers of pseudo-groups.
+        // qualifiers alternately as "rank 1" and "rank 2" of pseudo-groups
+        // (winners side first, bye recipients interleaved deterministically).
+        interface WinnerRow { team_id: string; team_name: string; group_code: string | null }
+        const winners: WinnerRow[] = uniqueSeeds.map((s) => ({
+          team_id: s.team_id,
+          team_name: s.team_name,
+          group_code: null,
+        }));
         const nextQualifiers: KnockoutQualifier[] = [];
         const half = Math.floor(winners.length / 2);
         for (let i = 0; i < winners.length; i++) {
@@ -2905,15 +3046,21 @@ export function registerTournamentCommands(
           winnerTeamNames: winners.map((w) => w.team_name),
         });
 
+        // Append explicit bye notices so the group sees WHO advanced without
+        // playing and WHY (double-loss pairing, D-032 revised).
+        const fullAnnouncement = byeMessages.length > 0
+          ? `${announcement}\n\n${byeMessages.join('\n')}`
+          : announcement;
+
         if (deps.sender) {
-          await deps.sender.sendText(ctx.message.chat_id, announcement);
+          await deps.sender.sendText(ctx.message.chat_id, fullAnnouncement);
         }
 
         return {
           success: true,
           responseText: deps.sender
-            ? `✅ Ronde knockout berikutnya (${isFinalRound ? 'GRAND FINAL' : bracketItems[0]?.roundCode || ''}) telah dibentuk dan diumumkan!`
-            : announcement,
+            ? `✅ Ronde knockout berikutnya (${isFinalRound ? 'GRAND FINAL' : bracketItems[0]?.roundCode || ''}) telah dibentuk dan diumumkan!${byeMessages.length > 0 ? ` (${byeMessages.length} bye otomatis dari double-loss diterapkan.)` : ''}`
+            : fullAnnouncement,
         };
       }
 
@@ -3014,23 +3161,95 @@ export function registerTournamentCommands(
   });
 
   // ============================================================================
-  // !kores — Report individual knockout series game result (FIX2-KO-001)
+  // !kogame — Delegate interactive per-game knockout evidence (FIX2-KO-002)
   // ============================================================================
+  // Text form gives guidance/status; the actual evidence flow is photo-based:
+  // delegate sends the match-result screenshot with caption "!kogame ..." and
+  // FlashPeakApp.handleKoGameEvidenceMessage runs the interactive pipeline.
+  const koGameInfoHandler = async (ctx: CommandContext) => {
+    // Status/lookup mode: !kogame <fixture_id> shows current series progress
+    const fixtureArg = ctx.args[0]?.trim();
+    if (fixtureArg) {
+      const ctxInfo = await getKoSeriesContext(db, fixtureArg);
+      if (!ctxInfo) {
+        return {
+          success: false,
+          responseText: `⚠️ Series knockout tidak ditemukan untuk fixture *"${fixtureArg}"*. Pastikan fase knockout sudah dimulai (*!startknockout*) dan ID fixture benar (lihat *!schedule*).`,
+        };
+      }
+      const slot = await deriveOpenGameSlot(db, fixtureArg);
+      const lines = [
+        `🎮 *STATUS SERIES KNOCKOUT:*`,
+        `──────────────────────────────`,
+        `⚔️ *${ctxInfo.teamAName}* vs *${ctxInfo.teamBName}* (${ctxInfo.roundCode || 'KNOCKOUT'})`,
+        `📊 *Skor Series:* ${ctxInfo.gameWinsA} — ${ctxInfo.gameWinsB} (${ctxInfo.format}, first to ${ctxInfo.targetWins})`,
+      ];
+      if (ctxInfo.status === 'COMPLETED') {
+        const winnerName = ctxInfo.seriesWinnerTeamId === ctxInfo.teamAId ? ctxInfo.teamAName : ctxInfo.teamBName;
+        lines.push(`🏆 Series selesai — pemenang: *${winnerName}*.`);
+      } else if (slot) {
+        lines.push(
+          `➡️ Menunggu hasil *game ke-${slot.gameNumber}*${slot.isTiedPendingReplay ? ' (replay game seri)' : ''}.`,
+          `📸 Kirim screenshot hasil game dengan caption *!kogame* untuk mencatat hasil game ini.`
+        );
+      }
+      return { success: true, responseText: lines.join('\n') };
+    }
+
+    return {
+      success: true,
+      responseText: [
+        '🎮 *CARA MELAPORKAN HASIL GAME KNOCKOUT (per game):*',
+        '',
+        'Kirim screenshot hasil pertandingan game berikutnya dengan caption:',
+        '`!kogame` (atau sebutkan fixture: `!kogame <fixture_id>`)',
+        '',
+        'Bot akan:',
+        '1️⃣ Membaca skor dari screenshot',
+        '2️⃣ Mencatat hasil game itu ke series',
+        '3️⃣ Membalas skor series terkini',
+        '4️⃣ Meminta foto game berikutnya — atau mengumumkan pemenang jika series sudah selesai',
+        '',
+        '💡 _Format best-of-N (BO3 first to 2 / BO5 first to 3) otomatis; game seri wajib replay pada slot yang sama._',
+        '_Foto boleh dikirim tidak berurutan/sekaligus — sistem selalu mengisi slot game yang benar._',
+        '_Cek status series: `!kogame <fixture_id>`_',
+      ].join('\n'),
+    };
+  };
+
+  router.registerCommand({
+    command: 'kogame',
+    requiredRole: 'DELEGATE',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Melaporkan hasil satu game knockout via screenshot (per game); !kogame <fixture_id> untuk cek status series',
+    handler: koGameInfoHandler,
+  });
+
+  // ============================================================================
+  // !kores — Organizer correction path for knockout game results (FIX2-KO-002)
+  // ============================================================================
+  // The delegate photo pipeline (!kogame) is the primary reporting route;
+  // !kores remains the organizer tool to correct/override any game result,
+  // including resolving NEEDS_REVIEW conflicts flagged by the pipeline.
   const knockoutSeriesReportHandler = async (ctx: CommandContext) => {
     const parts = ctx.args;
     if (parts.length < 3) {
       return {
         success: false,
         responseText: [
-          '⚠️ *FORMAT LAPOR HASIL GAME KNOCKOUT:*',
+          '⚠️ *FORMAT KOREKSI HASIL GAME KNOCKOUT (Khusus Organizer):*',
           '`!kores <fixture_id> <game_no> <skor_a>-<skor_b>`',
           '',
-          'Contoh:',
-          '`!kores abc-123 1 2-1` (game 1, tim kiri menang 2-1)',
-          '`!kores abc-123 2 0-3` (game 2, tim kanan menang 3-0)',
+          'Digunakan untuk:',
+          '• Mengoreksi hasil game yang salah tercatat',
+          '• Menetapkan hasil game yang ditandai *perlu review* (foto bentrok)',
+          '• Mencatat hasil game secara manual bila bukti foto tidak terbaca',
           '',
-          '💡 _Hasil seri (mis. 1-1) otomatis ditandai wajib replay pada slot game yang sama (D-028)._',
-          '_Bukti screenshot dikirim seperti biasa ke grup; panitia dapat memverifikasi sebelum *!kores*._',
+          'Contoh:',
+          '`!kores abc-123 1 2-1` (koreksi game 1 menjadi 2-1)',
+          '',
+          '💡 _Jalur pelaporan utama delegasi adalah screenshot via *!kogame*._',
         ].join('\n'),
       };
     }
@@ -3086,13 +3305,9 @@ export function registerTournamentCommands(
       };
     }
 
-    if (series.status === 'COMPLETED') {
-      return {
-        success: false,
-        responseText: `⚠️ Series ini sudah selesai (skor ${series.team_a_game_wins}-${series.team_b_game_wins}). Tidak dapat menambah/mengubah game.`,
-      };
-    }
-
+    // Organizer correction on a COMPLETED series is allowed (that is the point
+    // of the correction path), but re-recording a game can only recompute a
+    // completed series via recordSeriesGameResult's decrement logic.
     const teamAName = String(fixture.team_a_name);
     const teamBName = String(fixture.team_b_name);
     const tournamentName = String(fixture.tournament_name);
@@ -3162,7 +3377,7 @@ export function registerTournamentCommands(
 
       return {
         success: true,
-        responseText: deps.sender ? `✅ Hasil game ke-${gameNumber} series knockout telah dicatat.` : messageText,
+        responseText: deps.sender ? `✅ Hasil game ke-${gameNumber} series knockout telah dicatat (koreksi organizer).` : messageText,
       };
     } catch (err: any) {
       return {
@@ -3177,7 +3392,7 @@ export function registerTournamentCommands(
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Mencatat hasil satu game pada series BO3/BO5 knockout (Admin only)',
+    description: 'Koreksi hasil game knockout / tetapkan hasil game yang perlu review (Admin only)',
     handler: knockoutSeriesReportHandler,
   });
 

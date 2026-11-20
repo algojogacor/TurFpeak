@@ -93,7 +93,7 @@ Proposed defaults:
 - WO creates no player statistics.
 - If both teams fail to appear, Group Stage default is double forfeit: zero points each and no player statistics.
 - If both teams are unable to provide a room card (§5) — distinct from failing to appear at all — Group Stage treatment is the same double forfeit: zero points each, no player statistics. This is NOT the same as an in-game draw (which still earns 1 point each); no game was actually played, so draw policy does not apply.
-- If both teams are unable to provide a room card in Knockout (BO3/BO5), the fixture MUST be rescheduled rather than resolved as a walkover or draw, because "no drawn series" applies in KO and there is no fair administrative score available. If rescheduling repeatedly fails for the same fixture, escalate to organizer for a manual ruling.
+- If both teams are unable to provide a room card in Knockout (BO3/BO5) — or both fail to appear — BOTH teams are declared LOSERS (double loss, revised 20 Nov 2026; previously mandatory reschedule). The fixture produces no winner, and the team scheduled to meet the winner of this fixture in the next round advances automatically without playing (bye). No player statistics are generated.
 - Incomplete lineup means fewer than five eligible players including goalkeeper, subject to final confirmation of game substitution rules.
 
 The 19:30 automatic WO claim from the reference rulebook is not adopted in this draft. Use the actual agreed kickoff and grace period.
