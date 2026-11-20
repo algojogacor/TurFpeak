@@ -1,5 +1,39 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Merge PR #5 & Redeploy VM: Fix 4 Audit Findings + Dynamic Group Sizing (Task: flash-peak-tms-merge-pr5-redeploy-v1)
+
+### Konteks Sesi
+Mengeksekusi merge Pull Request #5 (`fix(audit): resolve 4 audit findings + dynamic group sizing (FIX2)`) ke branch `master` dan melakukan re-deployment ke VM (`forfh`). PR ini menuntaskan 4 temuan audit (termasuk 1 bug kritis foreign key pada upload foto knockout `!kogame`) dan menambahkan fitur target ukuran grup dinamis `!draw size=4|5`.
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Review & Merge PR #5**:
+   - Analisis menyeluruh terhadap 4 perbaikan (FIX2-KO-003, FIX2-KO-004, FIX2-APR-003, FIX2-KO-005) dan fitur `FIX2-COMP-DYN`.
+   - Eksekusi merge via GitHub CLI: `gh pr merge 5 --merge --delete-branch` (commit merge `250813b`).
+   - Fast-forward sinkronisasi branch `master` lokal.
+2. **Penyempurnaan Dokumentasi (`cara-penggunaan.md`)**:
+   - Menambahkan petunjuk penggunaan `!draw size=4` / `!draw size=5` pada bagian panduan pengundian dan tabel cheatsheet.
+3. **Re-deployment ke VM (`forfh`)**:
+   - `git pull origin master` di `/home/azureuser/flashpeak-tms`.
+   - `npm run build` (`tsc`) untuk memperbarui bundel kompilasi `dist/`.
+   - `pm2 restart flashpeak-bot` dan `pm2 save`.
+4. **Verifikasi Runtime Pasca-Deploy**:
+   - Status PM2 `flashpeak-bot`: `online`, 0 crash/restart loop.
+   - Startup log mengonfirmasi Baileys terhubung sukses kembali ke WhatsApp.
+
+### Bukti & Verifikasi Empiris
+- **Commit HEAD Master**: `250813b` + commit docs ini.
+- **Unit & Integration Suite**: **19 file / 232/232 PASS** (+8 test regresi baru).
+- **TypeScript Compilation**: **0 error**.
+- **Log Startup VM**:
+  - `[DB] Connecting to database (file:local.sqlite)...`
+  - `[DB] Database schema is up to date.`
+  - `[AI] Initialized Multi-Provider Router with 6 provider(s): GROQ, DEEPSEEK, GEMINI, NVIDIA_NIM, COHERE, MISTRAL`
+  - `[WA] Organizer identity configured (phone: set, jid: set).`
+  - `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`
+  - `[WA] Bot siap memproses turnamen.`
+
+---
+
 ## [2026-11-20] Sesi Pendaftaran LID Organizer Arya (Task: flash-peak-tms-register-organizer-lid-v1)
 
 ### Konteks Sesi

@@ -159,6 +159,12 @@ Bot menampilkan susunan pemain tim itu. Kalau kamu lupa formatnya, ketik `!roste
 ```
 !draw
 ```
+_Atau dengan opsi target ukuran grup:_
+```
+!draw size=4
+!draw size=5
+```
+*(Default adalah grup isi 5 tim. Jika turnamen Anda memiliki 16 tim, gunakan `!draw size=4` untuk membentuk 4 grup × 4 tim).*
 
 **Setelah itu:** bot menampilkan undian SATU TIM PER SATU TIM (ada jeda beberapa detik tiap tim biar seru):
 
@@ -584,7 +590,7 @@ Semua yang tercatat bot — foto bukti, hasil, approval, koreksi, bahkan alasan 
 | `!setgroup` | panitia (di grup) | tetapkan grup resmi |
 | `!addteam <nama>` | panitia | tambah tim |
 | `!onboarding` | panitia | mulai verifikasi delegasi |
-| `!draw` | panitia | undian grup + jadwal |
+| `!draw` / `!draw size=4` | panitia | undian grup + jadwal (opsi target ukuran grup) |
 | `!manualreport ...` | panitia | laporan manual |
 | `!confirm` / `!ok` / `!batal` | panitia | sahkan / tolak klaim WO & draf |
 | `!startknockout` | panitia | mulai / lanjut fase knockout |
