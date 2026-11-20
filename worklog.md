@@ -1,5 +1,24 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Pendaftaran LID Organizer Arya (Task: flash-peak-tms-register-organizer-lid-v1)
+
+### Konteks Sesi
+Dari hasil pengetesan command `!id` oleh Arya di grup target (`120363412423738009@g.us`), terkonfirmasi bahwa WhatsApp Arya mengirimkan pesan menggunakan Privacy ID / LID: `165210883154071@lid`. Sesi ini mendaftarkan LID tersebut ke dalam konfigurasi `WA_ORGANIZER_JID` di `.env` VM agar Arya langsung diakui sebagai Organizer dengan hak akses penuh (bisa menjalankan `!setgroup`, `!createtournament`, dll).
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Backup Snapshot `.env`**:
+   - Dibuat snapshot backup: `/home/azureuser/flashpeak-tms/.env.backup-lid-20261120_103550`.
+2. **Koreksi Variabel `WA_ORGANIZER_JID`**:
+   - `WA_ORGANIZER_JID=165210883154071@lid,6289505630895@s.whatsapp.net`
+   - `WA_ORGANIZER_PHONE=6289505630895`
+   - Konfigurasi mendukung multi-target comma-separated sesuai implementasi router (`organizerList.some(...)`), sehingga baik interaksi via LID maupun Phone JID keduanya valid sebagai Organizer.
+3. **Restart & Verifikasi Runtime PM2**:
+   - Menjalankan `pm2 restart flashpeak-bot --update-env && pm2 save`.
+   - Proses baru aktif (PID 2984818), status `online`, 0 errors.
+   - Startup log mengonfirmasi Baileys terhubung kembali (`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`).
+
+---
+
 ## [2026-11-20] Sesi Fitur: Command !id & !myid untuk Pengecekan Identitas & Grup (Task: flash-peak-tms-command-id-v1)
 
 ### Konteks Sesi
