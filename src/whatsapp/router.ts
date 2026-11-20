@@ -114,7 +114,11 @@ export class CommandRouter {
    * Checks whether the message sender matches configured Organizer identities.
    */
   public isSenderOrganizer(message: NormalizedMessage): boolean {
-    const rawSender = message.sender_raw_address || message.sender_id || '';
+    // BUGFIX-TS-002: sender_id never existed on NormalizedMessage (legacy
+    // field name). sender_raw_address is required and guaranteed non-empty by
+    // the normalizer (participant || remoteJid; messages without remoteJid are
+    // dropped), so the fallback was dead code removed for type safety.
+    const rawSender = message.sender_raw_address;
     const normalizedSender = (message.sender_normalized_address || jidNormalizedUser(rawSender) || '').toLowerCase();
     const organizerList = (this.organizerJid || '')
       .split(',')
@@ -134,7 +138,9 @@ export class CommandRouter {
 
     if (this.organizerPhone) {
       const senderDigits = normalizedSender.split('@')[0]?.replace(/\D/g, '');
-      const rawDigits = (message.sender_raw_address || message.sender_id || '').split('@')[0]?.replace(/\D/g, '');
+      // BUGFIX-TS-002: sender_id fallback removed (field never existed on
+      // NormalizedMessage; see isSenderOrganizer note above).
+      const rawDigits = message.sender_raw_address.split('@')[0]?.replace(/\D/g, '');
       if (
         (senderDigits && senderDigits === this.organizerPhone) ||
         (rawDigits && rawDigits === this.organizerPhone)
@@ -169,7 +175,9 @@ export class CommandRouter {
       role = 'ORGANIZER';
     } else {
       // Resolve delegate from database
-      const rawAddress = message.sender_raw_address || message.sender_id;
+      // BUGFIX-TS-002: sender_id fallback removed (field never existed on
+      // NormalizedMessage; see isSenderOrganizer note above).
+      const rawAddress = message.sender_raw_address;
       const resolution = await this.identityResolver.resolveIdentity(
         rawAddress,
         message.chat_id

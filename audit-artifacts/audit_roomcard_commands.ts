@@ -122,7 +122,10 @@ async function main() {
     const msg: NormalizedMessage = {
       message_id: `msg-${Date.now()}-${Math.random()}`,
       chat_id: centralGroupJid,
-      sender_id: organizerJid,
+      // BUGFIX-TS-002 dry-run alignment: build messages per the NormalizedMessage
+      // contract (sender_raw_address), not the legacy sender_id field.
+      sender_raw_address: organizerJid,
+      sender_normalized_address: organizerJid,
       sender_phone: organizerPhone,
       is_group: true,
       text_body: text,
