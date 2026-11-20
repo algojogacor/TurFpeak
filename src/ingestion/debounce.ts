@@ -177,6 +177,54 @@ export async function releaseDebounceLease(
 }
 
 /**
+ * Reschedules a claimed batch for an automatic AI retry after a provider outage
+ * (AllProvidersFailedError). Reuses the existing debounce machinery instead of a
+ * parallel queue: the session goes back to COLLECTING with its quiet window pushed
+ * `retryDelayMs` into the future, so it re-enters the same FIFO claim order
+ * (ORDER BY debounce_due_at ASC) behind sessions that are already waiting — normal
+ * batches are never starved or reordered by retries.
+ *
+ * The version counter is incremented so any optimistic-lock races (a late inbound
+ * message resetting the same session) are detected by claimDebounceBatch as usual.
+ * Retry attempt number is tracked in ai_retry_count (migration 003).
+ */
+export async function rescheduleDebounceRetry(
+  db: Client,
+  sessionId: string,
+  retryDelayMs = 60_000,
+  now = new Date()
+): Promise<ReportSession> {
+  const session = await getReportSessionById(db, sessionId);
+  if (!session) {
+    throw new Error(`Report session '${sessionId}' not found`);
+  }
+
+  const nowIso = now.toISOString();
+  const retryDueAt = new Date(now.getTime() + retryDelayMs).toISOString();
+  const nextRetryCount = session.ai_retry_count + 1;
+  const nextVersion = session.version + 1;
+
+  await db.execute({
+    sql: `UPDATE report_sessions
+          SET status = 'COLLECTING',
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              debounce_due_at = ?,
+              ai_retry_count = ?,
+              version = ?,
+              updated_at = ?
+          WHERE id = ?`,
+    args: [retryDueAt, nextRetryCount, nextVersion, nowIso, sessionId],
+  });
+
+  const updated = await getReportSessionById(db, sessionId);
+  if (!updated) {
+    throw new Error(`Failed to retrieve rescheduled report session '${sessionId}'`);
+  }
+  return updated;
+}
+
+/**
  * Marks a batch processing complete and clears the worker lease.
  */
 export async function completeDebounceBatch(

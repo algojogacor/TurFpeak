@@ -331,6 +331,7 @@ export interface ReportSession {
   version: number; // Incremented on every reset for lease validation
   lease_owner: string | null; // Worker ID claiming the batch
   lease_expires_at: ISODateString | null;
+  ai_retry_count: number; // AI retries used so far (AllProvidersFailedError only, migration 003)
   created_at: ISODateString;
   updated_at: ISODateString;
 }

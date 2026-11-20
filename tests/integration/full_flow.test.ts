@@ -652,17 +652,34 @@ describe('End-to-End Tournament Integration (Fase 6)', () => {
 
     await new Promise((r) => setTimeout(r, 60));
 
-    // Debounce processing runs -> catches AI failure
+    // Debounce processing runs -> all providers failed -> automatic retry scheduled
     const batchResults = await app.processDueDebounceBatches();
     expect(batchResults.length).toBe(1);
-    expect(batchResults[0].status).toBe('AI_FAILED');
+    expect(batchResults[0].status).toBe('AI_RETRY_SCHEDULED');
 
-    // Verify AI failure message strictly adheres to FR-FAIL-002 / PROMPT_CATALOG.md §9
-    const failureMsg = batchResults[0].whatsappSummary!;
-    expect(failureMsg).toContain('Pemrosesan Tangkapan Layar Otomatis Sementara Tidak Tersedia');
-    expect(failureMsg).toContain('Status pertandingan TIDAK resmi, TIDAK diterima, dan TIDAK ditolak.');
-    expect(failureMsg).toContain('Silakan hubungi penyelenggara turnamen untuk verifikasi manual.');
-    expect(failureMsg).toContain('!manualreport');
+    // Retry-pending message: tells the participant the system will retry automatically
+    const retryMsg = batchResults[0].whatsappSummary!;
+    expect(retryMsg).toContain('Laporan Kamu Masih Diproses');
+    expect(retryMsg).toContain('mencoba ulang secara otomatis');
+    expect(retryMsg).toContain('tidak mengirim ulang screenshot');
+
+    // Session is back in COLLECTING with a delayed due date and an incremented retry counter
+    const retriedSession = await db.execute({
+      sql: `SELECT status, ai_retry_count, debounce_due_at FROM report_sessions WHERE id = ?`,
+      args: [batchResults[0].sessionId],
+    });
+    expect(String(retriedSession.rows[0][0])).toBe('COLLECTING');
+    expect(Number(retriedSession.rows[0][1])).toBe(1);
+
+    // Simulate the retry delay elapsing: pull the due date into the past and re-run
+    await db.execute({
+      sql: `UPDATE report_sessions SET debounce_due_at = ? WHERE id = ?`,
+      args: [new Date(Date.now() - 1000).toISOString(), batchResults[0].sessionId],
+    });
+    const retryResults = await app.processDueDebounceBatches();
+    expect(retryResults.length).toBe(1);
+    expect(retryResults[0].status).toBe('AI_RETRY_SCHEDULED');
+    expect(retryResults[0].isAIRetry).toBe(true);
 
     // 3. Organizer executes !manualreport
     for (let s = 1; s <= 5; s++) {

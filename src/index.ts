@@ -106,6 +106,10 @@ export interface FlashPeakAppConfig {
   leaseDurationMs?: number; // Default: 30000ms
   workerId?: string;
   pollIntervalMs?: number; // Default: 1000ms for debounce poll loop
+  /** Max automatic AI retries per session after AllProvidersFailedError (default 3). */
+  aiMaxRetries?: number;
+  /** Delay before each automatic AI retry attempt (default 60000ms, aligned with router circuit-breaker cooldown). */
+  aiRetryDelayMs?: number;
 }
 
 export interface InboundHandlingResult {
@@ -143,6 +147,8 @@ export class FlashPeakApp {
   private leaseDurationMs: number;
   private workerId: string;
   private pollIntervalMs: number;
+  private aiMaxRetries: number;
+  private aiRetryDelayMs: number;
   private pollTimer: NodeJS.Timeout | null = null;
   private isPolling = false;
   private lastMatchdayCheck = 0;
@@ -157,6 +163,8 @@ export class FlashPeakApp {
     this.leaseDurationMs = config.leaseDurationMs ?? 30000;
     this.workerId = config.workerId ?? `worker-${randomUUID().slice(0, 8)}`;
     this.pollIntervalMs = config.pollIntervalMs ?? 1000;
+    this.aiMaxRetries = config.aiMaxRetries ?? 3;
+    this.aiRetryDelayMs = config.aiRetryDelayMs ?? 60_000;
 
     // Subsystems
     this.identityResolver = new IdentityResolver(this.db);
@@ -666,10 +674,26 @@ export class FlashPeakApp {
           this.quietWindowMs
         );
 
+        // Acknowledge receipt so the delegate is never left in silence while the
+        // debounce window elapses and the batch waits for processing (silent-intake fix).
+        // A late photo for an already-retried session also re-extends the window,
+        // so the ack always states the honest current position.
+        const isRetrySession = session.ai_retry_count > 0;
+        const ackLines: string[] = [];
+        if (isRetrySession) {
+          ackLines.push('⏳ Screenshot tambahan diterima dan digabungkan dengan laporan yang sedang menunggu percobaan ulang AI.');
+        } else {
+          ackLines.push('📸 Screenshot diterima. Laporan sedang diproses otomatis.');
+        }
+        ackLines.push(
+          `Mohon tunggu konfirmasi hasil di grup${session.ai_retry_count > 0 ? ' — tidak perlu mengirim ulang' : ''}.`
+        );
+
         return {
           handled: true,
           type: 'EVIDENCE',
           session,
+          replyText: ackLines.join(' '),
         };
       }
     }
@@ -987,6 +1011,8 @@ export class FlashPeakApp {
           matchExtractor: this.matchExtractor,
           gkExtractor: this.gkExtractor,
           centralGroupJid: this.centralGroupJid,
+          aiMaxRetries: this.aiMaxRetries,
+          aiRetryDelayMs: this.aiRetryDelayMs,
         },
         batch
       );

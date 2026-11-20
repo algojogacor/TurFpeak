@@ -237,6 +237,12 @@ async function main() {
     organizerPhone: organizerPhone || undefined,
     organizerJid: organizerJid || undefined,
     centralGroupJid,
+    // AI resilience (v3): automatic retry budget for AllProvidersFailedError.
+    // Defaults mirror the router circuit-breaker cooldown (60s): each retry lands
+    // right when the first tripped breaker exits OPEN, so every attempt gets a
+    // real chance to find a healthy provider.
+    aiMaxRetries: process.env.AI_MAX_RETRIES ? Number(process.env.AI_MAX_RETRIES) : 3,
+    aiRetryDelayMs: process.env.AI_RETRY_DELAY_MS ? Number(process.env.AI_RETRY_DELAY_MS) : 60_000,
   });
 
   // Connect socket
