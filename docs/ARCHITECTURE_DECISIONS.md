@@ -43,7 +43,7 @@ This document records the definitive architectural decisions (D-001 through D-03
 | **D-029** | Room Host Advisory: Left-Side Default | Fixture's left-side team is recommended host; substitute allowed; refusal to host grants opponent forfeit. | `src/competition/fixtures.ts`, `src/competition/walkover.ts` |
 | **D-030** | Goalkeeper Caption Fuzzy Matching | GK identity resolved solely via caption text fuzzy match against submitting team roster. Vector stat matching strictly prohibited. | `src/ai/extractors/gk-identity.ts` |
 | **D-031** | Group Stage Double Room Unavailability = Double WO | If neither team can provide a room card, 0 points each and 0 stats recorded (distinct from in-game 1-1 draw). | `src/competition/walkover.ts` |
-| **D-032** | KO Double Room Card Unavailability = Reschedule | KO requires decisive winner ("no drawn series"); must be rescheduled rather than administrative loss. | `src/competition/walkover.ts` |
+| **D-032** | KO Double Room Card Unavailability = Double Loss (bye) | KO requires decisive winner ("no drawn series"); with both sides failing, both teams lose and the next-round pairing advances via automatic bye. [Revised 20 Nov 2026 — replaces prior reschedule ruling.] | `src/competition/walkover.ts` |
 | **D-033** | Report Session Expiry Extension Capped at 3 | Objections within window extend session by base duration, capped at 3 extensions before organizer review. | `src/ingestion/session.ts` |
 | **D-034** | Balanced Group Stage Left/Right Host Count | Fixture generator circle method ensures team host count differs by at most 1 across all group games. | `src/competition/fixtures.ts` |
 

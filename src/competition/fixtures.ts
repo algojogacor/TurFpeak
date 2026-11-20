@@ -295,6 +295,12 @@ export async function generateKnockoutFixtures(
     throw new Error('Minimal 2 tim yang lolos untuk membentuk bracket Knockout');
   }
 
+  // D-032 revised safety net: a team can never be paired against itself.
+  const uniqueTeamIds = new Set(qualifiers.map((q) => q.team_id));
+  if (uniqueTeamIds.size !== qualifiers.length) {
+    throw new Error('Bracket tidak valid: ada tim yang dipasangkan dengan dirinya sendiri (kualifikasi duplikat).');
+  }
+
   // Separate group winners and runners-up
   const winners = qualifiers.filter((q) => q.group_rank === 1);
   const runnersUp = qualifiers.filter((q) => q.group_rank === 2);
@@ -429,6 +435,84 @@ export async function generateKnockoutFixtures(
   }
 
   return { fixtures: createdFixtures, series: createdSeries };
+}
+
+/**
+ * Derives Knockout Stage qualifiers from final persisted group standings:
+ * exactly the top 2 teams of every group (O-004, FR-COMP-011).
+ * Rejects when any group has unresolved tied ranks at the qualifying cut.
+ */
+export async function deriveKnockoutQualifiers(
+  db: Client,
+  tournamentId: string
+): Promise<KnockoutQualifier[]> {
+  const groupsRes = await db.execute({
+    sql: `
+      SELECT DISTINCT g.id, g.group_code
+      FROM groups g
+      JOIN group_draws gd ON g.draw_id = gd.id
+      WHERE gd.tournament_id = ?
+      ORDER BY g.display_order ASC
+    `,
+    args: [tournamentId],
+  });
+
+  if (groupsRes.rows.length === 0) {
+    throw new Error('Tidak ada grup yang ditemukan. Jalankan draw terlebih dahulu.');
+  }
+
+  const qualifiers: KnockoutQualifier[] = [];
+
+  for (const gRow of groupsRes.rows) {
+    const groupId = String((gRow as Record<string, unknown>).id);
+    const groupCode = String((gRow as Record<string, unknown>).group_code);
+
+    const standingsRes = await db.execute({
+      sql: `
+        SELECT s.team_id, t.team_name, s.points, s.goal_difference, s.goals_for
+        FROM standings s
+        JOIN teams t ON s.team_id = t.id
+        WHERE s.group_id = ?
+        ORDER BY s.points DESC, s.goal_difference DESC, s.goals_for DESC
+      `,
+      args: [groupId],
+    });
+
+    if (standingsRes.rows.length < 2) {
+      throw new Error(
+        `Klasemen grup ${groupCode} belum lengkap untuk menentukan kualifikasi knockout.`
+      );
+    }
+
+    const first = standingsRes.rows[0] as unknown as Record<string, unknown>;
+    const second = standingsRes.rows[1] as unknown as Record<string, unknown>;
+
+    const firstKey = `${Number(first.points)}-${Number(first.goal_difference)}-${Number(first.goals_for)}`;
+    const secondKey = `${Number(second.points)}-${Number(second.goal_difference)}-${Number(second.goals_for)}`;
+
+    if (firstKey === secondKey) {
+      throw new Error(
+        `Peringkat 1 dan 2 di grup ${groupCode} masih seri penuh (poin, selisih gol, gol dicetak). ` +
+        'Tidak dapat menentukan kualifikasi knockout secara adil. ' +
+        'Panitia harus menyelesaikan seri tersebut terlebih dahulu (misal via pertandingan tambahan atau keputusan manual).'
+      );
+    }
+
+    qualifiers.push({
+      team_id: String(first.team_id),
+      team_name: String(first.team_name),
+      group_code: groupCode,
+      group_rank: 1,
+    });
+    qualifiers.push({
+      team_id: String(second.team_id),
+      team_name: String(second.team_name),
+      group_code: groupCode,
+      group_rank: 2,
+    });
+  }
+
+  return qualifiers;
 }
 
 /**

@@ -190,6 +190,23 @@ async function main() {
   const authDir = process.env.WA_AUTH_STATE_DIR || './auth_state';
   console.log(`[WA] Initializing Baileys WhatsApp client (auth dir: ${authDir})...`);
 
+  // FIX2-RBAC-001: organizer identity must be explicitly configured.
+  // A missing WA_ORGANIZER_PHONE / WA_ORGANIZER_JID must abort startup instead of
+  // silently granting full ORGANIZER rights to a hardcoded example number.
+  const organizerPhone = (process.env.WA_ORGANIZER_PHONE || '').replace(/\D/g, '');
+  const organizerJid = (process.env.WA_ORGANIZER_JID || '').trim();
+  if (!organizerPhone && !organizerJid) {
+    try {
+      db.close();
+    } catch {}
+    throw new Error(
+      'Organizer identity missing: Please configure WA_ORGANIZER_PHONE or WA_ORGANIZER_JID ' +
+        'in your environment. The tournament bot refuses to start without an explicit organizer ' +
+        'identity to prevent unintended organizer privileges.'
+    );
+  }
+  console.log(`[WA] Organizer identity configured (phone: ${organizerPhone ? 'set' : 'not set'}, jid: ${organizerJid ? 'set' : 'not set'}).`);
+
   const waConnection = new WhatsAppConnection({
     authStateDir: authDir,
     printQRInTerminal: false,
@@ -217,8 +234,8 @@ async function main() {
     db,
     mediaClient,
     providerRouter,
-    organizerPhone: process.env.WA_ORGANIZER_PHONE || '6281234567890',
-    organizerJid: process.env.WA_ORGANIZER_JID,
+    organizerPhone: organizerPhone || undefined,
+    organizerJid: organizerJid || undefined,
     centralGroupJid,
   });
 

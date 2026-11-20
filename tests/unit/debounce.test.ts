@@ -371,7 +371,7 @@ describe('Debounce, Ingestion Pipeline & Session Management', () => {
   });
 
   describe('Restart Safety & Orphaned Lease Recovery', () => {
-    it('recovers orphaned leases from crashed workers after lease expiration', async () => {
+    it('recovers all PROCESSING sessions at boot, including leases still nominally alive (FIX2-LEASE-001)', async () => {
       const { session } = await findOrCreateReportSession(db, {
         fixture_id: 'fix-1',
         submitting_team_id: 'team-a',
@@ -383,17 +383,15 @@ describe('Debounce, Ingestion Pipeline & Session Management', () => {
       const claim = await claimDebounceBatch(db, 'crashed-worker', 30000, tReady);
       expect(claim).not.toBeNull();
 
-      // At t0 + 20s (lease still valid): recovery should not touch it
-      const recoveredEarly = await recoverOrphanedLeases(db, new Date(t0.getTime() + 20000));
-      expect(recoveredEarly).toBe(0);
+      // At t0 + 20s (lease nominally still valid): boot-time recovery frees the
+      // session immediately — the old worker is gone by definition at restart,
+      // so waiting for lease expiry would only stall the pipeline ~30s.
+      const tBoot = new Date(t0.getTime() + 20000);
+      const recoveredEarly = await recoverOrphanedLeases(db, tBoot);
+      expect(recoveredEarly).toBe(1);
 
-      // At t0 + 40s (lease has expired, worker crashed): recover orphaned lease
-      const tCrashRecover = new Date(t0.getTime() + 40000);
-      const recovered = await recoverOrphanedLeases(db, tCrashRecover);
-      expect(recovered).toBe(1);
-
-      // Session is reset to COLLECTING and can be claimed by active worker
-      const reClaimed = await claimDebounceBatch(db, 'new-worker', 30000, tCrashRecover);
+      // Session is reset to COLLECTING and can be claimed by the new worker
+      const reClaimed = await claimDebounceBatch(db, 'new-worker', 30000, tBoot);
       expect(reClaimed).not.toBeNull();
       expect(reClaimed!.session.lease_owner).toBe('new-worker');
       expect(reClaimed!.session.status).toBe('PROCESSING');

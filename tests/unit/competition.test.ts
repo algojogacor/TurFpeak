@@ -49,7 +49,6 @@ import {
   evaluateSeriesProgress,
 } from '../../src/competition/series.js';
 import {
-  recordGenuineDraw,
   handleGroupDoubleWalkover,
   handleKnockoutDoubleRoomCardFailure,
   handleSingleForfeit,
@@ -713,12 +712,31 @@ describe('Competition Engine (Fase 3)', () => {
         });
       }
 
-      // 1. Record genuine in-game draw
-      const drawOutcome = await recordGenuineDraw(db, f1Id, 1);
-      expect(drawOutcome.action).toBe('GENUINE_DRAW_RECORDED');
-      expect(drawOutcome.points_awarded.team_a_points).toBe(1);
-      expect(drawOutcome.points_awarded.team_b_points).toBe(1);
-      expect(drawOutcome.generates_player_statistics).toBe(true);
+      // 1. Genuine in-game draw via the OFFICIAL path: a completed game with
+      // is_draw=1 (as written by onReportLocked) is translated by
+      // computeGroupStandings into 1 point each (FR-CALC-001).
+      // (recordGenuineDraw was removed as dead code — FIX2-DEADCODE-001 —
+      // because the standings path is the single official draw route.)
+      const standingsDraw = computeGroupStandings(tournament.id, 'group-x', [
+        { team_id: 'tA', team_name: 'Team A' },
+        { team_id: 'tB', team_name: 'Team B' },
+      ], [
+        {
+          id: 'game-draw-1',
+          fixture_id: f1Id,
+          team_a_id: 'tA',
+          team_b_id: 'tB',
+          team_a_score: 1,
+          team_b_score: 1,
+          winner_team_id: null,
+          is_draw: 1,
+          is_walkover: 0,
+          walkover_type: 'NONE',
+          status: 'COMPLETED',
+        },
+      ]);
+      expect(standingsDraw.find((s) => s.team_id === 'tA')!.points).toBe(1);
+      expect(standingsDraw.find((s) => s.team_id === 'tB')!.points).toBe(1);
 
       // 2. Record double walkover (double room card unavailable)
       const doubleWoOutcome = await handleGroupDoubleWalkover(
@@ -731,16 +749,13 @@ describe('Competition Engine (Fase 3)', () => {
       expect(doubleWoOutcome.points_awarded.team_b_points).toBe(0);
       expect(doubleWoOutcome.generates_player_statistics).toBe(false);
 
-      // Explicit inequality assertion:
-      expect(doubleWoOutcome.points_awarded.team_a_points).not.toBe(
-        drawOutcome.points_awarded.team_a_points
-      );
+      // Explicit inequality assertion: draw (1 point) != double walkover (0 points)
       expect(doubleWoOutcome.points_awarded.team_a_points).toBe(0);
-      expect(drawOutcome.points_awarded.team_a_points).toBe(1);
+      expect(standingsDraw.find((s) => s.team_id === 'tA')!.points).toBe(1);
     });
 
-    it('triggers mandatory reschedule on Knockout double room-card failure (D-032)', async () => {
-      const tournament = await createTournament(db, { name: 'KO Reschedule Test' });
+    it('records DOUBLE LOSS on Knockout double room-card failure (D-032 revised 20 Nov 2026)', async () => {
+      const tournament = await createTournament(db, { name: 'KO Double Loss Test' });
       await insertTeam(db, tournament.id, 'tA', 'Team A');
       await insertTeam(db, tournament.id, 'tB', 'Team B');
       const fixtureId = 'fixture-ko-double-fail';
@@ -757,18 +772,38 @@ describe('Competition Engine (Fase 3)', () => {
       });
 
       const outcome = await handleKnockoutDoubleRoomCardFailure(db, fixtureId);
-      expect(outcome.action).toBe('KNOCKOUT_RESCHEDULE_REQUIRED');
-      expect(outcome.is_reschedule_required).toBe(true);
+      // Revised rule: both teams lose (double loss), NOT a reschedule.
+      expect(outcome.action).toBe('KNOCKOUT_DOUBLE_LOSS_RECORDED');
+      expect(outcome.is_reschedule_required).toBe(false);
+      expect(outcome.winner_team_id).toBeNull();
       expect(outcome.generates_player_statistics).toBe(false);
       expect(outcome.points_awarded.team_a_points).toBe(0);
       expect(outcome.points_awarded.team_b_points).toBe(0);
 
-      // Fixture remains SCHEDULED (not walkover or completed)
+      // Fixture is resolved as WALKOVER (no winner) — the bye-detection in
+      // the next-round generator keys off this state.
       const fixture = await db.execute({
         sql: 'SELECT status FROM fixtures WHERE id = ?',
         args: [fixtureId],
       });
-      expect(fixture.rows[0]?.[0]).toBe('SCHEDULED');
+      expect(fixture.rows[0]?.[0]).toBe('WALKOVER');
+
+      // The game record carries the double-loss outcome, no winner.
+      const game = await db.execute({
+        sql: 'SELECT winner_team_id, is_walkover, walkover_type, status FROM games WHERE fixture_id = ? AND game_number = 1',
+        args: [fixtureId],
+      });
+      expect(game.rows[0]?.[0]).toBeNull();
+      expect(Number(game.rows[0]?.[1])).toBe(1);
+      expect(String(game.rows[0]?.[2])).toBe('DOUBLE_ROOM_CARD_UNAVAILABLE');
+      expect(String(game.rows[0]?.[3])).toBe('WALKOVER');
+
+      // Audit event records the double loss (no reschedule).
+      const audit = await db.execute({
+        sql: "SELECT COUNT(*) as c FROM audit_events WHERE event_type = 'KNOCKOUT_DOUBLE_LOSS_RECORDED' AND entity_id = ?",
+        args: [fixtureId],
+      });
+      expect(Number(audit.rows[0]?.[0])).toBe(1);
     });
 
     it('awards 3-0 WO and 3 points to opponent on single forfeit in Group stage (no player stats)', async () => {

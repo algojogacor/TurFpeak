@@ -431,3 +431,166 @@ export function formatFixturesSchedule(
   return lines.join('\n');
 }
 
+
+// =============================================================================
+// Knockout Stage Formatters (FIX2-KO-001)
+// =============================================================================
+
+export interface KnockoutBracketFixtureItem {
+  fixtureId: string;
+  roundCode: string;
+  teamAName: string;
+  teamBName: string;
+  seriesFormat: 'BO3' | 'BO5';
+  targetWins: number;
+}
+
+function knockoutRoundLabel(roundCode: string): string {
+  switch (roundCode) {
+    case 'ROUND_OF_16':
+      return '16 BESAR';
+    case 'QUARTER_FINAL':
+      return 'PEREMPAT FINAL';
+    case 'SEMI_FINAL':
+      return 'SEMI FINAL';
+    case 'FINAL':
+      return 'GRAND FINAL';
+    default:
+      return roundCode.replace(/_/g, ' ');
+  }
+}
+
+/**
+ * Formats the knockout bracket announcement after !startknockout (FIX2-KO-001).
+ */
+export function formatKnockoutBracketAnnouncement(
+  tournamentTitle: string,
+  qualifiers: { team_name: string; group_code: string; group_rank: 1 | 2 }[],
+  bracketFixtures: KnockoutBracketFixtureItem[]
+): string {
+  const lines: string[] = [];
+  lines.push(`⚔️ *FASE KNOCKOUT RESMI DIMULAI — ${tournamentTitle.toUpperCase()}*`);
+  lines.push('──────────────────────────────');
+  lines.push('📌 *Format:* Best of 3 (BO3, first to 2 wins) • Grand Final: Best of 5 (BO5, first to 3 wins)');
+  lines.push('🚫 Tidak ada hasil seri di fase gugur; game seri wajib di-replay pada slot yang sama.');
+  lines.push('');
+  lines.push('🏅 *TIM YANG LOLOS (Top 2 per Grup):*');
+  for (const q of qualifiers) {
+    lines.push(`  • *${q.team_name}* (Grup ${q.group_code}, Peringkat ${q.group_rank})`);
+  }
+  lines.push('');
+  lines.push('🎯 *BRACKET PERTANDINGAN:*');
+  for (const f of bracketFixtures) {
+    lines.push(
+      `  ⚔️ *${f.teamAName}* vs *${f.teamBName}* (${knockoutRoundLabel(f.roundCode)}, ${f.seriesFormat})`
+    );
+  }
+  lines.push('');
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Tim kiri pada tiap pasangan bertindak sebagai Host Room default. Panitia memicu fase berikutnya dengan *!startknockout* setelah semua series selesai._');
+
+  return lines.join('\n');
+}
+
+export interface SeriesGameReportMessageParams {
+  tournamentName: string;
+  roundCode: string;
+  seriesFormat: 'BO3' | 'BO5';
+  gameNumber: number;
+  teamAName: string;
+  teamBName: string;
+  teamAScore: number;
+  teamBScore: number;
+  isReplay: boolean;
+  isSeriesComplete: boolean;
+  seriesScoreA: number;
+  seriesScoreB: number;
+  winnerTeamName?: string | null;
+  nextGameNumber?: number | null;
+}
+
+/**
+ * Formats an individual knockout series game result confirmation (FIX2-KO-001).
+ */
+export function formatSeriesGameReportMessage(params: SeriesGameReportMessageParams): string {
+  const lines: string[] = [];
+  const roundLabel = knockoutRoundLabel(params.roundCode);
+
+  if (params.isReplay) {
+    lines.push(`🔁 *HASIL GAME KNOCKOUT (WAJIB REPLAY)*`);
+  } else {
+    lines.push(`✅ *HASIL GAME KNOCKOUT TERCATAT*`);
+  }
+  lines.push('──────────────────────────────');
+  lines.push(`🏆 *Turnamen:* ${params.tournamentName}`);
+  lines.push(`⚔️ *Series:* ${params.teamAName} vs ${params.teamBName} (${roundLabel}, ${params.seriesFormat})`);
+  lines.push(`🎮 *Game ke-${params.gameNumber}:* ${params.teamAName} ${params.teamAScore} — ${params.teamBScore} ${params.teamBName}`);
+  lines.push('');
+  if (params.isReplay) {
+    lines.push(`📊 *Skor Series:* ${params.seriesScoreA} — ${params.seriesScoreB}`);
+    lines.push('🔁 Game seri wajib di-replay pada slot yang sama (D-028). Hasil replay akan menggantikan hasil ini.');
+  } else if (params.isSeriesComplete) {
+    lines.push(`📊 *Skor Series Akhir:* ${params.seriesScoreA} — ${params.seriesScoreB}`);
+    lines.push(`🏆 *Pemenang Series:* *${params.winnerTeamName || '-'}*`);
+    lines.push(`⚔️ Series selesai — pertandingan berstatus COMPLETED.`);
+    if (params.nextGameNumber === null) {
+      lines.push('💡 _Series ini sudah selesai; tidak ada game lanjutan._');
+    }
+  } else {
+    lines.push(`📊 *Skor Series:* ${params.seriesScoreA} — ${params.seriesScoreB}`);
+    lines.push(`➡️ Lanjut ke *game ke-${params.nextGameNumber}*.`);
+    if (params.seriesFormat === 'BO3') {
+      lines.push('💡 _BO3: tim pertama yang meraih 2 kemenangan game lolos ke babak berikutnya._');
+    } else {
+      lines.push('💡 _BO5: tim pertama yang meraih 3 kemenangan game menjadi juara turnamen._');
+    }
+  }
+  lines.push('──────────────────────────────');
+
+  return lines.join('\n');
+}
+
+export interface KnockoutNextRoundMessageParams {
+  tournamentName: string;
+  isGrandFinal: boolean;
+  isChampionship: boolean;
+  nextRoundFixtures: KnockoutBracketFixtureItem[];
+  winnerTeamNames: string[];
+}
+
+/**
+ * Formats the announcement of the next knockout round / tournament completion
+ * triggered when all series in the current round are complete (FIX2-KO-001).
+ */
+export function formatKnockoutNextRoundMessage(params: KnockoutNextRoundMessageParams): string {
+  const lines: string[] = [];
+
+  if (params.isChampionship) {
+    const champion = params.winnerTeamNames[0] || '-';
+    lines.push(`👑 *JUARA TURNAMEN — ${params.tournamentName.toUpperCase()}*`);
+    lines.push('──────────────────────────────');
+    lines.push(`🏆 Selamat kepada *${champion}* sebagai JUARA Flash Peak! 🎉`);
+    lines.push('');
+    lines.push('Turnamen resmi berakhir di sini.');
+    lines.push('💡 _Ketik *!awards* untuk melihat rekap penghargaan akhir turnamen._');
+    return lines.join('\n');
+  }
+
+  lines.push(`⚔️ *BABAK KNOCKOUT LANJUTAN RESMI DIMULAI — ${params.tournamentName.toUpperCase()}*`);
+  lines.push('──────────────────────────────');
+  if (params.isGrandFinal) {
+    lines.push('👑 *GRAND FINAL (BO5 — first to 3 wins)*');
+  } else {
+    lines.push('📌 *Format:* BO3 — first to 2 wins');
+  }
+  lines.push('');
+  lines.push('🎯 *PASANGAN BARU:*');
+  for (const f of params.nextRoundFixtures) {
+    lines.push(`  ⚔️ *${f.teamAName}* vs *${f.teamBName}* (${knockoutRoundLabel(f.roundCode)}, ${f.seriesFormat})`);
+  }
+  lines.push('');
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Tim kiri pada tiap pasangan bertindak sebagai Host Room default._');
+
+  return lines.join('\n');
+}
