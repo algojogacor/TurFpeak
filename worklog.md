@@ -1,5 +1,41 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Hotfix Konfigurasi: Nomor Organizer Arya (Task: flash-peak-tms-fix-organizer-number-v1)
+
+### Konteks Sesi
+Mengoreksi konfigurasi identitas nomor WhatsApp organizer turnamen pada file `.env` di VM deployment (`/home/azureuser/flashpeak-tms/.env`). Pada sesi deployment sebelumnya nomor diisi nilai dari service lain (`628999021644`). Sesi ini memperbaikinya ke nomor resmi yang sebenarnya dipakai Arya sebagai organizer turnamen (`6289505630895`).
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Backup Snapshot `.env` Sebelum Modifikasi**:
+   - Dibuat snapshot baru: `/home/azureuser/flashpeak-tms/.env.backup-hotfix-20261120_102035`.
+2. **Koreksi Variabel Lingkungan di `.env`**:
+   - `WA_ORGANIZER_PHONE=6289505630895`
+   - `WA_ORGANIZER_JID=6289505630895@s.whatsapp.net`
+3. **Database Tidak Disentuh**:
+   - Sesuai instruksi, database `local.sqlite` tetap dibiarkan bersih dari sesi reset sebelumnya (0 baris di seluruh tabel turnamen).
+4. **Restart Service PM2**:
+   - Menjalankan `pm2 restart flashpeak-bot --update-env` dan `pm2 save`.
+   - Proses `flashpeak-bot` baru (PID 2982781) berjalan online, memuat environment baru.
+5. **Verifikasi Log**:
+   - `logs/bot-out.log`: Terverifikasi `[WA] Organizer identity configured (phone: set, jid: set).` dan `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`.
+
+### Bukti & Verifikasi Empiris
+- **Isi `.env` Terverifikasi**:
+  ```text
+  WA_ORGANIZER_PHONE=6289505630895
+  WA_ORGANIZER_JID=6289505630895@s.whatsapp.net
+  ```
+- **PM2 Status**: `flashpeak-bot` (PID 2982781), status `online`, 0 crash/restart loop.
+- **Log Verifikasi**:
+  ```text
+  2026-11-20T10:20:52: [WA] Organizer identity configured (phone: set, jid: set).
+  2026-11-20T10:20:53: [WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!
+  2026-11-20T10:20:53: [WA] Akun Bot JID: 6288242980462:2@s.whatsapp.net
+  2026-11-20T10:20:53: [WA] Bot siap memproses turnamen.
+  ```
+
+---
+
 ## [2026-11-20] Sesi Deployment & Reset Data Turnamen di VM (Task: flash-peak-tms-deploy-update-vm-v1)
 
 ### Konteks Sesi
