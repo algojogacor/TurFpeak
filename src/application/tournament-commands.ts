@@ -2581,7 +2581,12 @@ export function registerTournamentCommands(
         };
       }
 
+      // BUGFIX-TS-001: PendingWoClaim.id is required by the interface but was
+      // never populated on this (!claimwo) path — the natural-language WO path
+      // in index.ts already sets it with randomUUID(). Generate it here too so
+      // the contract holds and any future id reference gets a real value.
       const claim: PendingWoClaim = {
+        id: randomUUID(),
         chatId: ctx.message.chat_id,
         fixtureId,
         tournamentId,
@@ -2596,7 +2601,12 @@ export function registerTournamentCommands(
         forfeitingTeamId,
         forfeitingTeamName: losingTeamName,
         reason,
-        reportedByAddress: ctx.message.sender_raw_address || ctx.message.sender_id,
+        // BUGFIX-TS-002: sender_id never existed on NormalizedMessage (legacy
+        // field name from before the normalization refactor). sender_raw_address
+        // is a required, always-populated field guaranteed non-empty by the
+        // normalizer (participant || remoteJid, and messages without remoteJid
+        // are dropped entirely), so the fallback was dead code.
+        reportedByAddress: ctx.message.sender_raw_address,
         reportedByDelegateId: ctx.delegateId,
         createdAt: Date.now(),
         expiresAt: Date.now() + 15 * 60 * 1000,
