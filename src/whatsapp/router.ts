@@ -52,6 +52,29 @@ export class CommandRouter {
   }
 
   /**
+   * FIX2-APR-003 (audit temuan 3.3): configured organizer identities as a
+   * normalized list — normalized JIDs (comma-separated WA_ORGANIZER_JID) and
+   * the raw phone digits (WA_ORGANIZER_PHONE). Used by the approval engine to
+   * verify ORGANIZER-type authority against configuration instead of loose
+   * string patterns on the approver id.
+   */
+  public getOrganizerIdentities(): string[] {
+    const ids: string[] = [];
+    for (const part of (this.organizerJid || '').split(',')) {
+      const jid = part.trim().toLowerCase();
+      if (jid) {
+        ids.push(jid);
+        const digits = jid.split('@')[0]?.replace(/\D/g, '');
+        if (digits) ids.push(digits);
+      }
+    }
+    if (this.organizerPhone) {
+      ids.push(this.organizerPhone);
+    }
+    return ids;
+  }
+
+  /**
    * Registers a command definition.
    */
   public registerCommand(definition: CommandDefinition): void {

@@ -395,26 +395,52 @@ export async function applyKoGameEvidence(
   // Apply the extracted result to the derived slot via the domain engine.
   // recordSeriesGameResult handles: tied -> stays in slot (replay pending),
   // decisive -> upsert slot, recount series wins, complete series & fixture.
-  const seriesOutcome = await recordSeriesGameResult(db, {
-    series_id: ctx.seriesId,
-    game_number: gameNumber,
-    team_a_score: input.teamAScore,
-    team_b_score: input.teamBScore,
-    evidence_status: 'VERIFIED',
-  });
+  //
+  // FIX2-KO-005 (audit temuan 3.4 Medium): game result + evidence journal are now
+  // written inside ONE transaction. Previously the game was recorded first and
+  // the journal second with no rollback — a journal failure (e.g. the FK bug in
+  // temuan 3.1) left an official score with NO evidence row (half-written state)
+  // and the delegate's retry was then treated as DUPLICATE. All-or-nothing now.
+  let seriesOutcome: Awaited<ReturnType<typeof recordSeriesGameResult>>;
+  let evidenceId: string;
+  try {
+    const tx = await db.transaction('write');
+    try {
+      seriesOutcome = await recordSeriesGameResult(tx as unknown as Client, {
+        series_id: ctx.seriesId,
+        game_number: gameNumber,
+        team_a_score: input.teamAScore,
+        team_b_score: input.teamBScore,
+        evidence_status: 'VERIFIED',
+      });
 
-  const evidenceId = await journalEvidence(
-    db,
-    input,
-    ctx.seriesId,
-    gameNumber,
-    'APPLIED',
-    seriesOutcome.is_series_complete
-      ? `Game ${gameNumber} tercatat; series selesai.`
-      : seriesOutcome.is_replay_required
-        ? `Game ${gameNumber} seri; menunggu replay pada slot yang sama.`
-        : `Game ${gameNumber} tercatat.`
-  );
+      evidenceId = await journalEvidence(
+        tx as unknown as Client,
+        input,
+        ctx.seriesId,
+        gameNumber,
+        'APPLIED',
+        seriesOutcome.is_series_complete
+          ? `Game ${gameNumber} tercatat; series selesai.`
+          : seriesOutcome.is_replay_required
+            ? `Game ${gameNumber} seri; menunggu replay pada slot yang sama.`
+            : `Game ${gameNumber} tercatat.`
+      );
+      await tx.commit();
+    } catch (txErr) {
+      if (!tx.closed) {
+        try { await tx.rollback(); } catch { /* transaction already closed */ }
+      }
+      throw txErr;
+    }
+  } catch (err) {
+    // Atomic failure: nothing was applied (games/series untouched, no journal row).
+    throw new Error(
+      `Gagal mencatat hasil game knockout secara atomik untuk fixture '${input.fixtureId}' (game ${gameNumber}, skor ${input.teamAScore}-${input.teamBScore}). ` +
+      'Tidak ada perubahan yang tersimpan — kirim ulang foto, atau minta Panitia mencatat via !kores. Detail: ' +
+      String((err as Error)?.message || err)
+    );
+  }
 
   const newSeriesScore = {
     team_a: seriesOutcome.series.team_a_game_wins,
