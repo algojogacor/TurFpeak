@@ -241,7 +241,7 @@ export class CommandRouter {
     // unless it is an explicitly allowed private DM with the organizer or an organizer administrative flow.
     let isCentralGroup = Boolean(this.centralGroupJid && normalizedChatId === this.centralGroupJid);
 
-    if (isGroup && !isCentralGroup) {
+    if (isGroup && !isCentralGroup && !definition.allowOutsideCentralGroup) {
       // FIX2-GROUP-001: no silent auto-adoption of a new official group from
       // arbitrary admin commands. Only !setgroup may establish/switch the
       // official group, plus the initial bootstrap case where no official group
@@ -357,6 +357,69 @@ export class CommandRouter {
           responseText: '✅ Grup ini telah berhasil ditetapkan sebagai Grup Resmi Turnamen Flash Peak TMS.',
         };
       },
+    });
+
+    // !id & !myid
+    const idHandler = (ctx: CommandContext) => {
+      const sender = ctx.message.sender_raw_address || ctx.message.sender_normalized_address;
+      const chatId = ctx.message.chat_id;
+      const isGroup = chatId.endsWith('@g.us');
+      const isOrg = ctx.isOrganizer;
+
+      let groupStatus = 'Bukan Grup Resmi';
+      if (ctx.isCentralGroup) {
+        groupStatus = '✅ *Grup Resmi Turnamen*';
+      } else if (!this.centralGroupJid) {
+        groupStatus = 'Belum Ditetapkan (Kirim *!setgroup* untuk menetapkan)';
+      }
+
+      const lines = [
+        '🆔 *Informasi Identitas & Grup (Flash Peak TMS)*',
+        '',
+        `👤 *ID WhatsApp Anda (Sender):* \`${sender}\``,
+        `• Tipe Alamat: ${sender.includes('@lid') ? 'WhatsApp LID (Privacy ID)' : 'Phone JID'}`,
+        `• Role di Sistem: *${ctx.role}*`,
+        `• Status Organizer: ${isOrg ? '✅ *Terdaftar sebagai Organizer (Full Access)*' : '❌ *Bukan Organizer*'}`,
+        '',
+        `👥 *ID Chat / Grup Ini:* \`${chatId}\``,
+        `• Tipe Chat: ${isGroup ? 'Grup WhatsApp' : 'Direct Message (DM)'}`,
+        `• Status Grup: ${groupStatus}`,
+      ];
+
+      if (isOrg) {
+        lines.push('', '💡 _Anda memiliki hak penuh Organizer (bisa !setgroup, !createtournament, dll)._');
+      } else {
+        lines.push(
+          '',
+          '💡 _Jika ID Anda adalah @lid atau belum dikenali sebagai Organizer, ' +
+            'daftarkan nilai ID Anda di atas ke konfigurasi WA_ORGANIZER_JID di .env bot._'
+        );
+      }
+
+      return {
+        success: true,
+        responseText: lines.join('\n'),
+      };
+    };
+
+    this.registerCommand({
+      command: 'id',
+      requiredRole: 'ANY',
+      description: 'Menampilkan ID WhatsApp Anda dan ID chat/grup saat ini',
+      allowedInDm: true,
+      allowedInGroup: true,
+      allowOutsideCentralGroup: true,
+      handler: idHandler,
+    });
+
+    this.registerCommand({
+      command: 'myid',
+      requiredRole: 'ANY',
+      description: 'Alias dari !id',
+      allowedInDm: true,
+      allowedInGroup: true,
+      allowOutsideCentralGroup: true,
+      handler: idHandler,
     });
   }
 }

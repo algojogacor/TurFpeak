@@ -271,6 +271,32 @@ describe('CommandRouter (Group Scope & Role Authorization)', () => {
     expect(res?.responseText).toContain('Pong');
   });
 
+  it('responds to !id in central group and outside central group with identity info', async () => {
+    // 1. In central group with organizer
+    const msgOrg = createMsg(centralGroupJid, organizerJid, '!id');
+    const resOrg = await router.handleMessage(msgOrg);
+    expect(resOrg?.success).toBe(true);
+    expect(resOrg?.responseText).toContain(organizerJid);
+    expect(resOrg?.responseText).toContain(centralGroupJid);
+    expect(resOrg?.responseText).toContain('Terdaftar sebagai Organizer');
+
+    // 2. In unauthorized / outside group with regular user (allowOutsideCentralGroup = true)
+    const unauthorizedGroup = '120363999999999999@g.us';
+    const nonOrgSender = '6289999999999@s.whatsapp.net';
+    const msgNonOrg = createMsg(unauthorizedGroup, nonOrgSender, '!id');
+    const resNonOrg = await router.handleMessage(msgNonOrg);
+    expect(resNonOrg?.success).toBe(true);
+    expect(resNonOrg?.responseText).toContain(nonOrgSender);
+    expect(resNonOrg?.responseText).toContain(unauthorizedGroup);
+    expect(resNonOrg?.responseText).toContain('Bukan Organizer');
+
+    // 3. Alias !myid
+    const msgAlias = createMsg(unauthorizedGroup, nonOrgSender, '!myid');
+    const resAlias = await router.handleMessage(msgAlias);
+    expect(resAlias?.success).toBe(true);
+    expect(resAlias?.responseText).toContain(nonOrgSender);
+  });
+
   it('rejects commands from an unauthorized group (FR-ID-005 Group Scope)', async () => {
     const unauthorizedGroup = '120363999999999999@g.us';
     const msg = createMsg(unauthorizedGroup, organizerJid, '!ping');

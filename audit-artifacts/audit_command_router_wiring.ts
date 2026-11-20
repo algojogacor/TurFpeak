@@ -59,6 +59,8 @@ async function testAllCommands() {
     // Builtin
     { cmd: 'ping', role: 'ANY', args: '' },
     { cmd: 'help', role: 'ANY', args: '' },
+    { cmd: 'id', role: 'ANY', args: '' },
+    { cmd: 'myid', role: 'ANY', args: '' },
     { cmd: 'setgroup', role: 'ORGANIZER', args: '' },
     // Tournament Commands
     { cmd: 'createtournament', role: 'ORGANIZER', args: 'Piala Presiden TMS' },

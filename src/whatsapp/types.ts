@@ -101,4 +101,5 @@ export interface CommandDefinition {
   description?: string;
   allowedInDm?: boolean; // Default: true for organizer, false for delegates
   allowedInGroup?: boolean; // Default: true
+  allowOutsideCentralGroup?: boolean; // Default: false; allow command execution outside central group (e.g. !id)
 }

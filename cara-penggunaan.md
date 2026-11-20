@@ -567,6 +567,7 @@ Semua yang tercatat bot — foto bukti, hasil, approval, koreksi, bahkan alasan 
 |---|---|---|
 | `!help` | semua | daftar semua perintah yang kamu boleh pakai |
 | `!ping` | semua | cek bot hidup |
+| `!id` / `!myid` | semua (DM/grup mana saja) | cek ID WhatsApp Anda & ID grup ini oleh sistem |
 | `!tim` / `!peserta` | semua | daftar tim |
 | `!roster <tim>` | semua | lihat pemain tim |
 | `!standings <grup>` | semua | klasemen (sebut huruf grupnya, mis. `!standings A`) |

@@ -1,5 +1,37 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Fitur: Command !id & !myid untuk Pengecekan Identitas & Grup (Task: flash-peak-tms-command-id-v1)
+
+### Konteks Sesi
+Menambahkan perintah bawaan `!id` (dan alias `!myid`) pada CommandRouter WhatsApp agar pengguna (khususnya Arya sebagai Organizer) dapat memeriksa identitas asli pengirim (`sender_raw_address`, LID vs Phone JID), hak akses/role di sistem (apakah dikenali sebagai Organizer), serta ID chat/grup saat ini dan statusnya (resmi/belum). Perintah ini penting karena WhatsApp/Baileys dapat mengirimkan alamat dalam format `@lid` (Privacy ID) yang berbeda dari nomor telepon biasa.
+
+### Langkah & Perubahan Kode
+1. **Ekstensi Tipe `CommandDefinition` (`src/whatsapp/types.ts`)**:
+   - Menambahkan flag opsional `allowOutsideCentralGroup?: boolean` agar perintah diagnostik seperti `!id` dapat dijalankan di grup mana pun (bahkan sebelum grup tersebut ditetapkan sebagai grup resmi via `!setgroup`).
+2. **Implementasi Router Scope Guard & Handler `!id` (`src/whatsapp/router.ts`)**:
+   - Menyesuaikan group scope guard: `if (isGroup && !isCentralGroup && !definition.allowOutsideCentralGroup)` sehingga perintah dengan flag ini tidak ditolak dengan pesan `UNAUTHORIZED_GROUP`.
+   - Mengimplementasikan handler `!id` dan mendaftarkan `!id` serta `!myid` dengan `requiredRole: 'ANY'`, `allowedInDm: true`, `allowedInGroup: true`, dan `allowOutsideCentralGroup: true`.
+   - Handler merender informasi:
+     - User JID (`sender_raw_address`)
+     - Tipe alamat (LID vs Phone JID)
+     - Role pengguna di sistem (`ORGANIZER`, `DELEGATE`, atau `UNKNOWN`)
+     - Status hak akses Organizer (apakah cocok dengan konfigurasi env)
+     - ID chat/grup saat ini (`chat_id`)
+     - Status grup resmi (apakah grup ini grup resmi, atau belum ada yang ditetapkan)
+     - Petunjuk konfigurasi jika ID pengguna berupa `@lid` dan belum cocok dengan `WA_ORGANIZER_JID`.
+3. **Dokumentasi Pengguna (`cara-penggunaan.md`)**:
+   - Menambahkan `!id` / `!myid` pada tabel cheat sheet perintah.
+4. **Pengujian & Verifikasi**:
+   - Menambahkan test case baru di `tests/unit/whatsapp.test.ts` (menguji di central group, unauthorized group, dan alias `!myid`).
+   - Mendaftarkan `id` dan `myid` di `audit-artifacts/audit_command_router_wiring.ts`.
+
+### Bukti & Verifikasi Empiris
+- **Unit Suite (`vitest run`)**: **18 file / 224/224 PASS** (bertambah 1 test).
+- **TypeScript Typecheck (`tsc`)**: **0 error**.
+- **Audit Wiring Suite (`audit_command_router_wiring.ts`)**: **38/38 commands SUCCESS**.
+
+---
+
 ## [2026-11-20] Sesi Hotfix Konfigurasi: Nomor Organizer Arya (Task: flash-peak-tms-fix-organizer-number-v1)
 
 ### Konteks Sesi
