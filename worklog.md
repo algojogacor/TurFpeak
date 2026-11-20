@@ -1,5 +1,71 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-20] Sesi Deployment & Reset Data Turnamen di VM (Task: flash-peak-tms-deploy-update-vm-v1)
+
+### Konteks Sesi
+Memperbarui deployment Flash Peak TMS (TurFpeak) yang sedang berjalan di VM (`forfh-korea-vm`, user `azureuser`) agar memakai kode terbaru dari `master` (commit `6cb8836`, memuat 4 PR besar: audit findings fix, interactive knockout evidence pipeline v2, approval-reset fix, preexisting TS bugfixes, dan panduan penggunaan). Sekaligus melakukan reset total data turnamen lama di database VM agar bersih dan siap digunakan Arya untuk turnamen baru via `!setgroup`.
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Pemeriksaan Awal & Identifikasi Service**:
+   - Ditemukan deployment berjalan di `/home/azureuser/flashpeak-tms`.
+   - Service PM2 aktif: `flashpeak-bot` (id 9, fork mode, entry `dist/cli/start.js`, `--max-old-space-size=160`) dan `flashpeak-media` (id 8, port 4189, online).
+   - Commit sebelum update dicatat sebagai titik rollback: `46ed1db` (`feat(roster): enforce Format 5+3 with automatic rejection for excess players`).
+
+2. **Backup Snapshot Database & Sesi WhatsApp**:
+   - `local.sqlite` disalin ke `local.sqlite.backup-pre-deploy-20261120_100254` (464K).
+   - `auth_state` (kredensial WhatsApp session Baileys) dibackup ke `auth_state.backup-pre-deploy-20261120_100254`.
+   - File `.env` dibackup ke `.env.backup-20261120_100504`.
+
+3. **Update Kode & Build**:
+   - Eksekusi `git fetch origin master && git pull origin master` di VM; berhasil fast-forward `46ed1db..6cb8836`.
+   - Menjalankan `npm install` (semua 283 dependencies up-to-date).
+   - Menjalankan `npm run build` (`tsc`) untuk memperbarui bundel kompilasi `dist/` (`dist/cli/start.js` terupdate).
+
+4. **Reset Data Turnamen & Migrasi Database**:
+   - `flashpeak-bot` dihentikan sementara via `pm2 stop flashpeak-bot` untuk melepas file lock SQLite (`SQLITE_BUSY`).
+   - Menjalankan migrasi `npm run migrate`: berhasil menerapkan migrasi baru `002_ko_game_evidence.sql` (tabel per-game evidence jurnal knockout).
+   - Menjalankan utility bawaan `npm run reset-data` (`src/cli/reset_data.ts`): membersihkan seluruh tabel turnamen (`approvals`, `corrections`, `player_game_stats`, `goalkeeper_reports`, `report_media`, `report_versions`, `report_sessions`, `media_assets`, `inbound_messages`, `standings`, `games`, `series`, `fixtures`, `group_members`, `groups`, `group_draws`, `players`, `teams`, `whatsapp_identities`, `delegates`, `tournaments`, `audit_events`).
+   - Verifikasi hitungan baris di seluruh 26 tabel: seluruh tabel data turnamen bernilai **0 baris**, tabel meta `_migrations` bernilai **2** (001 dan 002). Skema tabel tetap utuh sempurna.
+
+5. **Penyesuaian Environment Variables (`.env`)**:
+   - `WA_CENTRAL_GROUP_JID=` di-reset kosong agar bot siap menerima penetapan grup baru via `!setgroup`.
+   - Dikonfigurasi identitas organizer Arya (`WA_ORGANIZER_PHONE=628999021644` dan `WA_ORGANIZER_JID=628999021644@s.whatsapp.net`) untuk memenuhi proteksi FIX2-RBAC-001 (mencegah startup abort).
+   - Memastikan `FLASHPEAK_MEDIA_SECRET` valid dan terhubung dengan `flashpeak-media` service.
+
+6. **Restart & Verifikasi Runtime PM2**:
+   - Menjalankan `pm2 start flashpeak-bot` dan `pm2 save`.
+   - Status PM2: `flashpeak-bot` (pid 2980988) status **online**, 0 restarts pasca-start.
+   - Log startup membuktikan bot sukses terhubung kembali ke WhatsApp (`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`) dan siap memproses turnamen baru.
+
+### Bukti & Verifikasi Empiris
+- **Commit HEAD VM**: `6cb8836` (`git log -n 1 --oneline`).
+- **Verifikasi Tabel Database (`local.sqlite`)**:
+  - `_migrations`: 2
+  - `tournaments`: 0
+  - `teams`: 0
+  - `delegates`: 0
+  - `whatsapp_identities`: 0
+  - `players`: 0
+  - `fixtures`: 0
+  - `games`: 0
+  - `series`: 0
+  - `ko_game_evidence`: 0
+  - `inbound_messages`: 0
+  - `media_assets`: 0
+  - `report_sessions`: 0
+  - `report_versions`: 0
+  - `approvals`: 0
+  - `standings`: 0
+  - `audit_events`: 0
+- **Log Startup**:
+  - `[DB] Database schema is up to date.`
+  - `[AI] Initialized Multi-Provider Router with 6 provider(s): GROQ, DEEPSEEK, GEMINI, NVIDIA_NIM, COHERE, MISTRAL`
+  - `[WA] Organizer identity configured (phone: set, jid: set).`
+  - `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`
+  - `[WA] Bot siap memproses turnamen.`
+
+---
+
 ## [2026-11-20] Sesi Merge Koordinasi 4 PR ke master (Task: flash-peak-tms-analyze-and-merge-prs-v1)
 
 ### Konteks Sesi
