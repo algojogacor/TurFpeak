@@ -34,6 +34,8 @@ Bedanya babak grup dan babak knockout (poin paling sering bikin bingung):
 
 Bagian ini untuk **panitia**. Kalau kamu delegasi tim, kamu bisa langsung lompat ke bagian "Daftarkan Pemain (Roster)" — tapi tak ada salahnya baca sekilas biar tahu apa yang panitia kerjakan.
 
+> 💡 **Siapa yang dianggap "panitia" oleh bot:** nomor WhatsApp yang terdaftar sebagai organizer di konfigurasi bot (`WA_ORGANIZER_PHONE` / `WA_ORGANIZER_JID`). Perintah khusus panitia (`!createtournament`, `!draw`, `!kores`, `!override`, dsb.) hanya sah kalau dikirim dari nomor itu — tidak peduli nama tampilan atau username WhatsApp kamu. Kalau panitia berganti orang, nomor di konfigurasi bot-lah yang perlu diganti.
+
 ## Membuat Turnamen Baru
 
 **Siapa:** Panitia saja.
@@ -164,7 +166,7 @@ _Atau dengan opsi target ukuran grup:_
 !draw size=4
 !draw size=5
 ```
-*(Default adalah grup isi 5 tim. Jika turnamen Anda memiliki 16 tim, gunakan `!draw size=4` untuk membentuk 4 grup × 4 tim).*
+*(Default adalah grup target 5 tim; sisa tim diserap grup berisi 4 — contoh: 20 tim → 4 grup × 5, 16 tim → otomatis 4 grup × 4, 9 tim → 1 grup 5 + 1 grup 4. Flag `size=4` berguna kalau Anda ingin grup berisi 4 menjadi target, misal 20 tim → 5 grup × 4. Hanya `4` atau `5` yang sah; kalau jumlah tim tidak mungkin dibentuk dari kombinasi grup 5 dan 4 — misal 11 tim — bot menolak undian dan menyarankan jumlah tim yang cocok).*
 
 **Setelah itu:** bot menampilkan undian SATU TIM PER SATU TIM (ada jeda beberapa detik tiap tim biar seru):
 
@@ -470,6 +472,8 @@ Kalau ada beberapa pertandingan knockout berjalan bersamaan, sebutkan ID pertand
 
 > ⚠️ Harus **foto + caption** — ketik `!kogame` tanpa foto tidak bisa diproses (bot akan membalas begitu).
 
+**Kalau ada beberapa series aktif dan kamu lupa sebut ID:** bot tidak menebak-nebak. Ia membalas daftar semua series knockout yang sedang aktif (nama kedua tim, ronde, dan ID-nya) dan **tidak mencatat apa pun** — jadi hasil game tidak akan pernah masuk ke pertandingan yang salah. Lihat ID yang benar dari balasan bot itu atau dari `!schedule`, lalu kirim ulang foto dengan caption `!kogame <fixture_id>`. ID yang salah ketik juga ditolak dengan pesan "ID fixture tidak ditemukan".
+
 **Apa yang terjadi setelahnya (contoh nyata):**
 
 Kamu kirim foto game 1: Garuda FC 2-0 Singa FC, caption `!kogame`. Bot membalas:
@@ -590,7 +594,7 @@ Semua yang tercatat bot — foto bukti, hasil, approval, koreksi, bahkan alasan 
 | `!setgroup` | panitia (di grup) | tetapkan grup resmi |
 | `!addteam <nama>` | panitia | tambah tim |
 | `!onboarding` | panitia | mulai verifikasi delegasi |
-| `!draw` / `!draw size=4` | panitia | undian grup + jadwal (opsi target ukuran grup) |
+| `!draw [size=4\|5]` | panitia | undian grup + jadwal; opsi target ukuran grup (default 5) |
 | `!manualreport ...` | panitia | laporan manual |
 | `!confirm` / `!ok` / `!batal` | panitia | sahkan / tolak klaim WO & draf |
 | `!startknockout` | panitia | mulai / lanjut fase knockout |
