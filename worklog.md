@@ -1,5 +1,52 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Pull PR #7 & Redeploy VM: AI Resilience Notifications & Retry Queue (Task: flash-peak-tms-merge-pr7-redeploy-v1)
+
+### Konteks Sesi
+Mengeksekusi sinkronisasi pasca-merge PR #7 (`feat(ai): failure-cause-differentiated notifications + automatic retry queue (all-providers-failed)`) dari GitHub ke branch `master` lokal dan melakukan re-deployment ke VM (`forfh`). PR #7 mengimplementasikan:
+1. Notifikasi kegagalan dibedakan per penyebab (failover transparan, retry in progress, terminal failure manual verification, unreadable screenshot).
+2. Intake acknowledgment segera saat screenshot diterima ("📸 Screenshot diterima...").
+3. Automatic retry queue untuk `AllProvidersFailedError` menggunakan reuse mekanisme debounce/lease yang ada + migrasi `003_ai_retry_queue.sql`.
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Pull ke Repositori Lokal**:
+   - `git fetch origin` & `git pull origin master` (Fast-forward `e5630aa..9e2175e`).
+   - Kompilasi lokal `npm run build` (`tsc`) sukses tanpa error.
+2. **Re-deployment ke VM (`forfh`)**:
+   - Melakukan SSH ke VM `forfh` (`forfh-korea-vm`, `/home/azureuser/flashpeak-tms`).
+   - Eksekusi `git pull origin master` (Fast-forward `e5630aa..9e2175e`).
+   - Eksekusi `npm run build` di VM: clean, 0 error.
+   - Eksekusi migrasi database: `npx tsx src/db/migrate.ts` mengaplikasikan `003_ai_retry_queue.sql` ke `local.sqlite`.
+   - Restart service PM2: `pm2 restart flashpeak-bot --update-env && pm2 save`.
+3. **Verifikasi Runtime Pasca-Deploy**:
+   - Status PM2 `flashpeak-bot`: `online` (PID 3015536, 0 restart loops).
+   - Log PM2 mengonfirmasi migrasi skema up to date, Multi-Provider Router aktif dengan 6 provider, dan Baileys sukses tersambung ke WhatsApp.
+
+### Bukti & Verifikasi Empiris
+- **Commit HEAD Master**: `9e2175e` (Merge pull request #7 from algojogacor/feat/ai-resilience-retry-queue).
+- **Migration Output VM**:
+  ```text
+  ✅ Migrations completed successfully:
+     Applied: 003_ai_retry_queue.sql
+     Skipped: 001_initial.sql, 002_ko_game_evidence.sql
+  ```
+- **PM2 Process Status VM**:
+  - `flashpeak-bot` (PID 3015536): `online`, memory ~128.7MB, uptime active.
+- **Log Startup VM (`logs/bot-out.log`)**:
+  ```text
+  [DB] Connecting to database (file:local.sqlite)...
+  [DB] Database schema is up to date.
+  [AI] Initialized Multi-Provider Router with 6 provider(s): GROQ, DEEPSEEK, GEMINI, NVIDIA_NIM, COHERE, MISTRAL
+  [WA] Initializing Baileys WhatsApp client (auth dir: ./auth_state)...
+  [WA] Organizer identity configured (phone: set, jid: set).
+  [WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!
+  [WA] Akun Bot JID: 6288242980462:2@s.whatsapp.net
+  [WA] Bot siap memproses turnamen.
+  ```
+- **Unit & Integration Suite Lokal**: **20 file / 248/248 PASS** (16 test baru di `tests/integration/ai_resilience.test.ts`).
+
+---
+
 ## [2026-11-20] Sesi Merge PR #5 & Redeploy VM: Fix 4 Audit Findings + Dynamic Group Sizing (Task: flash-peak-tms-merge-pr5-redeploy-v1)
 
 ### Konteks Sesi
