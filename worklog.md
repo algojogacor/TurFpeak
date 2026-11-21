@@ -1,5 +1,49 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Follow-up 3: Fix Blocker & Quick-Wins dari Second-Opinion Review PR #8 (Task: flash-peak-tms-followup-roundcode-blocker-v1, Branch: audit/verify-fix-v1)
+
+### Konteks Sesi
+Second-opinion review independen atas PR #8 (`PR8_second_opinion_review.md`) menemukan 1 blocker + 2 quick-win sebelum merge. Ketiganya difix di branch yang sama, regression penuh per commit, tidak merge/push (keputusan merge tetap milik Arya). Catatan konteks dari Arya: untuk turnamen ukuran Gojiha (16 tim: 4 grup isi 4 → 8 kualifikasi → QF 4 fixture → SF 2 → Final 1) blocker ini TIDAK kena karena jumlah fixture tiap ronde selalu unik; blocker relevan di turnamen besar (≥6 grup / ≥24 tim, possible karena `!addteam` tanpa cap). Tetap wajib difix sebelum merge agar tidak meledak diam-diam di turnamen besar nanti.
+
+### Item 1 — blocker-roundcode FIXED: label ronde dari histori ronde di DB, bukan jumlah fixture
+- **Root cause (dibaca ulang sebelum fix):** `generateKnockoutFixtures` menurunkan `round_code` dari JUMLAH MATCH ronde itu (`fixtures.ts` lama: 1→FINAL, 2→SEMI_FINAL, 4→QUARTER_FINAL, selain itu→ROUND_OF_16 default). Dua ronde berbeda bisa kebetulan punya jumlah fixture yang sama-sama "non-standar" (mis. 6 grup → 12 kualifikasi → 6 fixture, lalu 6 pemenang → 3 fixture — keduanya jatuh ke default ROUND_OF_16). Karena `!startknockout` mengumpulkan pemenang via `WHERE round_code = <label terakhir>`, label ganda membuat pemenang ronde LAMA ikut ter-draw ulang — tim yang sudah tersingkir hidup lagi dan turnamen tidak pernah konvergen (terkonfirmasi reviewer via dry-run end-to-end).
+- **Fix:** fungsi baru `deriveKnockoutRoundCode(db, tournamentId, matchCount)` di `src/competition/fixtures.ts`:
+  1. Baca SEMUA label ronde knockout yang sudah tercatat di DB turnamen ini.
+  2. Pilih label "natural" sesuai jumlah match (1→FINAL, 2→SEMI_FINAL, 4→QUARTER_FINAL, 8→ROUND_OF_16, 16→ROUND_OF_32) — supaya turnamen ukuran normal labelnya persis seperti dulu.
+  3. Ronde 1-match SELALU FINAL (ronde setelahnya mengakhiri turnamen — by definition).
+  4. Bila label natural sudah dipakai, maju sepanjang progresi (ROUND_OF_32→ROUND_OF_16→QUARTER_FINAL→SEMI_FINAL→FINAL) ke label yang belum dipakai. Khusus jumlah match non-standar (natural=null, mis. pool ganjil 3 fixture): scan dimulai SETELAH label terdalam yang sudah dipakai, sehingga label selalu MENYEMPIT (ronde setelah ROUND_OF_16 jadi QUARTER_FINAL, tidak pernah mundur ke ROUND_OF_32).
+  5. Bila seluruh progresi habis (bracket ekstrem / pool ganjil beruntun), fallback ke label generik unik `KNOCKOUT_ROUND_<n>` — label tidak pernah bisa duplikat.
+- **Fix pendukung (efek samping blocker yang sama):** `getActiveTournamentCurrentRound` di `matchday-service.ts` dulu mengurutkan ronde knockout secara LEKSIKALIS (`round_code ASC` → FINAL < QUARTER_FINAL < ROUND_OF_16 secara alfabetis — salah). Kini diurutkan menurut RANK progresi (R32→R16→QF→SF→FINAL), label di luar progresi (fallback `KNOCKOUT_ROUND_n`) diurutkan by first-seen `created_at` — berlaku untuk `allRounds` dan deteksi "ronde aktif" (ronde belum-selesai paling awal).
+- **Dry-run reproduksi skenario PERSIS reviewer** (`verify-artifacts/check_roundcode_fix.mts`, semua via `!startknockout` + CommandRouter sungguhan):
+  - PART 1 — 6 grup / 24 tim / 12 kualifikasi (skenario reviewer): label `ROUND_OF_32 → ROUND_OF_16 → QUARTER_FINAL → FINAL`, SEMUA label unik, TIDAK ADA tim tersingkir yang hidup lagi (diperiksa lintas ronde: tim yang kalah di ronde N tidak pernah muncul di ronde >N), turnamen KONVERGEN sampai FINAL. (Sebelum fix: ronde 2 & 3 sama-sama ROUND_OF_16, tim T5/T9/T11 yang sudah tersingkir ikut di-draw lagi, turnamen berputar selamanya.)
+  - PART 2 — regression ukuran Gojiha (16 tim, 8 kualifikasi): label `QUARTER_FINAL → SEMI_FINAL → FINAL` — **identik perilaku lama**, tidak ada perubahan yang terlihat delegasi.
+  - PART 2b — regression 16 kualifikasi: `ROUND_OF_16 → QUARTER_FINAL → SEMI_FINAL → FINAL` — identik perilaku lama.
+  - PART 3 — progresi habis (8 ronde beruntun): fallback `KNOCKOUT_ROUND_6/7/8` — semua unik, tanpa kolisi.
+  - Skenario reviewer lain (`review_roundcode_collision`): ronde 2 kini berlabel `QUARTER_FINAL` (dulu ROUND_OF_16 ganda); peserta ronde 2 = survivor ronde 1 semata.
+- **Test permanen baru** (`tests/unit/competition.test.ts`, describe `REVIEW-FIX blocker-roundcode`): (a) ronde lebar 8 fixture ROUND_OF_16 disusul pool ganjil 7 survivor (3 fixture) → label QUARTER_FINAL (menyempit, unik, bukan ROUND_OF_32) + anti-self-match; (b) ronde 1-match SELALU FINAL + BO5 meski label lebih awal sudah terpakai.
+
+### Item 2 — quickwin-shuffle-validation FIXED: validasi draw berdasarkan multiset team_id
+- **Root cause:** validasi lama `new Set(drawn).size !== drawn.length` membandingkan IDENTITAS OBJEK — shuffle curang yang return objek BARU dengan `team_id` tertukar/terduplikasi lolos validasi dan bisa menghasilkan self-match X vs X (serangan persis reviewer, tadinya "DITERIMA (bug!)").
+- **Fix:** hasil draw divalidasi berdasarkan multiset `team_id` — array `team_id` hasil shuffle harus PERSIS sama (sorted) dengan pool pra-draw; tambah/kurang/gandakan/mutasi team_id semuanya ditolak dengan error yang sama.
+- **Bukti** (`verify-artifacts/check_quickwins_fix.mts` PART A): serangan reviewer (mutasi team_id antar objek) kini **DITOLAK**; duplikat elemen & elemen hilang tetap ditolak; shuffle sah (reverse, return-same-reference) tetap diterima tanpa self-match. Test permanen baru juga ditambahkan di `tests/unit/competition.test.ts` (describe `REVIEW-FIX quickwin-shuffle-validation`).
+
+### Item 3 — quickwin-group-null-message FIXED: pesan knockout tanpa "(Grup null)", regulasi D-032
+- **Root cause:** `formatMatchdayStatus` (!matchday) dan reminder H-3/H-1 (matchday-service.ts) men-draft `(Grup ${pf.groupCode})` untuk semua fixture — fixture knockout punya `groupCode` null → "(Grup null)" terlihat peserta; dan selalu menyebut D-031 (double walkover babak grup) meski yang pending fixture knockout (regulasinya D-032 double-loss + bye).
+- **Fix:** label per-stage — fixture knockout ditampilkan `(Knockout)`, fixture grup tetap `(Grup X)`; regulasi dikutip per-stage: D-031 hanya bila ada fixture grup pending, D-032 (KALAH GANDA + bye otomatis) bila ada fixture knockout pending. Pengumuman cutoff (yang sudah benar sejak T17) tidak diubah.
+- **Bukti** (`check_quickwins_fix.mts` PART B): B1 ronde SEMI_FINAL KO pending → "(Knockout)" + D-032, tanpa "(Grup null)", tanpa D-031; B2 regression ronde grup MD1 → "(Grup A)" + D-031 persis wording lama, tanpa "(Knockout)"/D-032.
+
+### Regression Gate (dijalankan setelah SEMUA fix)
+- `npx tsc --noEmit`: clean (0 error).
+- `npx vitest run`: **253/253 PASS** (20 file; 250 test lama + 3 test permanen baru).
+- Seluruh 24 skrip `verify-artifacts/check_*.mts` + 2 dry-run audit lama: semua exit 0, termasuk `check_t2_fix` (T2-FIX VERIFIED), `check_bracket_redraw` + `check_bracket_redraw_e2e` (BRACKET-REDRAW VERIFIED), `check_t17_fix` (T17-FIX VERIFIED), dan semua check T1–T18 lainnya — tidak ada regresi perilaku lama.
+- ESLint `src`: 7 warning / 0 error — seluruhnya pre-existing (identik sebelum & sesudah perubahan; diverifikasi via stash).
+- Skrip dry-run reviewer asli direplay: `review_roundcode_collision` (24-tim R16 + double-loss) dan `review_6group_happy` (24-tim happy path) — keduanya kini menunjukkan label unik & konvergen tanpa tim hidup lagi. (Heuristik "FAIL" di output script lama itu basi — script itu mem-filter fixture by `round_code='ROUND_OF_16'` yang setelah fix tidak lagi jadi label ronde 2; verdict sesungguhnya di `check_roundcode_fix.mts` yang menjalankan rantai penuh.)
+
+### Scope Sesi Ini
+- File produksi berubah: `src/competition/fixtures.ts` (deriveKnockoutRoundCode + validasi shuffle), `src/application/matchday-service.ts` (label "(Knockout)"/D-031/D-032 + ordering ronde), `tests/unit/competition.test.ts` (+3 test permanen).
+- Check scripts baru: `verify-artifacts/check_roundcode_fix.mts`, `verify-artifacts/check_quickwins_fix.mts`.
+- Tidak ada perubahan skema/migrasi; tidak merge/push ke master.
+
 ## [2026-11-21] Sesi Follow-up 2: Keputusan Bug Baru #1 & #2 (Task: flash-peak-tms-followup-resolveidentity-fix-v1, Branch: audit/verify-fix-v1)
 
 ### Konteks Sesi

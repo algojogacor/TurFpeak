@@ -10,6 +10,22 @@ Legenda status: **TERKONFIRMASI** (bug ada persis seperti dilaporkan), **BERBEDA
 
 ---
 
+# ADENDUM FOLLOW-UP 3 (21 Nov 2026): Fix Blocker & Quick-Wins dari Second-Opinion Review PR #8
+
+Task: `flash-peak-tms-followup-roundcode-blocker-v1` (branch `audit/verify-fix-v1`). Second-opinion review independen PR #8 menemukan 1 blocker + 2 quick-win; ketiganya kini **FIXED** dengan bukti dry-run reproduksi skenario reviewer.
+
+| Item | Status | Fix | Bukti |
+|---|---|---|---|
+| **blocker-roundcode** — label ronde dari jumlah fixture → tabrakan label ROUND_OF_16 di turnamen ≥6 grup (≥24 tim), `!startknockout` menghidupkan tim tersingkir, turnamen tak konvergen | **FIXED** | `deriveKnockoutRoundCode()` di `src/competition/fixtures.ts`: label natural by jumlah match → bila terpakai maju sepanjang progresi R32→R16→QF→SF→FINAL (selalu menyempit, tak pernah mundur) → ronde 1-match SELALU FINAL → fallback unik `KNOCKOUT_ROUND_<n>` bila progresi habis. Plus: ordering ronde di `matchday-service.ts` dari leksikalis → rank progresi + first-seen. | `check_roundcode_fix.mts`: PART 1 skenario reviewer 24 tim via `!startknockout` berturut-turut → `ROUND_OF_32 → ROUND_OF_16 → QUARTER_FINAL → FINAL`, label unik, **TIDAK ADA tim tersingkir hidup lagi**, konvergen. PART 2/2b regression: ukuran Gojiha (16 tim) & 16 kualifikasi → label **identik perilaku lama**. PART 3: fallback unik tanpa kolisi. +2 test permanen (`tests/unit/competition.test.ts`). |
+| **quickwin-shuffle-validation** — validasi shuffle curang berbasis identitas objek bisa dilewati mutasi `team_id` (self-match X vs X lolos) | **FIXED** | Validasi kini berbasis multiset `team_id`: hasil draw harus memuat PERSIS team_id pool asli (sorted compare); tambah/kurang/gandakan/mutasi ditolak. | `check_quickwins_fix.mts` PART A: serangan persis reviewer (mutasi team_id antar objek baru) **DITOLAK**; duplikat/elemen-hilang tetap ditolak; shuffle sah (reverse, same-ref) tetap diterima tanpa self-match. +1 test permanen. |
+| **quickwin-group-null-message** — pesan `!matchday`/reminder menampilkan "(Grup null)" untuk fixture knockout & selalu menyebut D-031 | **FIXED** | Label per-stage: knockout → `(Knockout)`, grup tetap `(Grup X)`; regulasi per-stage: D-031 hanya bila ada fixture grup pending, D-032 (kalah ganda + bye) bila ada fixture knockout pending. | `check_quickwins_fix.mts` PART B: B1 ronde KO → "(Knockout)" + D-032, tanpa "(Grup null)"/D-031; B2 regression ronde grup → "(Grup A)" + D-031 persis wording lama. |
+
+**Regression gate setelah semua fix:** `tsc --noEmit` clean; `vitest run` **253/253 PASS**; seluruh 24 check script + 2 dry-run audit lama exit 0 (T2-FIX, BRACKET-REDRAW, T17-FIX, dst. tetap VERIFIED); ESLint 7 warning pre-existing / 0 error (identik baseline via stash).
+
+**Catatan konteks (dari Arya):** untuk turnamen ukuran Gojiha (16 tim, QF→SF→Final) blocker ini memang tidak pernah relevan karena jumlah fixture tiap ronde selalu unik — tetap difix supaya codebase aman untuk turnamen besar (≥24 tim) di masa depan. Detail lengkap: lihat `worklog.md` sesi "Follow-up 3".
+
+---
+
 ## Batch 1 (High)
 
 ### T1 — Deteksi duplikat KO berbasis pasangan skor salah tandai game sah sebagai duplikat — **TERKONFIRMASI**
