@@ -3284,7 +3284,7 @@ export function registerTournamentCommands(
   // ============================================================================
   // The delegate photo pipeline (!kogame) is the primary reporting route;
   // !kores remains the organizer tool to correct/override any game result,
-  // including resolving NEEDS_REVIEW conflicts flagged by the pipeline.
+  // including re-recording any game the photo pipeline got wrong.
   const knockoutSeriesReportHandler = async (ctx: CommandContext) => {
     const parts = ctx.args;
     if (parts.length < 3) {

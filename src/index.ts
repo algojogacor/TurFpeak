@@ -965,8 +965,6 @@ export class FlashPeakApp {
         }
       } else if (outcome.status === 'SERIES_ALREADY_COMPLETE') {
         lines.push(outcome.message);
-      } else if (outcome.status === 'NEEDS_REVIEW') {
-        lines.push(outcome.message);
       } else if (outcome.status === 'DUPLICATE') {
         lines.push(outcome.message);
       } else {

@@ -17,14 +17,25 @@
  *      single rule makes out-of-order, reversed, and batch-submitted photos
  *      converge to the correct series state.
  *   2. A photo for a game whose series-relevant outcome is already recorded
- *      with the SAME score is idempotent (no double count).
- *   3. A photo with a DIFFERENT score for an already-decided game is a
- *      conflict: journaled NEEDS_REVIEW and never auto-applied; the organizer
- *      resolves it via the correction path (!kores can re-record a game).
+ *      with the SAME score is idempotent (no double count). Duplicate
+ *      detection is SLOT-SCOPED only: a photo is a duplicate of a decided
+ *      game if and only if the open-slot derivation points at that slot AND
+ *      the score matches. A photo whose score pair happens to EQUAL a
+ *      decided game's pair is a legitimate new game (score pairs are not
+ *      unique identifiers — e.g. a BO3 can legitimately have two 2-0 games).
+ *   3. Because the slot derivation never re-targets a decided slot, a
+ *      same-slot conflicting score can only occur on the tied-pending-replay
+ *      slot (handled by the replay path) — there is no cross-slot conflict
+ *      detection by design. Genuine result disputes go through the organizer
+ *      correction path (!kores can re-record any game, even after COMPLETED).
  *   4. Photos arriving after the series completed are journaled IGNORED with
  *      an explicit message (never recorded as official results).
  *   5. Best-of-N generic: target wins come from the series row; nothing is
  *      hardcoded for BO3 vs BO5.
+ *   6. Slot derivation + duplicate check + apply all run inside ONE write
+ *      transaction, so two photos arriving concurrently cannot both derive
+ *      the same open slot (the second writer sees the first one's committed
+ *      games row when the transaction begins).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -52,8 +63,7 @@ export interface KoEvidenceOutcome {
     | 'GAME_APPLIED'        // result recorded, series continues
     | 'SERIES_COMPLETE'     // result recorded, series ended
     | 'SERIES_ALREADY_COMPLETE' // photo arrived after series end -> ignored
-    | 'DUPLICATE'           // same game, same score already recorded
-    | 'NEEDS_REVIEW';       // same game, conflicting score
+    | 'DUPLICATE';          // same slot, same score already recorded (idempotent resend)
   gameNumber: number;
   seriesScore: { team_a: number; team_b: number };
   seriesFormat: 'BO3' | 'BO5';
@@ -173,8 +183,7 @@ export async function getKoSeriesContext(
 export type KoEvidenceJournalStatus =
   | 'APPLIED'      // extraction was recorded into games/series as the game result
   | 'SUPERSEDED'   // replaced by a newer photo for the same game (kept for audit)
-  | 'IGNORED'      // not applied: series already complete when this photo arrived
-  | 'NEEDS_REVIEW'; // conflicts with the already-recorded result of the same game
+  | 'IGNORED';     // not applied: series already complete when this photo arrived
 
 async function journalEvidence(
   db: Client,
@@ -277,135 +286,107 @@ export async function applyKoGameEvidence(
     };
   }
 
-  // Derive the slot for this photo (never trusts user-declared game numbers)
-  const slot = await deriveOpenGameSlot(db, input.fixtureId);
-  if (!slot) {
-    const evidenceId = await journalEvidence(
-      db,
-      input,
-      ctx.seriesId,
-      0,
-      'IGNORED',
-      'Tidak ada slot game terbuka.'
-    );
-    return {
-      status: 'SERIES_ALREADY_COMPLETE',
-      gameNumber: 0,
-      seriesScore,
-      seriesFormat: ctx.format,
-      targetWins: ctx.targetWins,
-      winnerTeamId: ctx.seriesWinnerTeamId,
-      nextGameNumber: null,
-      evidenceId,
-      message: `ℹ️ Tidak ada slot game terbuka untuk series ini.`,
-    };
-  }
-  const gameNumber = slot.gameNumber;
-
-  // Guard 2: duplicate/conflict detection for THIS slot
-  const existingRes = await db.execute({
-    sql: `SELECT team_a_score, team_b_score, winner_team_id, is_draw
-          FROM games WHERE fixture_id = ? AND game_number = ? AND series_id IS NOT NULL`,
-    args: [input.fixtureId, gameNumber],
-  });
-
-  if (existingRes.rows.length > 0) {
-    const ex = existingRes.rows[0] as unknown as Record<string, unknown>;
-    const exA = ex.team_a_score !== null && ex.team_a_score !== undefined ? Number(ex.team_a_score) : null;
-    const exB = ex.team_b_score !== null && ex.team_b_score !== undefined ? Number(ex.team_b_score) : null;
-
-    // Slot only reached here when it is tied-pending-replay (deriveOpenGameSlot
-    // guarantees decisive slots are skipped). A NEW decisive photo replaces the
-    // tied result via recordSeriesGameResult's replay path — same-score case
-    // cannot occur (a decisive score is never tied), but we guard anyway.
-    const sameScore = exA === input.teamAScore && exB === input.teamBScore;
-    if (sameScore) {
-      const evidenceId = await journalEvidence(
-        db,
-        input,
-        ctx.seriesId,
-        gameNumber,
-        'APPLIED',
-        `Idempotent: hasil identik (${input.teamAScore}-${input.teamBScore}) sudah tercatat; tidak dihitung ulang.`
-      );
-      return {
-        status: 'DUPLICATE',
-        gameNumber,
-        seriesScore,
-        seriesFormat: ctx.format,
-        targetWins: ctx.targetWins,
-        winnerTeamId: null,
-        nextGameNumber: null,
-        evidenceId,
-        message: `ℹ️ Hasil game ke-${gameNumber} yang sama sudah tercatat (${input.teamAScore}-${input.teamBScore}). Tidak ada perubahan.`,
-      };
-    }
-  }
-
-  // Guard 3: conflict detection against DECIDED slots. A photo whose score
-  // matches (or mirrors) an already-decided slot's score is a duplicate for
-  // that slot — the derived open slot is DIFFERENT, so it would otherwise be
-  // wrongly applied as a new game. A photo that neither matches any decided
-  // slot nor fills the open slot unambiguously is not a conflict (normal
-  // next-game flow). A genuine same-slot conflict (different score for a
-  // decided slot) can only be expressed via the organizer correction path,
-  // because the open-slot derivation never re-targets a decided slot.
-  // Exception: a photo matching a decided slot pair IS a duplicate of that
-  // decided game, not a new result.
-  const decidedRes = await db.execute({
-    sql: `SELECT game_number, team_a_score, team_b_score, winner_team_id
-          FROM games
-          WHERE fixture_id = ? AND series_id IS NOT NULL AND winner_team_id IS NOT NULL
-            AND team_a_score IS NOT NULL AND team_b_score IS NOT NULL`,
-    args: [input.fixtureId],
-  });
-  for (const row of decidedRes.rows as unknown as Array<Record<string, unknown>>) {
-    const dA = Number(row.team_a_score);
-    const dB = Number(row.team_b_score);
-    // Exact pair match = duplicate resend of that decided game. A mirrored
-    // pair (e.g. 0-2 vs recorded 2-0) is NOT a duplicate: extractor output
-    // is already oriented to fixture team_a/team_b, so a mirror is simply a
-    // different score — it fills the next open slot as a normal new game.
-    const samePair = (dA === input.teamAScore && dB === input.teamBScore);
-    if (samePair) {
-      // Duplicate of an already-decided game (photo resent / late resend).
-      const dupSlot = Number(row.game_number);
-      const evidenceId = await journalEvidence(
-        db,
-        input,
-        ctx.seriesId,
-        dupSlot,
-        'APPLIED',
-        `Idempotent: duplikat foto hasil game ${dupSlot} (${dA}-${dB}); tidak dihitung sebagai game baru.`
-      );
-      return {
-        status: 'DUPLICATE',
-        gameNumber: dupSlot,
-        seriesScore,
-        seriesFormat: ctx.format,
-        targetWins: ctx.targetWins,
-        winnerTeamId: null,
-        nextGameNumber: null,
-        evidenceId,
-        message: `ℹ️ Foto ini duplikat hasil game ke-${dupSlot} yang sudah tercatat (${dA}-${dB}). Tidak dihitung sebagai game baru.`,
-      };
-    }
-  }
-
-  // Apply the extracted result to the derived slot via the domain engine.
-  // recordSeriesGameResult handles: tied -> stays in slot (replay pending),
-  // decisive -> upsert slot, recount series wins, complete series & fixture.
+  // Derive the slot for this photo (never trusts user-declared game numbers).
   //
-  // FIX2-KO-005 (audit temuan 3.4 Medium): game result + evidence journal are now
-  // written inside ONE transaction. Previously the game was recorded first and
-  // the journal second with no rollback — a journal failure (e.g. the FK bug in
-  // temuan 3.1) left an official score with NO evidence row (half-written state)
-  // and the delegate's retry was then treated as DUPLICATE. All-or-nothing now.
+  // AUDIT-VERIFY-T1/T7/T11 (21 Nov 2026): slot derivation, duplicate check and
+  // apply now all run inside ONE write transaction, and the old cross-slot
+  // "decided pair match" guard (former Guard 3) is REMOVED. Rationale:
+  //  - A score pair is not a game identifier: a BO3 can legitimately have two
+  //    2-0 games. Guard 3 wrongly rejected the second game as a duplicate,
+  //    freezing the series at 1-0 (dry-run: game1 2-0 GAME_APPLIED, game2 2-0
+  //    DUPLICATE, series stuck 1-0).
+  //  - True duplicates are resends of the SAME slot's photo; because the
+  //    derivation picks the first undecided slot, a resend lands on the NEXT
+  //    open slot, not the original — but if the series is still in progress
+  //    that is indistinguishable from a legitimate next-game photo, and after
+  //    the series completes Guard 1 (IGNORED) catches all late resends.
+  //    The only slot-scoped duplicate that CAN be detected is the
+  //    tied-pending-replay slot with an identical tied score (Guard 2 below).
+  //  - Running the derivation inside the write transaction serializes two
+  //    concurrent photos: the second transaction sees the first one's
+  //    committed games row and derives the following slot (audit-verify T7).
+  let slot: Awaited<ReturnType<typeof deriveOpenGameSlot>>;
   let seriesOutcome: Awaited<ReturnType<typeof recordSeriesGameResult>>;
   let evidenceId: string;
+  let newSeriesScore: { team_a: number; team_b: number };
   try {
     const tx = await db.transaction('write');
     try {
+      slot = await deriveOpenGameSlot(tx as unknown as Client, input.fixtureId);
+      if (!slot) {
+        // No open slot outside the COMPLETED check above (e.g. all 32 slots
+        // filled) — journal IGNORED and bail, still atomically.
+        evidenceId = await journalEvidence(
+          tx as unknown as Client,
+          input,
+          ctx.seriesId,
+          0,
+          'IGNORED',
+          'Tidak ada slot game terbuka.'
+        );
+        await tx.commit();
+        return {
+          status: 'SERIES_ALREADY_COMPLETE',
+          gameNumber: 0,
+          seriesScore,
+          seriesFormat: ctx.format,
+          targetWins: ctx.targetWins,
+          winnerTeamId: ctx.seriesWinnerTeamId,
+          nextGameNumber: null,
+          evidenceId,
+          message: `ℹ️ Tidak ada slot game terbuka untuk series ini.`,
+        };
+      }
+      const gameNumber = slot.gameNumber;
+
+      // Guard 2 (slot-scoped duplicate): the derived slot only ever holds a
+      // TIED pending-replay result (decisive slots are skipped by the
+      // derivation). A decisive photo with the same tied score pair as the
+      // pending one cannot happen (decisive != tied), but a tied photo with
+      // the same pair is an idempotent replay resend.
+      const existingRes = await (tx as unknown as Client).execute({
+        sql: `SELECT team_a_score, team_b_score FROM games
+              WHERE fixture_id = ? AND game_number = ? AND series_id IS NOT NULL`,
+        args: [input.fixtureId, gameNumber],
+      });
+      if (existingRes.rows.length > 0) {
+        const ex = existingRes.rows[0] as unknown as Record<string, unknown>;
+        const exA = ex.team_a_score !== null && ex.team_a_score !== undefined ? Number(ex.team_a_score) : null;
+        const exB = ex.team_b_score !== null && ex.team_b_score !== undefined ? Number(ex.team_b_score) : null;
+        const sameScore = exA === input.teamAScore && exB === input.teamBScore;
+        if (sameScore) {
+          evidenceId = await journalEvidence(
+            tx as unknown as Client,
+            input,
+            ctx.seriesId,
+            gameNumber,
+            'APPLIED',
+            `Idempotent: hasil identik (${input.teamAScore}-${input.teamBScore}) sudah tercatat; tidak dihitung ulang.`
+          );
+          await tx.commit();
+          return {
+            status: 'DUPLICATE',
+            gameNumber,
+            seriesScore,
+            seriesFormat: ctx.format,
+            targetWins: ctx.targetWins,
+            winnerTeamId: null,
+            nextGameNumber: null,
+            evidenceId,
+            message: `ℹ️ Hasil game ke-${gameNumber} yang sama sudah tercatat (${input.teamAScore}-${input.teamBScore}). Tidak ada perubahan.`,
+          };
+        }
+      }
+
+      // Apply the extracted result to the derived slot via the domain engine.
+      // recordSeriesGameResult handles: tied -> stays in slot (replay pending),
+      // decisive -> upsert slot, recount series wins, complete series & fixture.
+      //
+      // FIX2-KO-005 (audit temuan 3.4 Medium): game result + evidence journal are
+      // written inside ONE transaction. Previously the game was recorded first and
+      // the journal second with no rollback — a journal failure (e.g. the FK bug in
+      // temuan 3.1) left an official score with NO evidence row (half-written state)
+      // and the delegate's retry was then treated as DUPLICATE. All-or-nothing now.
       seriesOutcome = await recordSeriesGameResult(tx as unknown as Client, {
         series_id: ctx.seriesId,
         game_number: gameNumber,
@@ -436,20 +417,20 @@ export async function applyKoGameEvidence(
   } catch (err) {
     // Atomic failure: nothing was applied (games/series untouched, no journal row).
     throw new Error(
-      `Gagal mencatat hasil game knockout secara atomik untuk fixture '${input.fixtureId}' (game ${gameNumber}, skor ${input.teamAScore}-${input.teamBScore}). ` +
+      `Gagal mencatat hasil game knockout secara atomik untuk fixture '${input.fixtureId}'. ` +
       'Tidak ada perubahan yang tersimpan — kirim ulang foto, atau minta Panitia mencatat via !kores. Detail: ' +
       String((err as Error)?.message || err)
     );
   }
 
-  const newSeriesScore = {
+  newSeriesScore = {
     team_a: seriesOutcome.series.team_a_game_wins,
     team_b: seriesOutcome.series.team_b_game_wins,
   };
 
   return {
     status: seriesOutcome.is_series_complete ? 'SERIES_COMPLETE' : 'GAME_APPLIED',
-    gameNumber,
+    gameNumber: slot.gameNumber,
     seriesScore: newSeriesScore,
     seriesFormat: ctx.format,
     targetWins: ctx.targetWins,
