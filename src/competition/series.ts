@@ -23,6 +23,14 @@ export interface RecordSeriesGameInput {
   team_b_score: number;
   evidence_status?: 'PENDING' | 'RECEIVED' | 'VERIFIED' | 'MISSING';
   is_replay?: boolean;
+  /**
+   * AUDIT-VERIFY-T5 (21 Nov 2026): organizer correction path (!kores) must be
+   * able to RE-RECORD a game of an already COMPLETED series (documented in
+   * cara-penggunaan.md §"Kalau Ada Masalah di Knockout"). The photo pipeline
+   * (ko-evidence-pipeline) never sets this flag — it keeps the old behavior
+   * of rejecting photos for completed series.
+   */
+  allow_completed_series?: boolean;
 }
 
 export interface SeriesGameResultOutcome {
@@ -131,7 +139,7 @@ export async function recordSeriesGameResult(
     throw new Error(`Series with id '${input.series_id}' not found`);
   }
 
-  if (series.status === 'COMPLETED') {
+  if (series.status === 'COMPLETED' && !input.allow_completed_series) {
     throw new Error('Series ini sudah selesai. Tidak dapat menambah atau memperbarui game.');
   }
 

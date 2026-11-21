@@ -3368,8 +3368,12 @@ export function registerTournamentCommands(
     }
 
     // Organizer correction on a COMPLETED series is allowed (that is the point
-    // of the correction path), but re-recording a game can only recompute a
-    // completed series via recordSeriesGameResult's decrement logic.
+    // of the correction path): re-recording a game re-runs the decrement logic
+    // in recordSeriesGameResult and recomputes the series outcome. The
+    // photo pipeline keeps rejecting completed series (no flag set there).
+    // AUDIT-VERIFY-T5: pass allow_completed_series so !kores can fix a
+    // wrongly recorded game even after the series ended, as documented in
+    // cara-penggunaan.md.
     const teamAName = String(fixture.team_a_name);
     const teamBName = String(fixture.team_b_name);
     const tournamentName = String(fixture.tournament_name);
@@ -3382,6 +3386,7 @@ export function registerTournamentCommands(
         game_number: gameNumber,
         team_a_score: scoreA,
         team_b_score: scoreB,
+        allow_completed_series: true,
       });
 
       const winnerName = outcome.winner_team_id
