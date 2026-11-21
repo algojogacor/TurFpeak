@@ -3213,12 +3213,14 @@ export function registerTournamentCommands(
     handler: startKnockoutHandler,
   });
 
+  // AUDIT-VERIFY-T18: the old alias 'mulainokout' (typo of 'mulai knockout',
+  // missing a 'k') is replaced by the correctly spelled 'mulaiknockout'.
   router.registerCommand({
-    command: 'mulainokout',
+    command: 'mulaiknockout',
     requiredRole: 'ORGANIZER',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Memulai fase knockout dari klasemen akhir babak grup / membentuk ronde knockout berikutnya (Admin only)',
+    description: 'Alias dari !startknockout — memulai fase knockout / ronde berikutnya (Admin only)',
     handler: startKnockoutHandler,
   });
 
