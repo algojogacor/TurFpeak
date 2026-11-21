@@ -1,5 +1,58 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Verifikasi & Perbaikan Temuan Audit Independen T1–T18 (Task: flash-peak-tms-verify-and-fix-audit-v1, Branch: audit/verify-fix-v1)
+
+### Konteks Sesi
+Audit independen fresh-session (Laporan_Audit_FlashPeak_TMS.pdf, 29 asersi dry-run, master @03f8860, 21 Nov 2026) melaporkan 18 temuan (T1–T18). Sesuai instruksi tugas: SETIAP temuan diverifikasi ulang dulu terhadap kode master @03f8860 (clone baru, read-only) SEBELUM perbaikan apa pun. Hasil verifikasi: **18/18 TERKONFIRMASI** (2 dengan koreksi mekanisme: T7 race hanya mungkin antar-event upsert terpisah karena handler memproses pesan secara berurutan; T17 no-op terjadi karena INNER JOIN groups menyaring fixture knockout secara diam-diam, bukan crash). Tidak ada temuan yang tidak terkonfirmasi. Laporan lengkap per temuan (status + bukti file:baris + hasil dry-run): `verify-artifacts/VERIFICATION_REPORT.md`.
+
+### Perubahan Konkret (15 fix, satu commit per temuan di branch `audit/verify-fix-v1`)
+1. **T1+T7+T11** (`15802c3`): `applyKoGameEvidence` — hapus Guard 3 (duplikat berbasis pasangan skor lintas-slot; pasangan skor bukan identitas game — BO3 sah bisa punya dua game 2-0, guard membekukan series di 1-0). Deteksi duplikat kini slot-scoped dan seluruh derive-slot + cek duplikat + apply berjalan dalam SATU transaksi write (mengserialisasi dua foto konkuren, T7). Status jurnal `NEEDS_REVIEW` yang tidak pernah di-set dihapus dari tipe/status/outcome (T11).
+2. **T2** (`98a3564`): `generateKnockoutFixtures` — jumlah survivor ganjil (mis. 3 pasca bye double-loss D-032) tidak lagi throw "Jumlah juara grup harus sama..."; qualifier TERAKHIR menerima bye, pool genap dipasangkan; bye dikembalikan via `byeTeamId` dan diumumkan `!startknockout`.
+3. **T3** (`759a85f`): `getOrganizerIdentities` — setiap identitas phone diperluas dengan varian `<digits>@s.whatsapp.net` (dan sebaliknya), sehingga deployment yang hanya set `WA_ORGANIZER_PHONE` tidak lagi menolak suara approval ORGANIZER (`!approve` memakai JID normalized sebagai approverId).
+4. **T4** (`664a33b` + `fedef9c`): `resolveFixtureForMessage` — ketiga query kini memfilter `f.stage = 'GROUP'`; foto polos tanpa caption `!kogame` tidak lagi bocor membuat draf BO1 paralel untuk series BO3/BO5. Test integrasi FR-FAIL yang premisnya memakai fixture KNOCKOUT via jalur BO1 diganti fixture GROUP (intent test dipertahankan).
+5. **T5** (`03104d1`): `recordSeriesGameResult` menerima `allow_completed_series` (default false); hanya `!kores` yang menyetelnya — re-record game di series COMPLETED kini benar-benar berfungsi (decrement + recompute) sesuai janji dokumentasi. Pipeline foto tetap menolak series COMPLETED.
+6. **T6** (`d5af62b`): flag `is_organizer` diteruskan dari `CommandRouter.isSenderOrganizer` di `handleInboundMessage` → `handleCorrection` → `handleReportCorrection` → `applyReportCorrection`; koreksi NL organizer tidak lagi ditolak "Unauthorized sender".
+7. **T8** (`3d76d7d`): blok 1.5 `handleInboundMessage` — konfirmasi plain-text ('ok'/'ya'/...) dan koreksi draf manual report kini di-gate `isSenderOrganizer`; anggota grup biasa tidak bisa lagi "menembakkan" draf organizer (`confirmPending` memang memakai `is_organizer: true` hardcoded).
+8. **T9** (`b57bc95`): intersepsi `!kogame` hanya berlaku bila ada foto; teks `!kogame <fixture_id>` (status lookup yang terdokumentasi di cara-penggunaan.md) kini sampai ke handler router yang memang mengimplementasikannya.
+9. **T12** (`6c275b9`): `isOrganizerAuthorized` di manual.ts — pola `startsWith('org_')`/`includes('organizer')` dihapus (pola yang sama yang FIX2-APR-003 bersihkan dari approval.ts); tersisa flag eksplisit + konstanta 'ORGANIZER'.
+10. **T13** (`4b9b84f`): `handleInboundMessage` menolak pesan dari grup selain grup resmi SEBELUM jalur KO-pipeline/NL-intent/koreksi/bukti berjalan (FR-ID-005); DM organizer & bootstrap `!setgroup` tidak terpengaruh.
+11. **T14** (`375544d`): lookup tim di `resolveIdentity` kini mengurutkan berdasar status turnamen (ACTIVE dulu, lalu status berjalan, COMPLETED/ARCHIVED terakhir, terbaru dulu) — delegasi lintas turnamen tidak lagi resolve ke tim turnamen lama.
+12. **T15** (`54dd175`): `deriveKnockoutQualifiers` memanggil `recalculateAndPersistGroupStandings` (mesin yang sama dengan `!standings`) per grup, bukan SQL duplikat points/GD/GF — kualifikasi knockout kini identik dengan klasemen yang ditampilkan (tie H2H tuntas); seri PENUH di batas kualifikasi tetap throw untuk keputusan manual.
+13. **T16** (`d1b50ef`): `handleManualReport` menolak fixture `stage = 'KNOCKOUT'` dengan arahan ke `!kores` (draf BO1 paralel untuk series BO3/BO5 tidak lagi mungkin via tangan organizer).
+14. **T18** (`2853a51`): alias typo `!mulainokout` diganti `!mulaiknockout` (ejaan benar).
+15. **Docs** (`298415a`): cara-penggunaan.md bagian "Kalau Ada Masalah di Knockout" disesuaikan dengan semantik baru (slot-based; janji re-record series selesai kini benar; janji NEEDS_REVIEW dihapus).
+
+### DITUNDA (butuh keputusan organizer Arya — TIDAK difix buta)
+- **T10** (delegasi tim tanpa delegate dapat direbut via `!roster` auto-bind): fitur self-registration yang disengaja; fix butuh kebijakan (batasi hanya saat status REGISTRATION/ONBOARDING vs wajib konfirmasi organizer untuk tim buatan panitia). Status: REPORTED / PENDING_APPROVAL.
+- **T17** (cutoff 19:59 no-op pada ronde knockout): `getRoundFixturesWithDelegates` INNER JOIN groups sehingga fixture KO (group_id NULL) tak pernah diproses; fix butuh kebijakan D-031 vs D-032 (deadline KO: double-WO? reschedule wajib? reminder saja?). Status: REPORTED / PENDING_APPROVAL.
+
+### Bug Baru di Luar Daftar Temuan (REPORTED, TIDAK difix — sesuai prinsip lapor dulu)
+1. `bindDelegateToTeam` men-set `registration_status='VERIFIED'` tanpa syarat (`resolver.ts:346`) — tim yang belum onboarding langsung VERIFIED; terkait T10 tapi dampak lebih luas.
+2. `report-correction-coordinator.ts:89` memakai `resolveIdentity` versi 1-arg (mengabaikan alias per-chat) — inkonsisten dengan router yang memakai 2-arg; delegasi multi-alias bisa gagal resolve di jalur koreksi.
+3. Dugaan salah pasangan bye di `!startknockout`: partner bye dihitung dari INDEX array fixture (`tournament-commands.ts:2923-2924`), padahal pasangan bracket tidak dijamin bersebelahan index setelah `ORDER BY created_at` — bye bisa diberikan ke tim yang bukan pasangan double-loss. Perlu verifikasi lanjutan sebelum fix.
+
+### Bukti & Verifikasi Empiris
+- **Baseline sebelum verifikasi**: `npx tsc --noEmit` clean; `npx vitest run` **248/248 PASS** (20 file) @03f8860.
+- **Verifikasi temuan (sebelum fix)**: `npx tsx verify-artifacts/dryrun_verify_tms_audit.ts` (7 asersi) + `npx tsx verify-artifacts/dryrun_verify_tms_audit2.ts` (6 asersi) — 13/13 PASS (PASS = temuan audit ter-reproduksi). Temuan lain diverifikasi via trace kode (T4, T9, T13, T14, T18).
+- **Regression per fix** (jalankan SETIAP commit fix): `npx tsc --noEmit` clean + `npx vitest run` **248/248 PASS** + targeted check `npx tsx verify-artifacts/check_t<N>_fix.mts` → semua **VERIFIED**:
+  ```text
+  T1-FIX VERIFIED   (game2 2-0 legiter GAME_APPLIED→SERIES_COMPLETE 2-0; tied-slot resend DUPLICATE; late photo IGNORED)
+  T2-FIX VERIFIED   (3 survivor→1 fixture+bye; 5→2+bye; 4→2 tanpa bye; 2→FINAL)
+  T3-FIX VERIFIED   (phone-only config: identities=[digits, digits@s.whatsapp.net], approverAllowed=true; jid-config regresi OK)
+  T4-FIX VERIFIED   (foto polos saat KO resolve null; caption grup tetap resolve)
+  T5-FIX VERIFIED   (!kores re-record COMPLETED→IN_PROGRESS 1-1; foto lanjut SERIES_COMPLETE 2-1; series utuh tetap IGNORED)
+  T6-FIX VERIFIED   (organizer lolos gate otoritas; stranger tetap Unauthorized)
+  T8-FIX VERIFIED   (member 'ok' diblok; organizer lolos gate)
+  T9-FIX VERIFIED   (teks !kogame <id>→status handler; teks !kogame→help; foto+caption tetep ke pipeline KO)
+  T12-FIX VERIFIED  (org_/organizer diblok; flag eksplisit & ORGANIZER lolos)
+  T13-FIX VERIFIED  (grup asing NL/foto ignored; grup resmi & DM organizer tetap diproses)
+  T14-FIX VERIFIED  (delegasi 2 turnamen→tim ACTIVE; delegasi 1 tim tetap benar)
+  T15-FIX VERIFIED  (seri penuh termasuk H2H→throw; rank-2 kualifikasi == rank-2 engine)
+  T16-FIX VERIFIED  (fixture KNOCKOUT ditolak + arahan !kores; fixture GROUP tetap sukses)
+  ```
+- **Final sweep**: seluruh 13 skrip check dijalankan ulang sekaligus setelah semua fix — 13/13 VERIFIED; `tsc` clean; `vitest` 248/248 PASS di HEAD branch (`298415a`).
+- **Scope disiplin**: tidak ada merge/push ke master (sesuai instruksi menunggu review Arya); semua kerja di branch `audit/verify-fix-v1`; file produksi yang berubah: `src/application/ko-evidence-pipeline.ts`, `src/application/tournament-commands.ts`, `src/application/fixture-resolver.ts`, `src/application/report-correction-coordinator.ts`, `src/competition/fixtures.ts`, `src/competition/series.ts`, `src/identity/resolver.ts`, `src/reports/approval.ts` (tidak berubah — fix T3 di router), `src/whatsapp/router.ts`, `src/reports/manual.ts`, `src/index.ts`, `tests/integration/full_flow.test.ts`, `cara-penggunaan.md`.
+
 ## [2026-11-21] Sesi Pull PR #7 & Redeploy VM: AI Resilience Notifications & Retry Queue (Task: flash-peak-tms-merge-pr7-redeploy-v1)
 
 ### Konteks Sesi
