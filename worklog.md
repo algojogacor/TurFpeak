@@ -1,5 +1,37 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Follow-up: Keputusan Kebijakan T10/T17 + Re-draw Bracket Knockout (Task: flash-peak-tms-followup-policy-and-redraw-v1, Branch: audit/verify-fix-v1)
+
+### Konteks Sesi
+Lanjutan task verifikasi & perbaikan audit T1–T18 (HEAD awal `d9349e3`, belum merge). Arya memutuskan: (1) T10 ditutup sebagai by-design, (2) T17 harus difix — cutoff 19:59 WIB wajib berlaku di fase knockout, (3) pairing bracket ronde knockout 2+ di-DRAW ULANG setiap ronde (keputusan desain baru). Semua kerja di branch yang sama, regression penuh per commit, tidak merge/push.
+
+### Item 1 — T10 CLOSED (by design, no fix) — commit `1254f8e`
+- Dry-run `verify-artifacts/check_t10_behavior.mts` membuktikan behavior auto-bind `!roster` PERSIS seperti deskripsi keputusan Arya: pengirim pertama format roster valid untuk tim tanpa delegasi langsung ter-bind (turnamen ACTIVE, tanpa gate tambahan, tanpa konfirmasi organizer; tim jadi VERIFIED via bindDelegateToTeam); orang kedua untuk tim yang sama DITOLAK auth check; format tidak valid tidak memicu bind. Tidak ada perbedaan dari deskripsi → tidak ada temuan baru. Tanpa perubahan kode.
+- Catatan: `bindDelegateToTeam` yang men-set `registration_status='VERIFIED'` tanpa syarat tetap terbuka sebagai new-bug #1 yang sudah dilaporkan sebelumnya (tidak berubah statusnya).
+
+### Item 2 — T17 FIXED — commit `a512ad6`
+- Root cause (dari verifikasi task sebelumnya): `getRoundFixturesWithDelegates` (matchday-service.ts) INNER JOIN `groups`, sehingga fixture KNOCKOUT (group_id NULL) tersaring diam-diam dan `processDailyCutoff` tidak pernah menjaringnya.
+- Fix: JOIN groups → LEFT JOIN; `MatchdayFixtureItem` menambah field `stage` dan `groupId/groupCode` jadi nullable; `processDailyCutoff` dispatch per stage — fixture GROUP → `handleGroupDoubleWalkover` (D-031, 0 poin + recompute standings, tidak berubah), fixture KNOCKOUT → `handleKnockoutDoubleRoomCardFailure` (D-032 double-loss: series COMPLETED tanpa pemenang, fixture WALKOVER) — sinyal yang persis dipakai `!startknockout` untuk memberi bye ke pasangan bracket, dan penanganan pool ganjil T2 sudah mengakomodasi hasilnya. Pengumuman cutoff memisahkan regulasi D-031 (grup) dan D-032 (knockout + info bye).
+- Regression: tsc clean, vitest 248/248 PASS, `check_t17_fix.mts` VERIFIED (semi KO unplayed → WALKOVER + series COMPLETED no winner + audit KNOCKOUT_DOUBLE_LOSS_RECORDED + notice bye; fixture completed tak tersentuh; regresi ronde grup: DOUBLE_ABSENT tetap jalan).
+
+### Item 3 — bracket-redraw (keputusan desain Arya) — commits `4b960ad` + `b2a0c43`
+**Verifikasi dugaan new-bug #3 (SEBELUM redesign, sesuai prinsip):**
+- `check_bye_index_bug.mts`: skenario QF penuh (4 fixture, 1 double-loss) — urutan hasil query `ORDER BY created_at ASC` SAMA dengan urutan insertion bracket; bye jatuh ke pemenang fixture bersebelahan (= model pairing-slot yang diniatkan kode).
+- `check_bye_index_bug2.mts`: 30 DB in-memory segar — ordering equal-created_at konsisten = insertion/rowid order, 0 mismatch.
+- **Vonis: TIDAK TERKONFIRMASI secara dinamis** di environment ini; namun asumsi "ordering equal keys == insertion order" tidak kontraktual dan bisa berbeda antar engine/plan — risiko struktural terdokumentasi, dan redesign draw ulang menghapus asumsi itu sepenuhnya (tidak ada lagi kode yang memetakan posisi bracket dari index fixture ronde sebelumnya).
+
+**Implementasi re-draw:**
+- `generateKnockoutFixtures` menerima `options.shuffle` (injectable untuk determinisme test). Bila disuplai: pool genap diacak dulu lalu dipasangkan sekuensial; shuffle divalidasi (jumlah & elemen sama, tanpa duplikat) — shuffle yang curang ditolak dengan error. TANPA shuffle (ronde pertama dari kualifikasi grup): seeding klasik juara-grup vs runner-up grup bersebelahan tetap (FR-COMP-011 tidak berubah).
+- `!startknockout` (ronde 2+) mempassing `cryptoFisherYates` — primitif yang sama dengan !draw babak grup. Guard anti-self-match tetap; bye pool-ganjil T2 tetap (qualifier terakhir); jalur single-survivor → juara otomatis TIDAK diubah.
+- Audit event `KNOCKOUT_ROUND_GENERATED` kini mencatat `drawMethod: 'RE-DRAW (cryptoFisherYates)'`, pasangan hasil draw (`drawnPairings`), dan `byeTeamId`; pengumuman grup menyatakan pasangan ditentukan lewat "DRAW ULANG".
+
+### Bukti & Verifikasi Empiris
+- Per commit: `npx tsc --noEmit` clean + `npx vitest run` hijau (248/248 untuk T10/T17/verify; **250/250** setelah 2 test permanen baru masuk di `b2a0c43`).
+- Test permanen baru (tests/unit/competition.test.ts): (a) ronde 2+ berpasangan sesuai shuffle injectable (bukan pseudo-rank split lama) + anti-self-match + shuffle curang ditolak; (b) pool ganjil 3 → 1 fixture FINAL + bye qualifier terakhir.
+- Dry-run: `check_t10_behavior.mts`, `check_t17_fix.mts`, `check_bye_index_bug.mts`, `check_bye_index_bug2.mts`, `check_bracket_redraw.mts` (QF klasik → SF re-draw sesuai shuffle → FINAL+bye pool ganjil), `check_bracket_redraw_e2e.mts` (rantai penuh `!startknockout` via CommandRouter: SF → FINAL → series COMPLETED; skenario QF double-loss → 3 survivor unik → FINAL + bye + notice DRAW ULANG) — semua VERIFIED.
+- Temuan menarik dari E2E: 8 tim QF + satu double-loss menghasilkan 3 survivor unik (penerima bye = pemenang fixture partner yang memang sudah seed) → 1 FINAL + 1 bye — konsisten semantik T2, bukan bug.
+- Scope: 4 commit baru di atas `d9349e3` (`1254f8e`, `a512ad6`, `4b960ad`, `b2a0c43`); file produksi berubah: `src/application/matchday-service.ts`, `src/application/tournament-commands.ts`, `src/competition/fixtures.ts`, `tests/unit/competition.test.ts`. Tidak merge/push (menunggu review Arya).
+
 ## [2026-11-21] Sesi Verifikasi & Perbaikan Temuan Audit Independen T1–T18 (Task: flash-peak-tms-verify-and-fix-audit-v1, Branch: audit/verify-fix-v1)
 
 ### Konteks Sesi
