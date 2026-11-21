@@ -1,5 +1,28 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Follow-up 2: Keputusan Bug Baru #1 & #2 (Task: flash-peak-tms-followup-resolveidentity-fix-v1, Branch: audit/verify-fix-v1)
+
+### Konteks Sesi
+Lanjutan dari HEAD `f8287bf`. Arya memutuskan dua bug baru yang sebelumnya dilaporkan terbuka: (1) `bindDelegateToTeam` auto-VERIFIED → DITUTUP sebagai by design; (2) `resolveIdentity` 1-arg di report-correction-coordinator → PERLU DIFIX (samakan dengan router). Branch sama, regression penuh per commit, tidak merge/push.
+
+### Item 1 — Bug baru #1 (bindDelegateToTeam auto-VERIFIED) CLOSED (by design, no fix)
+Keputusan Arya 21 Nov 2026: grup WhatsApp turnamen bersifat tertutup (Arya sendiri yang memasukkan tim yang benar-benar ikut), sehingga skenario "orang asing/orang salah tim kirim format roster duluan untuk merebut status VERIFIED" secara praktis tidak akan terjadi. Perilaku "siapa cepat dia dapat" diterima sebagai aturan main yang disengaja, konsisten dengan keputusan T10. Tanpa perubahan kode.
+
+### Item 2 — Bug baru #2 (resolveIdentity 1-arg di coordinator) FIXED — commit `50f6ab9`
+**Verifikasi SEBELUM fix (sesuai prinsip):**
+- Signature: `resolveIdentity(rawAddress, _sourceChatId?)` — argumen kedua **tidak dipakai sama sekali** di body (prefix underscore, nol referensi). Lookup murni by raw_address/normalized → delegate → team (T14: dibatasi turnamen ACTIVE).
+- Dry-run `check_resolveidentity_1arg.mts` Part A: 1-arg vs 2-arg **identik** di semua skenario (identitas LID alias per-chat, primary phone, sender tak dikenal). Dugaan awal task ("2-arg mempersempit lookup ke alias per-chat") **TIDAK TERKONFIRMASI** — perbedaannya lebih dangkal dari dugaan, bukan lebih dalam.
+- Vonis: inkonsistensi 1-arg vs 2-arg = **latent inconsistency** murni. Hari ini no-op; begitu `_sourceChatId` diimplementasikan (narrowing/audit), koordinator akan diam-diam berperilaku beda dari router untuk kasus yang sama.
+- Part B (dampak nyata yang terbukti): bila resolve gagal (UNREGISTERED), koordinator fallback `sender_normalized_address` sebagai `sender_id` — non-UUID, dijamin UNAUTHORIZED di `verifyCorrectionAuthority`. Ini terjadi karena identitas memang tidak terdaftar, BUKAN karena kurang argumen ke-2 — di luar cakupan fix ini, dicatat sebagai catatan saja.
+
+**Fix (sesuai keputusan Arya):** pemanggilan di `report-correction-coordinator.ts` kini meneruskan `message.chat_id` sebagai argumen kedua — persis seperti router. Signature & behavior `resolveIdentity` tidak diubah. Tidak ada perubahan behavior yang diharapkan; fix bersifat konsistensi call-site + future-proof.
+
+**Regression:** tsc clean; vitest 250/250 PASS; `check_resolveidentity_fix.mts` VERIFIED (spy membuktikan koordinator kini memanggil `resolveIdentity(sender_raw_address, chat_id)`); check T6 lama tetap VERIFIED.
+
+### Scope Sesi Ini
+- File produksi berubah: `src/application/report-correction-coordinator.ts` (1 pemanggilan). Tanpa perubahan untuk item 1.
+- Check scripts baru: `check_resolveidentity_1arg.mts` (verifikasi vonis), `check_resolveidentity_fix.mts` (bukti fix via spy).
+
 ## [2026-11-21] Sesi Follow-up: Keputusan Kebijakan T10/T17 + Re-draw Bracket Knockout (Task: flash-peak-tms-followup-policy-and-redraw-v1, Branch: audit/verify-fix-v1)
 
 ### Konteks Sesi
