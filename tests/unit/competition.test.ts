@@ -453,6 +453,74 @@ describe('Competition Engine (Fase 3)', () => {
       expect(grandFinal.series[0]?.target_wins).toBe(3);
     });
 
+    it('BRACKET-REDRAW: later rounds pair via the injected draw, not previous fixture order (Arya decision 21 Nov 2026)', async () => {
+      const tournament = await createTournament(db, { name: 'Re-Draw Bracket Test' });
+      for (let i = 1; i <= 8; i++) {
+        await insertTeam(db, tournament.id, `rd-t${i}`, `RD Team ${i}`);
+      }
+
+      // Round 1 (QF) via classic seeding (no shuffle): winners side + runners-up.
+      const quals: KnockoutQualifier[] = [
+        { team_id: 'rd-t1', team_name: 'RD Team 1', group_code: 'A', group_rank: 1 },
+        { team_id: 'rd-t2', team_name: 'RD Team 2', group_code: 'A', group_rank: 2 },
+        { team_id: 'rd-t3', team_name: 'RD Team 3', group_code: 'B', group_rank: 1 },
+        { team_id: 'rd-t4', team_name: 'RD Team 4', group_code: 'B', group_rank: 2 },
+        { team_id: 'rd-t5', team_name: 'RD Team 5', group_code: 'C', group_rank: 1 },
+        { team_id: 'rd-t6', team_name: 'RD Team 6', group_code: 'C', group_rank: 2 },
+        { team_id: 'rd-t7', team_name: 'RD Team 7', group_code: 'D', group_rank: 1 },
+        { team_id: 'rd-t8', team_name: 'RD Team 8', group_code: 'D', group_rank: 2 },
+      ];
+      const qf = await generateKnockoutFixtures(db, tournament.id, quals);
+      expect(qf.fixtures.length).toBe(4);
+      expect(qf.fixtures[0]!.round_code).toBe('QUARTER_FINAL');
+
+      // Round 2 (SF) survivors re-drawn with a DETERMINISTIC injectable shuffle
+      // (reverse): pool [W0..W3] -> pairs (W3,W2),(W1,W0). The old pseudo-rank
+      // half-split would pair (W0,W2),(W1,W3) — the test pins the draw result.
+      const survivors: KnockoutQualifier[] = qf.fixtures.map((f) => ({
+        team_id: f.team_a_id, team_name: 'Winner', group_code: 'KO', group_rank: 1,
+      }));
+      const reverse = <T,>(arr: T[]): T[] => [...arr].reverse();
+      const sf = await generateKnockoutFixtures(db, tournament.id, survivors, { shuffle: reverse });
+      expect(sf.fixtures.length).toBe(2);
+      expect(sf.fixtures[0]!.round_code).toBe('SEMI_FINAL');
+      expect(sf.fixtures[0]!.team_a_id).toBe(qf.fixtures[3]!.team_a_id);
+      expect(sf.fixtures[0]!.team_b_id).toBe(qf.fixtures[2]!.team_a_id);
+      expect(sf.fixtures[1]!.team_a_id).toBe(qf.fixtures[1]!.team_a_id);
+      expect(sf.fixtures[1]!.team_b_id).toBe(qf.fixtures[0]!.team_a_id);
+      // Anti-self-match holds.
+      for (const f of sf.fixtures) {
+        expect(f.team_a_id).not.toBe(f.team_b_id);
+      }
+      expect(sf.byeTeamId).toBeNull();
+
+      // A tampered shuffle (drops/duplicates a team) is rejected.
+      await expect(
+        generateKnockoutFixtures(db, tournament.id, survivors, {
+          shuffle: (arr) => [...arr, arr[0]!],
+        })
+      ).rejects.toThrow('Draw ulang bracket tidak valid');
+    });
+
+    it('BRACKET-REDRAW: odd survivor pool (3) re-drawn -> 1 FINAL fixture + bye, no self-match', async () => {
+      const tournament = await createTournament(db, { name: 'Re-Draw Odd Pool Test' });
+      for (let i = 1; i <= 3; i++) {
+        await insertTeam(db, tournament.id, `od-t${i}`, `OD Team ${i}`);
+      }
+      const oddPool: KnockoutQualifier[] = [
+        { team_id: 'od-t1', team_name: 'OD Team 1', group_code: 'KO', group_rank: 1 },
+        { team_id: 'od-t2', team_name: 'OD Team 2', group_code: 'KO', group_rank: 1 },
+        { team_id: 'od-t3', team_name: 'OD Team 3', group_code: 'KO', group_rank: 1 },
+      ];
+      const reverse = <T,>(arr: T[]): T[] => [...arr].reverse();
+      const fin = await generateKnockoutFixtures(db, tournament.id, oddPool, { shuffle: reverse });
+      expect(fin.fixtures.length).toBe(1);
+      expect(fin.fixtures[0]!.round_code).toBe('FINAL');
+      expect(fin.fixtures[0]!.team_a_id).not.toBe(fin.fixtures[0]!.team_b_id);
+      // Bye goes to the LAST qualifier of the pre-shuffle list (T2 handling).
+      expect(fin.byeTeamId).toBe('od-t3');
+    });
+
     it('reuses the SAME game_number slot when a tied KO game is replayed (FR-CALC-004/005, D-028)', async () => {
       const tournament = await createTournament(db, { name: 'Series Replay Test' });
       await insertTeam(db, tournament.id, 't1', 'Team 1');
@@ -879,6 +947,85 @@ describe('Competition Engine (Fase 3)', () => {
       expect(res3.match_can_proceed).toBe(false);
       expect(res3.walkover_outcome?.action).toBe('GROUP_DOUBLE_WALKOVER_RECORDED');
       expect(res3.walkover_outcome?.points_awarded.team_a_points).toBe(0);
+    });
+  });
+
+  describe('REVIEW-FIX blocker-roundcode: knockout round labels derive from round history, never collide', () => {
+    it('labels two consecutive odd-width rounds uniquely and always NARROW (R16 -> QUARTER_FINAL, never ROUND_OF_32)', async () => {
+      const tournament = await createTournament(db, { name: 'RoundCode Narrowing Test' });
+      for (let i = 1; i <= 16; i++) {
+        await insertTeam(db, tournament.id, `rc-t${i}`, `RC Team ${i}`);
+      }
+      // Round 1: 8 fixtures -> ROUND_OF_16 (natural label for 8 matches).
+      const quals1: KnockoutQualifier[] = [];
+      for (let g = 0; g < 8; g++) {
+        quals1.push({ team_id: `rc-t${g * 2 + 1}`, team_name: `RC Team ${g * 2 + 1}`, group_code: `G${g}`, group_rank: 1 });
+        quals1.push({ team_id: `rc-t${g * 2 + 2}`, team_name: `RC Team ${g * 2 + 2}`, group_code: `G${g}`, group_rank: 2 });
+      }
+      const r1 = await generateKnockoutFixtures(db, tournament.id, quals1);
+      expect(r1.fixtures.length).toBe(8);
+      expect(r1.fixtures[0]!.round_code).toBe('ROUND_OF_16');
+
+      // Round 2: 7 survivors (odd pool -> 3 fixtures). Natural label is null
+      // (3 matches); the label must come AFTER ROUND_OF_16 in the progression
+      // (QUARTER_FINAL), NOT go backwards to ROUND_OF_32, and must be unique.
+      const survivors: KnockoutQualifier[] = [];
+      for (let i = 1; i <= 7; i++) {
+        survivors.push({ team_id: `rc-t${i}`, team_name: `RC Team ${i}`, group_code: 'KO', group_rank: 1 });
+      }
+      const r2 = await generateKnockoutFixtures(db, tournament.id, survivors, { shuffle: (a) => [...a] });
+      expect(r2.fixtures.length).toBe(3);
+      expect(r2.fixtures[0]!.round_code).toBe('QUARTER_FINAL');
+      // No self-match after the odd-pool bye.
+      for (const f of r2.fixtures) {
+        expect(f.team_a_id).not.toBe(f.team_b_id);
+      }
+    });
+
+    it('a single-fixture round is ALWAYS the FINAL, even after odd-pool rounds consumed earlier labels', async () => {
+      const tournament = await createTournament(db, { name: 'RoundCode Final Test' });
+      for (let i = 1; i <= 4; i++) {
+        await insertTeam(db, tournament.id, `fc-t${i}`, `FC Team ${i}`);
+      }
+      // First round: 4 qualifiers -> 2 fixtures (SEMI_FINAL).
+      const quals: KnockoutQualifier[] = [
+        { team_id: 'fc-t1', team_name: 'FC Team 1', group_code: 'A', group_rank: 1 },
+        { team_id: 'fc-t2', team_name: 'FC Team 2', group_code: 'A', group_rank: 2 },
+        { team_id: 'fc-t3', team_name: 'FC Team 3', group_code: 'B', group_rank: 1 },
+        { team_id: 'fc-t4', team_name: 'FC Team 4', group_code: 'B', group_rank: 2 },
+      ];
+      const r1 = await generateKnockoutFixtures(db, tournament.id, quals);
+      expect(r1.fixtures[0]!.round_code).toBe('SEMI_FINAL');
+      // Two finalists -> 1 fixture: ALWAYS labeled FINAL.
+      const finalists: KnockoutQualifier[] = [
+        { team_id: 'fc-t1', team_name: 'FC Team 1', group_code: 'KO', group_rank: 1 },
+        { team_id: 'fc-t3', team_name: 'FC Team 3', group_code: 'KO', group_rank: 1 },
+      ];
+      const r2 = await generateKnockoutFixtures(db, tournament.id, finalists, { shuffle: (a) => [...a] });
+      expect(r2.fixtures.length).toBe(1);
+      expect(r2.fixtures[0]!.round_code).toBe('FINAL');
+      expect(r2.series[0]!.format).toBe('BO5');
+      expect(r2.series[0]!.target_wins).toBe(3);
+    });
+  });
+
+  describe('REVIEW-FIX quickwin-shuffle-validation: draw validated by team_id multiset', () => {
+    it('rejects a tampered shuffle that mutates team_ids (the reviewer self-match attack)', async () => {
+      const tournament = await createTournament(db, { name: 'Shuffle Validation Test' });
+      for (let i = 1; i <= 4; i++) {
+        await insertTeam(db, tournament.id, `sv-t${i}`, `SV Team ${i}`);
+      }
+      const quals: KnockoutQualifier[] = [1, 2, 3, 4].map((i) => ({
+        team_id: `sv-t${i}`, team_name: `SV Team ${i}`, group_code: 'KO', group_rank: 1,
+      }));
+      // Shuffle returns NEW objects with one team_id duplicated over another —
+      // distinct object identities (passed the old Set check) but a duplicate
+      // team_id multiset. Must be rejected.
+      await expect(
+        generateKnockoutFixtures(db, tournament.id, quals, {
+          shuffle: (a) => a.map((q) => ({ ...q, team_id: q.team_id === a[0]!.team_id ? a[1]!.team_id : q.team_id })),
+        })
+      ).rejects.toThrow('Draw ulang bracket tidak valid');
     });
   });
 });

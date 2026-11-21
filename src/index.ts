@@ -267,10 +267,32 @@ export class FlashPeakApp {
   ): Promise<InboundHandlingResult> {
     const rawMsgText = (message.text_body || message.caption || '').trim();
 
+    // AUDIT-VERIFY-T13 (21 Nov 2026): group-scope enforcement (FR-ID-005) for
+    // ALL non-command paths. The CommandRouter already enforces the central
+    // group for registered commands, but NL intents ('!klaim WO ...', '!lihat
+    // klasemen', ...), photos/evidence, corrections, and the KO pipeline used
+    // to reply and mutate state from ANY group. Groups other than the central
+    // tournament group are now ignored entirely; the organizer's DM (admin
+    // chat) and the central group remain allowed. First-run bootstrap (no
+    // central group configured yet) is still permitted so !setgroup can be
+    // executed via the router path below.
+    const chatIsGroup = message.chat_id.endsWith('@g.us');
+    const centralGroup = this.centralGroupJid || this.commandRouter.getCentralGroupJid();
+    if (chatIsGroup && centralGroup && message.chat_id !== centralGroup) {
+      return { handled: false, type: 'UNKNOWN' };
+    }
+
     // 0. Interactive knockout per-game evidence (FIX2-KO-002):
     // a photo captioned "!kogame" runs the dedicated KO pipeline and never
     // enters the BO1 group-stage debounce/evidence flow.
-    if (rawMsgText.toLowerCase().startsWith('!kogame')) {
+    // AUDIT-VERIFY-T9: TEXT-ONLY '!kogame ...' messages (no media) now fall
+    // through to the command router, whose registered 'kogame' handler
+    // implements the documented status lookup ('!kogame <fixture_id>').
+    // Previously every '!kogame' text got the canned "send it as a photo"
+    // reply and the status feature was unreachable.
+    const isKoGameCaption = rawMsgText.toLowerCase().startsWith('!kogame');
+    const hasPhoto = Boolean(mediaBuffer);
+    if (isKoGameCaption && hasPhoto) {
       const fixtureArg = rawMsgText.slice('!kogame'.length).trim().split(/\s+/)[0] || '';
       const koRes = await this.handleKoGameEvidenceMessage(message, mediaBuffer, fixtureArg);
       if (koRes.handled) {
@@ -512,11 +534,25 @@ export class FlashPeakApp {
     }
 
     // 1.5 Pending Manual Report Confirmation / Correction Check
+    // AUDIT-VERIFY-T8: a staged manual-report draft is the ORGANIZER's draft
+    // (staged via !manualreport). Plain-text 'ok'/corrections from other group
+    // members used to confirm/modify it (confirmPending hardcodes
+    // is_organizer: true) — now only the organizer may do either. Delegates
+    // can still use !ok/!confirm/!batal which are ORGANIZER-role gated in the
+    // router.
     if (this.manualReportSession.hasPending(message.chat_id, message.sender_normalized_address)) {
       const normText = rawMsgText.toLowerCase();
+      const senderIsOrganizer = this.commandRouter.isSenderOrganizer(message);
       const isConfirm = ['ok', 'ya', 'confirm', '!ok', '!confirm', 'lanjut', 'benar', 'sudah benar'].includes(normText);
 
       if (isConfirm) {
+        if (!senderIsOrganizer) {
+          return {
+            handled: true,
+            type: 'COMMAND',
+            replyText: '⛔ Konfirmasi draf laporan manual hanya dapat dilakukan oleh Panitia (yang membuat drafnya). Ketik *!ok* sebagai Panitia untuk mengonfirmasi.',
+          };
+        }
         const organizerId = message.sender_normalized_address || 'ORGANIZER';
         const confirmRes = await this.manualReportSession.confirmPending(
           this.db,
@@ -542,6 +578,13 @@ export class FlashPeakApp {
         normText.startsWith('b:');
 
       if (isCorrection) {
+        if (!senderIsOrganizer) {
+          return {
+            handled: true,
+            type: 'COMMAND',
+            replyText: '⛔ Koreksi draf laporan manual hanya dapat dilakukan oleh Panitia.',
+          };
+        }
         const organizerId = message.sender_normalized_address || 'ORGANIZER';
         const correctionRes = this.manualReportSession.applyCorrection(
           message.chat_id,
@@ -599,7 +642,10 @@ export class FlashPeakApp {
     if (isCorrectionCandidate && message.reply_to_key) {
       const targetVersion = await this.findVersionByMessageKey(message.reply_to_key);
       if (targetVersion && this.correctionParser) {
-        const correctionRes = await this.handleCorrection(targetVersion.id, message);
+        // AUDIT-VERIFY-T6: forward the organizer flag so an organizer's NL
+        // correction is authorized (the coordinator used to drop it, making
+        // every organizer correction 'Unauthorized sender').
+        const correctionRes = await this.handleCorrection(targetVersion.id, message, this.commandRouter.isSenderOrganizer(message));
         return {
           handled: true,
           type: 'CORRECTION',
@@ -965,8 +1011,6 @@ export class FlashPeakApp {
         }
       } else if (outcome.status === 'SERIES_ALREADY_COMPLETE') {
         lines.push(outcome.message);
-      } else if (outcome.status === 'NEEDS_REVIEW') {
-        lines.push(outcome.message);
       } else if (outcome.status === 'DUPLICATE') {
         lines.push(outcome.message);
       } else {
@@ -1027,7 +1071,8 @@ export class FlashPeakApp {
    */
   public async handleCorrection(
     versionId: UUID,
-    message: NormalizedMessage
+    message: NormalizedMessage,
+    isOrganizer = false
   ): Promise<{ result: CorrectionResult; replyText: string }> {
     if (!this.correctionParser) {
       throw new Error('Correction parser not configured');
@@ -1040,7 +1085,8 @@ export class FlashPeakApp {
         identityResolver: this.identityResolver,
       },
       versionId,
-      message
+      message,
+      isOrganizer
     );
   }
 

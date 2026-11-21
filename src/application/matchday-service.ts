@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
-import { handleGroupDoubleWalkover } from '../competition/walkover.js';
+import { handleGroupDoubleWalkover, handleKnockoutDoubleRoomCardFailure } from '../competition/walkover.js';
 import { recalculateAndPersistGroupStandings } from '../competition/standings.js';
 import type { WhatsAppSender } from '../whatsapp/sender.js';
 
@@ -24,8 +24,10 @@ export interface MatchdayServiceDeps {
 export interface MatchdayFixtureItem {
   id: string;
   roundCode: string;
-  groupId: string;
-  groupCode: string;
+  /** 'GROUP' or 'KNOCKOUT' (AUDIT-VERIFY-T17: knockout fixtures must be visible to the cutoff). */
+  stage: string;
+  groupId: string | null;
+  groupCode: string | null;
   teamAName: string;
   teamBName: string;
   hostName: string;
@@ -157,25 +159,58 @@ export class MatchdayService {
 
     // Query distinct rounds across group and knockout stages (FIX2-KO-001:
     // matchday status must also describe the active knockout round)
+    // REVIEW-FIX blocker-roundcode (21 Nov 2026): knockout labels are no longer
+    // strictly "descending by fixture count" (odd survivor pools can produce
+    // repeated widths), and lexical ROUND_CODE order is wrong anyway
+    // (FINAL < QUARTER_FINAL < ROUND_OF_16 ... alphabetically). Order knockout
+    // rounds by their PROGRESSION rank (widest first), then by first-seen
+    // created_at for labels outside the canonical progression (KNOCKOUT_ROUND_n
+    // fallbacks), so "next round" after the cutoff always means the round that
+    // chronologically follows the current one.
     const roundsRes = await this.db.execute({
-      sql: `SELECT DISTINCT round_code
+      sql: `SELECT DISTINCT round_code, MIN(created_at) AS first_seen
             FROM fixtures
             WHERE tournament_id = ? AND round_code IS NOT NULL
               AND stage IN ('GROUP', 'KNOCKOUT')
-            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END, round_code ASC`,
+            GROUP BY round_code
+            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END,
+              CASE round_code
+                WHEN 'ROUND_OF_32' THEN 0
+                WHEN 'ROUND_OF_16' THEN 1
+                WHEN 'QUARTER_FINAL' THEN 2
+                WHEN 'SEMI_FINAL' THEN 3
+                WHEN 'FINAL' THEN 4
+                ELSE 5
+              END ASC,
+              first_seen ASC`,
       args: [tournamentId],
     });
 
-    const allRounds = roundsRes.rows.map((r) => String(r[0] ?? (r as any).round_code));
+    const allRounds = roundsRes.rows.map((r) => String((r as any).round_code ?? r[0]));
 
     // Earliest round with uncompleted matches (group rounds first, then knockout)
+    // REVIEW-FIX blocker-roundcode: same progression ordering as allRounds
+    // above, so the "current round" is the chronologically earliest unfinished
+    // round (a ROUND_OF_16 that follows a ROUND_OF_32 must win over leftover
+    // ROUND_OF_16 fixtures of an earlier round — first_seen handles that).
     const unfinRes = await this.db.execute({
-      sql: `SELECT round_code
+      sql: `SELECT round_code, MIN(created_at) AS first_seen
             FROM fixtures
             WHERE tournament_id = ? AND round_code IS NOT NULL
               AND stage IN ('GROUP', 'KNOCKOUT')
               AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
-            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END, round_code ASC LIMIT 1`,
+            GROUP BY round_code
+            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END,
+              CASE round_code
+                WHEN 'ROUND_OF_32' THEN 0
+                WHEN 'ROUND_OF_16' THEN 1
+                WHEN 'QUARTER_FINAL' THEN 2
+                WHEN 'SEMI_FINAL' THEN 3
+                WHEN 'FINAL' THEN 4
+                ELSE 5
+              END ASC,
+              first_seen ASC
+            LIMIT 1`,
       args: [tournamentId],
     });
 
@@ -193,6 +228,11 @@ export class MatchdayService {
 
   /**
    * Retrieves fixtures for a specific round with delegate WhatsApp identities.
+   *
+   * AUDIT-VERIFY-T17 (21 Nov 2026): the INNER JOIN on groups silently dropped
+   * every KNOCKOUT fixture (group_id NULL) — the 19:59 cutoff was a no-op for
+   * the knockout phase. The join is now a LEFT JOIN and the stage is carried
+   * through so the cutoff can dispatch per-stage.
    */
   public async getRoundFixturesWithDelegates(
     tournamentId: string,
@@ -200,9 +240,10 @@ export class MatchdayService {
   ): Promise<MatchdayFixtureItem[]> {
     const res = await this.db.execute({
       sql: `
-        SELECT 
+        SELECT
           f.id,
           f.round_code,
+          f.stage,
           f.group_id,
           g.group_code,
           ta.team_name as team_a_name,
@@ -212,12 +253,12 @@ export class MatchdayService {
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address,
           f.status
         FROM fixtures f
-        JOIN groups g ON f.group_id = g.id
+        LEFT JOIN groups g ON f.group_id = g.id
         JOIN teams ta ON f.team_a_id = ta.id
         JOIN teams tb ON f.team_b_id = tb.id
         LEFT JOIN teams tl ON f.left_side_team_id = tl.id
         WHERE f.tournament_id = ? AND f.round_code = ?
-        ORDER BY g.group_code ASC, f.id ASC
+        ORDER BY CASE WHEN f.stage = 'GROUP' THEN 0 ELSE 1 END, g.group_code ASC, f.id ASC
       `,
       args: [tournamentId, roundCode],
     });
@@ -243,8 +284,9 @@ export class MatchdayService {
       return {
         id: String(r.id),
         roundCode: String(r.round_code),
-        groupId: String(r.group_id),
-        groupCode: String(r.group_code),
+        stage: String(r.stage),
+        groupId: r.group_id ? String(r.group_id) : null,
+        groupCode: r.group_code ? String(r.group_code) : null,
         teamAName: String(r.team_a_name),
         teamBName: String(r.team_b_name),
         hostName: String(r.host_name),
@@ -298,15 +340,33 @@ export class MatchdayService {
 
     const expiredFixtures: MatchdayFixtureItem[] = [];
     const modifiedGroupIds = new Set<string>();
+    const expiredKoFixtures: MatchdayFixtureItem[] = [];
 
     for (const pf of pendingFixtures) {
+      // AUDIT-VERIFY-T17: dispatch per stage. GROUP fixtures keep the D-031
+      // double-walkover (0 pts each + standings recalc). KNOCKOUT fixtures use
+      // the D-032 double-loss handler: the series closes with no winner and
+      // the fixture is marked WALKOVER, which is exactly the signal
+      // !startknockout uses to grant the pairing partner a bye into the next
+      // round (the T2 odd-survivor handling already copes with the resulting
+      // uneven pool).
+      if (pf.stage === 'KNOCKOUT') {
+        await handleKnockoutDoubleRoomCardFailure(
+          this.db,
+          pf.id,
+          'Batas waktu matchday 19:59 WIB habis tanpa pertandingan knockout dimainkan (D-032)'
+        );
+        expiredKoFixtures.push(pf);
+        expiredFixtures.push(pf);
+        continue;
+      }
       await handleGroupDoubleWalkover(
         this.db,
         pf.id,
         'DOUBLE_ABSENT',
         'Batas waktu matchday 19:59 WIB habis tanpa pertandingan dimainkan (D-031)'
       );
-      modifiedGroupIds.add(pf.groupId);
+      if (pf.groupId) modifiedGroupIds.add(pf.groupId);
       expiredFixtures.push(pf);
     }
 
@@ -351,12 +411,22 @@ export class MatchdayService {
       lines.push(`🏆 *${tournamentName}* — *${roundLabel}*`);
       lines.push(``);
       lines.push(`Pertandingan berikut tidak dimainkan hingga batas waktu:`);
-      for (const ef of expiredFixtures) {
-        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}* (Grup ${ef.groupCode})`);
+      const expiredGroupFixtures = expiredFixtures.filter((f) => f.stage !== 'KNOCKOUT');
+      for (const ef of expiredGroupFixtures) {
+        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}*${ef.groupCode ? ` (Grup ${ef.groupCode})` : ''}`);
+      }
+      for (const ef of expiredKoFixtures) {
+        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}* (Knockout)`);
       }
       lines.push(``);
-      lines.push(`📌 *Regulasi Turnamen (D-031):*`);
-      lines.push(`Kedua tim dinyatakan tidak hadir (Double Walkover). Skor dicatat 0–0 dan masing-masing tim mendapatkan *0 poin*.`);
+      if (expiredGroupFixtures.length > 0) {
+        lines.push(`📌 *Regulasi Turnamen (D-031):*`);
+        lines.push(`Kedua tim dinyatakan tidak hadir (Double Walkover). Skor dicatat 0–0 dan masing-masing tim mendapatkan *0 poin*.`);
+      }
+      if (expiredKoFixtures.length > 0) {
+        lines.push(`📌 *Regulasi Knockout (D-032):*`);
+        lines.push(`Series di atas dinyatakan *KALAH GANDA* (tidak ada pemenang). Pasangan bracket-nya akan mendapat *bye otomatis* ke ronde berikutnya saat Panitia menjalankan *!startknockout*.`);
+      }
       lines.push(`──────────────────────────────`);
     }
 
@@ -465,14 +535,28 @@ export class MatchdayService {
     for (const pf of pending) {
       const tagA = pf.delegateAPhone ? ` (@${pf.delegateAPhone})` : '';
       const tagB = pf.delegateBPhone ? ` (@${pf.delegateBPhone})` : '';
-      lines.push(`• *${pf.teamAName}*${tagA} vs *${pf.teamBName}*${tagB} (Grup ${pf.groupCode})`);
+      // REVIEW-FIX quickwin-group-null-message (21 Nov 2026): knockout
+      // fixtures have no group — label them "(Knockout)" instead of
+      // rendering "(Grup null)".
+      const stageLabel = pf.stage === 'KNOCKOUT' ? ' (Knockout)' : ` (Grup ${pf.groupCode})`;
+      lines.push(`• *${pf.teamAName}*${tagA} vs *${pf.teamBName}*${tagB}${stageLabel}`);
 
       if (pf.delegateAJid) mentionsSet.add(pf.delegateAJid);
       if (pf.delegateBJid) mentionsSet.add(pf.delegateBJid);
     }
 
     lines.push(``);
-    lines.push(`⚠️ _Sesuai regulasi turnamen (D-031), pertandingan yang tidak diselesaikan hingga 19:59 WIB otomatis dinyatakan Double Walkover (0 poin untuk kedua tim)._`);
+    // REVIEW-FIX quickwin-group-null-message: quote the regulation that
+    // actually applies — D-031 (double walkover) for group fixtures,
+    // D-032 (double loss + bye) for knockout fixtures.
+    const pendingHasKo = pending.some((f) => f.stage === 'KNOCKOUT');
+    const pendingHasGroup = pending.some((f) => f.stage !== 'KNOCKOUT');
+    if (pendingHasGroup) {
+      lines.push(`⚠️ _Sesuai regulasi turnamen (D-031), pertandingan yang tidak diselesaikan hingga 19:59 WIB otomatis dinyatakan Double Walkover (0 poin untuk kedua tim)._`);
+    }
+    if (pendingHasKo) {
+      lines.push(`⚠️ _Sesuai regulasi knockout (D-032), series yang tidak diselesaikan hingga 19:59 WIB dinyatakan KALAH GANDA (tidak ada pemenang) dan pasangan bracket-nya mendapat bye otomatis._`);
+    }
     lines.push(`Segera bertanding dan kirimkan bukti screenshot skor ke grup! 🔥`);
 
     const announcementText = lines.join('\n');
@@ -567,10 +651,23 @@ export class MatchdayService {
       for (const pf of pending) {
         const tagA = pf.delegateAPhone ? ` (@${pf.delegateAPhone})` : '';
         const tagB = pf.delegateBPhone ? ` (@${pf.delegateBPhone})` : '';
-        lines.push(`  • *${pf.teamAName}*${tagA} vs *${pf.teamBName}*${tagB} (Grup ${pf.groupCode})`);
+        // REVIEW-FIX quickwin-group-null-message (21 Nov 2026): knockout
+        // fixtures have no group — label them "(Knockout)" instead of
+        // rendering "(Grup null)".
+        const stageLabel = pf.stage === 'KNOCKOUT' ? ' (Knockout)' : ` (Grup ${pf.groupCode})`;
+        lines.push(`  • *${pf.teamAName}*${tagA} vs *${pf.teamBName}*${tagB}${stageLabel}`);
       }
       lines.push(``);
-      lines.push(`💡 _Pertandingan yang belum selesai pukul 19:59 WIB akan otomatis dinyatakan Double Walkover (0 poin) sesuai regulasi D-031._`);
+      // REVIEW-FIX quickwin-group-null-message: quote the regulation that
+      // actually applies — D-031 for group fixtures, D-032 for knockout.
+      const pendingHasKo = pending.some((f) => f.stage === 'KNOCKOUT');
+      const pendingHasGroup = pending.some((f) => f.stage !== 'KNOCKOUT');
+      if (pendingHasGroup) {
+        lines.push(`💡 _Pertandingan grup yang belum selesai pukul 19:59 WIB akan otomatis dinyatakan Double Walkover (0 poin) sesuai regulasi D-031._`);
+      }
+      if (pendingHasKo) {
+        lines.push(`💡 _Series knockout yang belum selesai pukul 19:59 WIB dinyatakan KALAH GANDA (tidak ada pemenang) sesuai regulasi D-032, dan pasangan bracket-nya mendapat bye otomatis._`);
+      }
     } else {
       lines.push(``);
       lines.push(`🎉 *Luar biasa! Seluruh pertandingan ${roundLabel} sudah selesai dimainkan.*`);

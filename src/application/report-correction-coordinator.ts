@@ -28,7 +28,8 @@ export interface ReportCorrectionCoordinatorDeps {
 export async function handleReportCorrection(
   deps: ReportCorrectionCoordinatorDeps,
   versionId: UUID,
-  message: NormalizedMessage
+  message: NormalizedMessage,
+  isOrganizer = false
 ): Promise<{ result: CorrectionResult; replyText: string }> {
   const { db, correctionParser, identityResolver } = deps;
 
@@ -86,7 +87,15 @@ export async function handleReportCorrection(
     };
   }
 
-  const resolved = await identityResolver.resolveIdentity(message.sender_raw_address);
+  // AUDIT-VERIFY (new-bug #2, fixed 21 Nov 2026): pass the chat context like
+  // the CommandRouter does. resolveIdentity currently ignores its second
+  // parameter (_sourceChatId), so this is a no-op today — but it keeps the
+  // call-site consistent with the router so any future per-chat narrowing or
+  // auditing in resolveIdentity applies identically here.
+  const resolved = await identityResolver.resolveIdentity(
+    message.sender_raw_address,
+    message.chat_id
+  );
   const senderId = resolved?.delegate?.id || message.sender_normalized_address;
 
   // Ensure inbound message is recorded in database
@@ -118,6 +127,10 @@ export async function handleReportCorrection(
     sender_id: senderId,
     inbound_message_id: inboundMsgId,
     patch: parseOutcome.patch,
+    // AUDIT-VERIFY-T6: forward the organizer flag resolved upstream by the
+    // CommandRouter; without it verifyCorrectionAuthority rejected every
+    // organizer correction as 'Unauthorized sender'.
+    is_organizer: isOrganizer,
   });
 
   let replyText = '';

@@ -593,10 +593,24 @@ describe('End-to-End Tournament Integration (Fase 6)', () => {
 
     const fixtureId = 'fix-fail-001';
     const gameId = 'game-fail-001';
+    // AUDIT-VERIFY-T4: this test exercises the BO1 group-stage evidence
+    // pipeline, so the fixture must be a GROUP fixture (a plain photo for a
+    // KNOCKOUT series no longer resolves to the BO1 resolver after the fix).
+    const drawIdFail = 'draw-fail-001';
     await db.execute({
-      sql: `INSERT INTO fixtures (id, tournament_id, stage, team_a_id, team_b_id, left_side_team_id, scheduled_at, status, created_at, updated_at)
-            VALUES (?, ?, 'KNOCKOUT', ?, ?, ?, ?, 'IN_PROGRESS', ?, ?)`,
-      args: [fixtureId, tournamentId, teamAId, teamBId, teamAId, now, now, now],
+      sql: `INSERT INTO group_draws (id, tournament_id, status, group_config_json, eligible_team_snapshot_json, algorithm, algorithm_version, created_at)
+            VALUES (?, ?, 'COMPLETED', '{}', '[]', 'fisher-yates', '1', ?)`,
+      args: [drawIdFail, tournamentId, now],
+    });
+    const groupFailId = 'group-fail-001';
+    await db.execute({
+      sql: `INSERT INTO groups (id, draw_id, group_code, display_order) VALUES (?, ?, 'A', 1)`,
+      args: [groupFailId, drawIdFail],
+    });
+    await db.execute({
+      sql: `INSERT INTO fixtures (id, tournament_id, stage, group_id, team_a_id, team_b_id, left_side_team_id, scheduled_at, status, created_at, updated_at)
+            VALUES (?, ?, 'GROUP', ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?)`,
+      args: [fixtureId, tournamentId, groupFailId, teamAId, teamBId, teamAId, now, now, now],
     });
     await db.execute({
       sql: `INSERT INTO games (id, fixture_id, game_number, status, evidence_status, created_at, updated_at)

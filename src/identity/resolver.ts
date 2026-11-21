@@ -162,11 +162,27 @@ export class IdentityResolver {
     }
 
     // 3. Fetch active team linked to this delegate
+    // AUDIT-VERIFY-T14 (21 Nov 2026): restrict to the ACTIVE tournament.
+    // Teams of past/completed tournaments stay in the database, and the old
+    // unfiltered query resolved a delegate to their OLD team after a new
+    // tournament was created — fixture resolution and corrections then
+    // targeted the wrong tournament. Preference order:
+    //   a) team in an ACTIVE tournament
+    //   b) team in any not-yet-completed tournament (DRAFT/REGISTRATION/...)
+    //   c) most recent team (fallback for admin tooling on archived data)
     let team: Team | undefined;
     const teamResult = await this.db.execute({
-      sql: `SELECT id, tournament_id, organization_name, division_name, team_name, team_code, delegate_id, registration_status, created_at, updated_at
-            FROM teams
-            WHERE delegate_id = ?
+      sql: `SELECT t.id, t.tournament_id, t.organization_name, t.division_name, t.team_name, t.team_code, t.delegate_id, t.registration_status, t.created_at, t.updated_at
+            FROM teams t
+            JOIN tournaments tr ON t.tournament_id = tr.id
+            WHERE t.delegate_id = ?
+            ORDER BY CASE tr.status
+                WHEN 'ACTIVE' THEN 0
+                WHEN 'COMPLETED' THEN 2
+                WHEN 'ARCHIVED' THEN 3
+                ELSE 1
+              END ASC,
+              tr.created_at DESC
             LIMIT 1`,
       args: [delegate.id],
     });

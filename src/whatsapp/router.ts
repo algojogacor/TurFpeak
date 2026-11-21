@@ -57,19 +57,34 @@ export class CommandRouter {
    * the raw phone digits (WA_ORGANIZER_PHONE). Used by the approval engine to
    * verify ORGANIZER-type authority against configuration instead of loose
    * string patterns on the approver id.
+   *
+   * AUDIT-VERIFY-T3 (21 Nov 2026): each phone-only identity is now expanded
+   * with its canonical JID form (<digits>@s.whatsapp.net) and each JID with
+   * its bare digits, so a deployment configured only via WA_ORGANIZER_PHONE
+   * still matches the approver id (!approve passes the sender's full
+   * normalized JID). Before this, phone-only configs rejected every
+   * organizer approval because '628xxx@s.whatsapp.net' never equals '628xxx'.
    */
   public getOrganizerIdentities(): string[] {
     const ids: string[] = [];
+    const pushUnique = (value: string) => {
+      const v = value.trim().toLowerCase();
+      if (v && !ids.includes(v)) ids.push(v);
+    };
     for (const part of (this.organizerJid || '').split(',')) {
       const jid = part.trim().toLowerCase();
       if (jid) {
-        ids.push(jid);
+        pushUnique(jid);
         const digits = jid.split('@')[0]?.replace(/\D/g, '');
-        if (digits) ids.push(digits);
+        if (digits) {
+          pushUnique(digits);
+          pushUnique(`${digits}@s.whatsapp.net`);
+        }
       }
     }
     if (this.organizerPhone) {
-      ids.push(this.organizerPhone);
+      pushUnique(this.organizerPhone);
+      pushUnique(`${this.organizerPhone}@s.whatsapp.net`);
     }
     return ids;
   }

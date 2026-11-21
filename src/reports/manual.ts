@@ -54,13 +54,17 @@ export interface ManualReportResult {
 
 /**
  * Verifies that the actor is an authorized tournament organizer.
+ * AUDIT-VERIFY-T12 (21 Nov 2026): the loose string patterns
+ * (startsWith('org_') / includes('organizer')) are removed — they were the
+ * exact pattern FIX2-APR-003 eliminated from approval.ts, and let arbitrary
+ * ids like 'org_legit' or 'i-am-the-organizer-trust-me' pass the admin gate.
+ * Authority is now: the explicit is_organizer flag (set only by the
+ * ORGANIZER-role-gated command route / confirmPending), or the internal
+ * system constant 'ORGANIZER' used by admin tooling.
  */
 function isOrganizerAuthorized(organizerId: string, explicitFlag?: boolean): boolean {
   if (explicitFlag === true) return true;
   if (organizerId === 'ORGANIZER') return true;
-  if (organizerId.startsWith('org_') || organizerId.toLowerCase().includes('organizer')) {
-    return true;
-  }
   return false;
 }
 
@@ -83,7 +87,7 @@ export async function handleManualReport(
 
   // 2. Resolve Fixture and Game
   const fixtureRes = await db.execute({
-    sql: 'SELECT id, tournament_id, team_a_id, team_b_id, status FROM fixtures WHERE id = ?',
+    sql: 'SELECT id, tournament_id, stage, team_a_id, team_b_id, status FROM fixtures WHERE id = ?',
     args: [input.fixture_id],
   });
 
@@ -95,8 +99,23 @@ export async function handleManualReport(
   }
 
   const fixture = fixtureRes.rows[0];
-  const teamAId = String(fixture[2]);
-  const teamBId = String(fixture[3]);
+  const fixtureStage = String(fixture[2] ?? (fixture as Record<string, unknown>).stage);
+  const teamAId = String(fixture[3]);
+  const teamBId = String(fixture[4]);
+
+  // AUDIT-VERIFY-T16 (21 Nov 2026): !manualreport creates a BO1 group-style
+  // report draft; a KNOCKOUT fixture belongs to a BO3/BO5 series managed by
+  // !kogame / !kores. A manual BO1 draft on a knockout series created a
+  // parallel, conflicting report path (dry-run reproduced: success=true on a
+  // SEMI_FINAL fixture).
+  if (fixtureStage === 'KNOCKOUT') {
+    return {
+      success: false,
+      errors: [
+        'Fixture ini pertandingan KNOCKOUT (BO3/BO5 series). Gunakan !kores <fixture_id> <game_no> <skor_a>-<skor_b> untuk mencatat/mengoreksi hasil game knockout.',
+      ],
+    };
+  }
 
   let gameId = input.game_id;
   if (!gameId) {

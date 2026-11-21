@@ -22,6 +22,15 @@ export interface MatchedFixtureResult {
   submitting_team_id?: string;
 }
 
+/**
+ * AUDIT-VERIFY-T4 (21 Nov 2026): the BO1 group-stage evidence pipeline must
+ * never target a KNOCKOUT fixture. Knockout series are BO3/BO5 managed by the
+ * dedicated !kogame per-game pipeline (ko-evidence-pipeline.ts); a plain photo
+ * without a !kogame caption used to resolve to an active knockout fixture here
+ * and produced a parallel BO1 draft for a series that already has its own
+ * state machine. All queries below filter stage = 'GROUP'.
+ */
+
 export async function resolveFixtureForMessage(
   db: Client,
   identityResolver: IdentityResolver,
@@ -61,6 +70,7 @@ export async function resolveFixtureForMessage(
           FROM fixtures f
           JOIN tournaments tr ON f.tournament_id = tr.id
           WHERE tr.status = 'ACTIVE'
+            AND f.stage = 'GROUP'
             AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
             AND (f.team_a_id = ? OR f.team_b_id = ?)
           ORDER BY f.round_code ASC, f.created_at ASC
@@ -85,6 +95,7 @@ export async function resolveFixtureForMessage(
           FROM fixtures f
           JOIN tournaments tr ON f.tournament_id = tr.id
           WHERE tr.status = 'ACTIVE'
+            AND f.stage = 'GROUP'
             AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
             AND ((f.team_a_id = ? AND f.team_b_id = ?) OR (f.team_a_id = ? AND f.team_b_id = ?))
           ORDER BY f.round_code ASC, f.created_at ASC
@@ -132,6 +143,7 @@ export async function resolveFixtureForMessage(
         FROM fixtures f
         JOIN tournaments t ON f.tournament_id = t.id
         WHERE t.status = 'ACTIVE'
+          AND f.stage = 'GROUP'
           AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
           AND (f.team_a_id = ? OR f.team_b_id = ?)
         ORDER BY f.round_code ASC, f.created_at ASC
@@ -156,6 +168,7 @@ export async function resolveFixtureForMessage(
       FROM fixtures f
       JOIN tournaments tr ON f.tournament_id = tr.id
       WHERE tr.status = 'ACTIVE'
+        AND f.stage = 'GROUP'
         AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
       ORDER BY f.round_code ASC, f.created_at ASC
       LIMIT 1
