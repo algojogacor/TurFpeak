@@ -267,6 +267,21 @@ export class FlashPeakApp {
   ): Promise<InboundHandlingResult> {
     const rawMsgText = (message.text_body || message.caption || '').trim();
 
+    // AUDIT-VERIFY-T13 (21 Nov 2026): group-scope enforcement (FR-ID-005) for
+    // ALL non-command paths. The CommandRouter already enforces the central
+    // group for registered commands, but NL intents ('!klaim WO ...', '!lihat
+    // klasemen', ...), photos/evidence, corrections, and the KO pipeline used
+    // to reply and mutate state from ANY group. Groups other than the central
+    // tournament group are now ignored entirely; the organizer's DM (admin
+    // chat) and the central group remain allowed. First-run bootstrap (no
+    // central group configured yet) is still permitted so !setgroup can be
+    // executed via the router path below.
+    const chatIsGroup = message.chat_id.endsWith('@g.us');
+    const centralGroup = this.centralGroupJid || this.commandRouter.getCentralGroupJid();
+    if (chatIsGroup && centralGroup && message.chat_id !== centralGroup) {
+      return { handled: false, type: 'UNKNOWN' };
+    }
+
     // 0. Interactive knockout per-game evidence (FIX2-KO-002):
     // a photo captioned "!kogame" runs the dedicated KO pipeline and never
     // enters the BO1 group-stage debounce/evidence flow.
