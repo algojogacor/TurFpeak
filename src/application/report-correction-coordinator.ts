@@ -28,7 +28,8 @@ export interface ReportCorrectionCoordinatorDeps {
 export async function handleReportCorrection(
   deps: ReportCorrectionCoordinatorDeps,
   versionId: UUID,
-  message: NormalizedMessage
+  message: NormalizedMessage,
+  isOrganizer = false
 ): Promise<{ result: CorrectionResult; replyText: string }> {
   const { db, correctionParser, identityResolver } = deps;
 
@@ -118,6 +119,10 @@ export async function handleReportCorrection(
     sender_id: senderId,
     inbound_message_id: inboundMsgId,
     patch: parseOutcome.patch,
+    // AUDIT-VERIFY-T6: forward the organizer flag resolved upstream by the
+    // CommandRouter; without it verifyCorrectionAuthority rejected every
+    // organizer correction as 'Unauthorized sender'.
+    is_organizer: isOrganizer,
   });
 
   let replyText = '';

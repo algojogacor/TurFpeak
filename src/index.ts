@@ -599,7 +599,10 @@ export class FlashPeakApp {
     if (isCorrectionCandidate && message.reply_to_key) {
       const targetVersion = await this.findVersionByMessageKey(message.reply_to_key);
       if (targetVersion && this.correctionParser) {
-        const correctionRes = await this.handleCorrection(targetVersion.id, message);
+        // AUDIT-VERIFY-T6: forward the organizer flag so an organizer's NL
+        // correction is authorized (the coordinator used to drop it, making
+        // every organizer correction 'Unauthorized sender').
+        const correctionRes = await this.handleCorrection(targetVersion.id, message, this.commandRouter.isSenderOrganizer(message));
         return {
           handled: true,
           type: 'CORRECTION',
@@ -1025,7 +1028,8 @@ export class FlashPeakApp {
    */
   public async handleCorrection(
     versionId: UUID,
-    message: NormalizedMessage
+    message: NormalizedMessage,
+    isOrganizer = false
   ): Promise<{ result: CorrectionResult; replyText: string }> {
     if (!this.correctionParser) {
       throw new Error('Correction parser not configured');
@@ -1038,7 +1042,8 @@ export class FlashPeakApp {
         identityResolver: this.identityResolver,
       },
       versionId,
-      message
+      message,
+      isOrganizer
     );
   }
 
