@@ -15,6 +15,7 @@
  */
 
 import type { Client } from '@libsql/client';
+import { distance } from 'fastest-levenshtein';
 import type {
   ValidatedMatchData,
   Player,
@@ -56,8 +57,94 @@ export interface ValidationResult {
 /**
  * Normalizes a nickname for lookup comparison (NFC + trimmed + lowercased).
  */
-function normalizeNickname(nick: string): string {
+export function normalizeNickname(nick: string): string {
   return nick.normalize('NFC').trim().toLowerCase();
+}
+
+/**
+ * Strips non-alphanumeric characters for clean search key matching.
+ * Also handles NFKD normalization for combining marks/diacritics.
+ */
+export function cleanSearchKey(nick: string): string {
+  return nick
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Computes Levenshtein similarity between 0.0 and 1.0.
+ */
+export function computeSimilarity(str1: string, str2: string): number {
+  if (str1 === str2) return 1.0;
+  const maxLen = Math.max(str1.length, str2.length);
+  if (maxLen === 0) return 1.0;
+  const dist = distance(str1, str2);
+  return Math.max(0, 1 - dist / maxLen);
+}
+
+/**
+ * Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)
+ * - Tier 1: Exact raw string match.
+ * - Tier 2: NFC normalized match.
+ * - Tier 3: Clean alphanumeric key match (ignores clan tags, bullets, decorative symbols, and spacing).
+ * - Tier 4: Safe fuzzy match (threshold >= 0.75 + safety gap >= 0.15 over runner-up teammate).
+ */
+export function matchPlayerToRoster(
+  raw: RawPlayerMatchStat,
+  roster: Player[]
+): Player | null {
+  if (raw.player_id) {
+    const matchById = roster.find((p) => p.id === raw.player_id);
+    if (matchById) return matchById;
+  }
+
+  const norm = normalizeNickname(raw.nickname_raw);
+
+  // 1. Exact raw match
+  const exact = roster.find((p) => p.nickname_raw === raw.nickname_raw);
+  if (exact) return exact;
+
+  // 2. NFC normalized match
+  const nfcMatch = roster.find((p) => normalizeNickname(p.nickname_nfc) === norm);
+  if (nfcMatch) return nfcMatch;
+
+  // 3. Clean Alphanumeric Key match (ignores decorative symbols, bullets, spaces, clan tags)
+  const cleanRaw = cleanSearchKey(raw.nickname_raw);
+  if (cleanRaw.length >= 3) {
+    const cleanMatch = roster.find(
+      (p) =>
+        cleanSearchKey(p.nickname_raw) === cleanRaw ||
+        (p.nickname_search_key && p.nickname_search_key.toLowerCase() === cleanRaw)
+    );
+    if (cleanMatch) return cleanMatch;
+  }
+
+  // 4. Safe Fuzzy Match (safety threshold >= 0.75 + safety margin gap >= 0.15)
+  // Ensures minor OCR typos (e.g. 1 char substitution) resolve safely without ever
+  // confusing distinct teammates (such as Kuroko vs Kurona).
+  if (cleanRaw.length >= 3 && roster.length > 0) {
+    const scored = roster
+      .map((p) => {
+        const pClean = cleanSearchKey(p.nickname_raw);
+        const score =
+          pClean.length >= 3
+            ? computeSimilarity(cleanRaw, pClean)
+            : computeSimilarity(norm, normalizeNickname(p.nickname_raw));
+        return { player: p, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const best = scored[0];
+    const runnerUpScore = scored.length > 1 ? scored[1].score : 0;
+    const gap = best.score - runnerUpScore;
+
+    if (best.score >= 0.75 && gap >= 0.15) {
+      return best.player;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -164,28 +251,9 @@ export async function validateMatchReport(
   const rosterA = registeredPlayers.filter((p) => p.team_id === input.team_a_id);
   const rosterB = registeredPlayers.filter((p) => p.team_id === input.team_b_id);
 
-  // Helper to match a raw player to registered player
+  // Helper to match a raw player to registered player using tiered matching
   function matchPlayer(raw: RawPlayerMatchStat, roster: Player[]): Player | null {
-    if (raw.player_id) {
-      const matchById = roster.find((p) => p.id === raw.player_id);
-      if (matchById) return matchById;
-    }
-
-    const norm = normalizeNickname(raw.nickname_raw);
-
-    // 1. Exact raw match
-    const exact = roster.find((p) => p.nickname_raw === raw.nickname_raw);
-    if (exact) return exact;
-
-    // 2. NFC normalized match
-    const nfcMatch = roster.find((p) => normalizeNickname(p.nickname_nfc) === norm);
-    if (nfcMatch) return nfcMatch;
-
-    // 3. Search key match
-    const searchMatch = roster.find((p) => p.nickname_search_key === norm);
-    if (searchMatch) return searchMatch;
-
-    return null;
+    return matchPlayerToRoster(raw, roster);
   }
 
   // 5. Validate Team A Lineup

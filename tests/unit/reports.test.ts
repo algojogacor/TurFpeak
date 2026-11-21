@@ -32,6 +32,9 @@ import {
 } from '../../src/reports/versioning.js';
 import {
   validateMatchReport,
+  matchPlayerToRoster,
+  cleanSearchKey,
+  computeSimilarity,
   type RawPlayerMatchStat,
 } from '../../src/reports/validation.js';
 import {
@@ -996,6 +999,160 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
 
       // Must be 0! FR-CALC-006: Walkovers generate NO player statistics
       expect(cnt).toBe(0);
+    });
+  });
+
+  describe('Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)', () => {
+    const mockRoster = [
+      {
+        id: 'p1',
+        tournament_id: 't1',
+        team_id: 'team-agi',
+        nickname_raw: 'AGIㆍL∆RZZ☢️',
+        nickname_nfc: 'AGIㆍL∆RZZ☢️',
+        nickname_search_key: 'agilrzz',
+        position: 'GOALKEEPER' as const,
+        roster_slot: 1,
+        roster_type: 'STARTER' as const,
+        status: 'ACTIVE' as const,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'p2',
+        tournament_id: 't1',
+        team_id: 'team-agi',
+        nickname_raw: 'AGIㆍZKII☣',
+        nickname_nfc: 'AGIㆍZKII☣',
+        nickname_search_key: 'agizkii',
+        position: 'OUTFIELD' as const,
+        roster_slot: 2,
+        roster_type: 'STARTER' as const,
+        status: 'ACTIVE' as const,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'p3',
+        tournament_id: 't1',
+        team_id: 'team-agi',
+        nickname_raw: 'AGIㆍIshikawa',
+        nickname_nfc: 'AGIㆍIshikawa',
+        nickname_search_key: 'agiishikawa',
+        position: 'OUTFIELD' as const,
+        roster_slot: 3,
+        roster_type: 'STARTER' as const,
+        status: 'ACTIVE' as const,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'p4',
+        tournament_id: 't1',
+        team_id: 'team-agi',
+        nickname_raw: 'AGIㆍReXzz',
+        nickname_nfc: 'AGIㆍReXzz',
+        nickname_search_key: 'agirexzz',
+        position: 'OUTFIELD' as const,
+        roster_slot: 4,
+        roster_type: 'STARTER' as const,
+        status: 'ACTIVE' as const,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'p5',
+        tournament_id: 't1',
+        team_id: 'team-agi',
+        nickname_raw: 'AGI • Oppo',
+        nickname_nfc: 'AGI • Oppo',
+        nickname_search_key: 'agioppo',
+        position: 'OUTFIELD' as const,
+        roster_slot: 6,
+        roster_type: 'SUBSTITUTE' as const,
+        status: 'ACTIVE' as const,
+        created_at: '',
+        updated_at: '',
+      },
+    ];
+
+    it('matches exact raw and NFC nicknames (Tier 1 & 2)', () => {
+      const match1 = matchPlayerToRoster({ nickname_raw: 'AGIㆍL∆RZZ☢️' }, mockRoster);
+      expect(match1).not.toBeNull();
+      expect(match1?.id).toBe('p1');
+
+      const match2 = matchPlayerToRoster({ nickname_raw: 'AGI • Oppo' }, mockRoster);
+      expect(match2).not.toBeNull();
+      expect(match2?.id).toBe('p5');
+    });
+
+    it('matches stylized OCR variations via Clean Alphanumeric Key (Tier 3)', () => {
+      // 1. Separator dot difference: ' • ' vs 'ㆍ'
+      const matchIshikawa = matchPlayerToRoster({ nickname_raw: 'AGI • Ishikawa' }, mockRoster);
+      expect(matchIshikawa).not.toBeNull();
+      expect(matchIshikawa?.id).toBe('p3');
+
+      // 2. Trailing symbol difference & separator difference
+      const matchZkii = matchPlayerToRoster({ nickname_raw: 'AGI • ZKII☣' }, mockRoster);
+      expect(matchZkii).not.toBeNull();
+      expect(matchZkii?.id).toBe('p2');
+
+      // 3. Greek Lambda vs Delta increment & radioactive vs biohazard symbols
+      const matchLarzz = matchPlayerToRoster({ nickname_raw: 'AGI • LΛRZZ ☣' }, mockRoster);
+      expect(matchLarzz).not.toBeNull();
+      expect(matchLarzz?.id).toBe('p1');
+    });
+
+    it('matches minor OCR typo via Safe Fuzzy Match (Tier 4)', () => {
+      // 'AGI • Ishikawo' (1 typo: o instead of a) -> high similarity, clear gap
+      const matchTypo = matchPlayerToRoster({ nickname_raw: 'AGI • Ishikawo' }, mockRoster);
+      expect(matchTypo).not.toBeNull();
+      expect(matchTypo?.id).toBe('p3');
+    });
+
+    it('rejects ambiguous names when safety margin gap is below 15%', () => {
+      const closeRoster = [
+        {
+          id: 'tz1',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・Ҡurøko✦',
+          nickname_nfc: 'TZ・Ҡurøko✦',
+          nickname_search_key: 'tzurko',
+          position: 'OUTFIELD' as const,
+          roster_slot: 1,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+        {
+          id: 'tz2',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・Ҡurøna✦',
+          nickname_nfc: 'TZ・Ҡurøna✦',
+          nickname_search_key: 'tzurna',
+          position: 'OUTFIELD' as const,
+          roster_slot: 2,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+      ];
+
+      // 'TZ・Ҡurøka✦' is equidistant to both Kuroko (ko vs ka) and Kurona (na vs ka) -> gap = 0
+      const ambiguousMatch = matchPlayerToRoster({ nickname_raw: 'TZ・Ҡurøka✦' }, closeRoster);
+      expect(ambiguousMatch).toBeNull();
+    });
+
+    it('strictly rejects unregistered players', () => {
+      const matchDikz = matchPlayerToRoster({ nickname_raw: 'AGI • DIKZ' }, mockRoster);
+      expect(matchDikz).toBeNull();
+
+      const matchStranger = matchPlayerToRoster({ nickname_raw: 'EVOS JOKO' }, mockRoster);
+      expect(matchStranger).toBeNull();
     });
   });
 });

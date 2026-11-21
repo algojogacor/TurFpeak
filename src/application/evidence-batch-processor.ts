@@ -26,7 +26,7 @@ import type { ImageClassifier } from '../ai/classifier.js';
 import type { MatchSummaryExtractor } from '../ai/extractors/match.js';
 import type { GoalkeeperDetailExtractor } from '../ai/extractors/goalkeeper.js';
 import { resolveGoalkeeperIdentity, type RosterPlayerCandidate } from '../ai/extractors/gk-identity.js';
-import { validateMatchReport } from '../reports/validation.js';
+import { validateMatchReport, cleanSearchKey } from '../reports/validation.js';
 import { createReportDraft } from '../reports/versioning.js';
 import {
   formatMatchReportSummary,
@@ -387,8 +387,14 @@ export async function processClaimedBatch(
 
     const resolvePlayerSaves = (nick: string, teamPlayers: any[]): number | null => {
       const lower = nick.toLowerCase();
+      const clean = cleanSearchKey(nick);
       for (const [gNick, saves] of gkSavesByNickname.entries()) {
-        if (lower.includes(gNick.toLowerCase()) || gNick.toLowerCase().includes(lower)) {
+        const gClean = cleanSearchKey(gNick);
+        if (
+          lower.includes(gNick.toLowerCase()) ||
+          gNick.toLowerCase().includes(lower) ||
+          (clean.length >= 3 && clean === gClean)
+        ) {
           return saves;
         }
       }
