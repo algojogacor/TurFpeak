@@ -1,5 +1,29 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-21] Sesi Operasional VM: Pause Turnamen ke DRAW_READY Pasca-Draw (Task: flash-peak-tms-pause-draw-ready-v1)
+
+### Konteks Sesi
+Pengundian grup (`!draw`) untuk turnamen `Gojiha Cup S1` telah sukses dilaksanakan oleh Arya. Sesuai aturan sistem, command `!draw` mentransisikan status turnamen menjadi `ACTIVE`. Namun Arya menghendaki pertandingan baru dimulai besok dan tidak ingin cutoff harian 19:59 WIB mengevaluasi Double Walkover (D-031) pada sisa malam ini atau sebelum turnamen resmi dimulai besok.
+
+### Langkah & Perubahan yang Dieksekusi
+1. **Pengecekan Status Turnamen & Data Pasca-Draw di VM**:
+   - Status sebelum perubahan: `ACTIVE` (ID: `14ec8b3d-e3b1-41d6-8af2-1b23734d3ff3`, 16 tim terbagi ke Grup A-D, 24 fixtures fase grup terbentuk).
+2. **Eksekusi Transisi Status**:
+   - Menjalankan update status database di VM (`forfh`):
+     `UPDATE tournaments SET status = 'DRAW_READY', updated_at = <now_iso> WHERE id = '14ec8b3d-e3b1-41d6-8af2-1b23734d3ff3'`
+   - Status baru: `DRAW_READY`.
+3. **Verifikasi Efek Operasional**:
+   - `MatchdayService` hanya memproses turnamen dengan `status = 'ACTIVE'`, sehingga:
+     - Cutoff 19:59 WIB harian menjadi no-op.
+     - Pengingat otomatis (17:00 dan 18:59 WIB) tidak akan tertrigger.
+   - Seluruh data grup, 24 fixtures, klasemen, tim, dan delegasi tetap utuh dan aman.
+
+### Bukti & Verifikasi Empiris
+- **Status Sebelum**: `Status: ACTIVE`
+- **Status Sesudah**: `Status: DRAW_READY` (diperbarui di `local.sqlite` pada `2026-11-21T14:25:55Z`).
+
+---
+
 ## [2026-11-21] Sesi Follow-up 3: Fix Blocker & Quick-Wins dari Second-Opinion Review PR #8 (Task: flash-peak-tms-followup-roundcode-blocker-v1, Branch: audit/verify-fix-v1)
 
 ### Konteks Sesi
