@@ -48,3 +48,16 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Backup files (manual hotfix / pre-deploy backups)
+*.env.backup-*
+.env.backup-*
+local.sqlite.backup-*
+local.sqlite.bak.*
+auth_state.backup-*/
+src/**/*.bak.*
+# Stray files from CLI typos
+--apply
+archives/
+# Runtime log archives (per-day snapshots)
+archives/

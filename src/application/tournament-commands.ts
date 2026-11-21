@@ -366,26 +366,70 @@ export function registerTournamentCommands(
     requiredRole: 'ANY',
     allowedInDm: true,
     allowedInGroup: true,
-    description: 'Menampilkan tabel klasemen turnamen terkini per grup (contoh: !standings A)',
+    description: 'Klasemen per grup atau semua grup (contoh: !standings, !standings A, !standings grup B)',
     handler: async (ctx: CommandContext) => {
-      const groupCode = ctx.args[0]?.toUpperCase() || 'A';
-      const res = await db.execute({
-        sql: `SELECT g.id, gd.tournament_id
+      // FIX-STANDINGS-ROBUST (21 Nov 2026): accept variants
+      //   !standings            → all groups
+      //   !standings C          → single letter (original)
+      //   !standings grup C     → "grup" + letter (split by whitespace)
+      //   !standings Group A    → mixed case prefix word
+      //   !standings GRUP B     → all caps prefix
+      //   !standings grupC      → prefix glued to letter
+      const PREFIX_RE = /^(?:GRUP|GROUP|GRUB|KELAS)\s*/i;
+      let groupArg = ctx.args[0]?.toUpperCase().trim() || '';
+      if (groupArg) {
+        const stripped = groupArg.replace(PREFIX_RE, '').trim();
+        if (stripped) {
+          // "grupC" → "C"; "Group A" → "A" (after upper+strip)
+          groupArg = stripped;
+        } else {
+          // args[0] was purely the prefix word (e.g. "GRUP"); take args[1]
+          groupArg = ctx.args[1]?.toUpperCase().trim() || '';
+        }
+      }
+      // FIX-STANDINGS-ALL (21 Nov 2026): tanpa argumen → tampilkan semua grup.
+      const allGroupsRes = await db.execute({
+        sql: `SELECT g.id, g.group_code, gd.tournament_id
               FROM groups g
               JOIN group_draws gd ON g.draw_id = gd.id
-              WHERE UPPER(g.group_code) = ?
-              LIMIT 1`,
-        args: [groupCode],
+              ORDER BY g.group_code ASC`,
       });
 
-      if (res.rows.length === 0) {
-        return { success: false, responseText: `Grup ${groupCode} tidak ditemukan.` };
+      if (allGroupsRes.rows.length === 0) {
+        return { success: false, responseText: '⚠️ Belum ada grup yang dibuat. Jalankan *!draw* terlebih dahulu.' };
       }
 
-      const groupId = String(res.rows[0][0]);
-      const tournamentId = String(res.rows[0][1]);
-      const standingsText = await deps.getStandingsTable(tournamentId, groupId, groupCode);
-      return { success: true, responseText: standingsText };
+      // Single-group mode: !standings A / !standings B / etc.
+      if (groupArg) {
+        const row = allGroupsRes.rows.find((r: any) => String(r.group_code).toUpperCase() === groupArg);
+        if (!row) {
+          const available = allGroupsRes.rows.map((r: any) => String(r.group_code)).join(', ');
+          return { success: false, responseText: `⚠️ Grup *${groupArg}* tidak ditemukan. Grup tersedia: ${available}` };
+        }
+        const groupId = String(row.id);
+        const tournamentId = String(row.tournament_id);
+        const standingsText = await deps.getStandingsTable(tournamentId, groupId, groupArg);
+        return { success: true, responseText: standingsText };
+      }
+
+      // All-groups mode: !standings (tanpa argumen) → gabungan semua grup.
+      const tournamentId = String(allGroupsRes.rows[0].tournament_id);
+      const tournamentNameRow = await db.execute({
+        sql: 'SELECT name FROM tournaments WHERE id = ?',
+        args: [tournamentId],
+      });
+      const tournamentName = String(tournamentNameRow.rows[0]?.name || 'Turnamen');
+      const blocks: string[] = [];
+      blocks.push(`📊 *KLASEMEN ${tournamentName.toUpperCase()} — SEMUA GRUP*`);
+      blocks.push('──────────────────────────────');
+      for (const r of allGroupsRes.rows) {
+        const gid = String(r.id);
+        const gcode = String(r.group_code);
+        const oneBlock = await deps.getStandingsTable(tournamentId, gid, gcode);
+        blocks.push(oneBlock);
+        blocks.push('');
+      }
+      return { success: true, responseText: blocks.join('\n') };
     },
   });
 
@@ -1884,16 +1928,39 @@ export function registerTournamentCommands(
 
     if (!parsed.isRegistration) {
       // VIEW ROSTER
-      const targetTeamName = (parsed.teamName || raw).replace(/^(?:tim|team|lihat|cek)\s+/i, '').trim();
-      const teamRes = await db.execute({
+      // FIX-ROSTER-VIEW (21 Nov 2026): exact-match-first, fallback strip prefix.
+      // Bug lama: regex strip 'Team ' dari 'Team Zodiac' → cari 'zodiac' → 0 rows.
+      // Sekarang: coba exact match dulu; kalau gagal baru strip prefix umum.
+      const rawTeamInput = (parsed.teamName || raw).trim();
+      const stripPrefix = (s: string) => s.replace(/^(?:tim|team|lihat|cek)\s+/i, '').trim();
+      let teamRes = await db.execute({
         sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
-        args: [tournamentId, targetTeamName],
+        args: [tournamentId, rawTeamInput],
       });
+      let targetTeamName = rawTeamInput;
+      if (teamRes.rows.length === 0) {
+        const stripped = stripPrefix(rawTeamInput);
+        if (stripped !== rawTeamInput) {
+          teamRes = await db.execute({
+            sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
+            args: [tournamentId, stripped],
+          });
+          targetTeamName = stripped;
+        }
+      }
+      // Also try LIKE fallback for fuzzy match (e.g. 'zodiac' → 'Team Zodiac')
+      if (teamRes.rows.length === 0) {
+        teamRes = await db.execute({
+          sql: `SELECT id, team_name, delegate_id FROM teams WHERE tournament_id = ? AND LOWER(team_name) LIKE LOWER(?) ORDER BY LENGTH(team_name) ASC LIMIT 1`,
+          args: [tournamentId, `%${rawTeamInput}%`],
+        });
+        targetTeamName = rawTeamInput;
+      }
 
       if (teamRes.rows.length === 0) {
         return {
           success: false,
-          responseText: `⚠️ Tim *${targetTeamName}* tidak ditemukan di turnamen *${tournamentName}*.`,
+          responseText: `⚠️ Tim *${rawTeamInput}* tidak ditemukan di turnamen *${tournamentName}*.`,
         };
       }
 
