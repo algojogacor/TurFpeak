@@ -270,7 +270,14 @@ export class FlashPeakApp {
     // 0. Interactive knockout per-game evidence (FIX2-KO-002):
     // a photo captioned "!kogame" runs the dedicated KO pipeline and never
     // enters the BO1 group-stage debounce/evidence flow.
-    if (rawMsgText.toLowerCase().startsWith('!kogame')) {
+    // AUDIT-VERIFY-T9: TEXT-ONLY '!kogame ...' messages (no media) now fall
+    // through to the command router, whose registered 'kogame' handler
+    // implements the documented status lookup ('!kogame <fixture_id>').
+    // Previously every '!kogame' text got the canned "send it as a photo"
+    // reply and the status feature was unreachable.
+    const isKoGameCaption = rawMsgText.toLowerCase().startsWith('!kogame');
+    const hasPhoto = Boolean(mediaBuffer);
+    if (isKoGameCaption && hasPhoto) {
       const fixtureArg = rawMsgText.slice('!kogame'.length).trim().split(/\s+/)[0] || '';
       const koRes = await this.handleKoGameEvidenceMessage(message, mediaBuffer, fixtureArg);
       if (koRes.handled) {
