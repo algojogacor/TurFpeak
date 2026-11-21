@@ -87,7 +87,15 @@ export async function handleReportCorrection(
     };
   }
 
-  const resolved = await identityResolver.resolveIdentity(message.sender_raw_address);
+  // AUDIT-VERIFY (new-bug #2, fixed 21 Nov 2026): pass the chat context like
+  // the CommandRouter does. resolveIdentity currently ignores its second
+  // parameter (_sourceChatId), so this is a no-op today — but it keeps the
+  // call-site consistent with the router so any future per-chat narrowing or
+  // auditing in resolveIdentity applies identically here.
+  const resolved = await identityResolver.resolveIdentity(
+    message.sender_raw_address,
+    message.chat_id
+  );
   const senderId = resolved?.delegate?.id || message.sender_normalized_address;
 
   // Ensure inbound message is recorded in database
