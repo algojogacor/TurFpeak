@@ -230,7 +230,10 @@ describe('Fase 6: WhatsApp Message Formatters & Failure Handlers', () => {
       expect(announcement).toContain('👑 *PassMaster* (Team 1)');
       expect(announcement).toContain('Total: *6 Assist*');
       expect(announcement).toContain('🛡️ *BEST DEFENDER*');
-      expect(announcement).toContain('🧤 *BEST WINNING GOALKEEPER*');
+      expect(announcement).toContain('🧤 *BEST WINNING GOALKEEPER* (Pertahanan / Kiper Tim Terbaik)');
+      expect(announcement).toContain('👑 Tim: *Team 1*');
+      expect(announcement).toContain('🧤 Kiper Utama: *Wall*');
+      expect(announcement).toContain('Penghargaan kiper dianugerahkan kepada Tim mewakili seluruh rotasi kiper');
     });
   });
 

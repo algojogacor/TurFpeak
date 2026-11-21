@@ -1163,6 +1163,44 @@ Seluruh 12 skrip pengetesan independen pada direktori `audit-artifacts/` dan ful
 - **Durasi**: ~7.8s
 - **Regresi / Breaking Changes**: 0
 
+---
+
+## 2026-11-22 - Session: Best Goalkeeper Award Team Attribution (Decision D-036)
+
+### Purpose
+Mengalihkan atribusi penghargaan kiper terbaik (*Best Winning Goalkeeper*) pada pengumuman `!awards` agar secara resmi dianugerahkan kepada **Tim** (mewakili seluruh rotasi kiper di tim tersebut), bukan perseorangan kaku, dikarenakan game Flash Peak tidak memunculkan nickname/UID pada layar detail pertahanan kiper.
+
+### Concrete Changes
+1. **`src/whatsapp/formatters.ts`**:
+   - Memperluas fungsi pembantu `formatAwardSection` dengan opsi `options?: { isTeamAward?: boolean; teamAwardNote?: string }`.
+   - Mengalihkan output `bestWinningGoalkeeper` ke format Tim:
+     - Mahkota (`👑`) diarahkan ke `Tim: *<teamName>*`.
+     - Menyertakan catatan `🧤 Kiper Utama: *<nicknameRaw>*` dan total saves.
+     - Menyertakan disclaimer: `_(Penghargaan kiper dianugerahkan kepada Tim mewakili seluruh rotasi kiper)_`.
+     - Mendukung tampilan tie/seri tim bersama (`🤝 *Tim Pemenang Bersama*`).
+2. **`tests/unit/formatters.test.ts`**:
+   - Menambahkan asersi verifikasi output bahwa pengumuman `formatAwardsAnnouncement` memuat penobatan tim (`👑 Tim: *Team 1*`), kiper utama terdaftar, dan catatan representasi rotasi kiper.
+3. **`flash-peak-tms/DECISIONS.md`**:
+   - Menambahkan catatan resmi **Decision D-036: Best Goalkeeper Award Team Attribution** tertanggal 22 November 2026.
+
+### Empirical Verification
+- **Vitest**:
+  ```bash
+  npx vitest run tests/unit/formatters.test.ts tests/integration/full_flow.test.ts
+  ```
+  Output: `Test Files: 2 passed (2), Tests: 12 passed (12)`.
+- **TypeScript Build**:
+  ```bash
+  npm run build
+  ```
+  Output: `tsc` exit code 0 tanpa error.
+- **Full Test Suite**:
+  ```bash
+  npm test
+  ```
+  Output: `Test Files: 20 passed (20), Tests: 258 passed (258)`.
+
+
 
 
 

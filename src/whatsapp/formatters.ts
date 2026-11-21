@@ -329,12 +329,16 @@ export function formatAwardsAnnouncement(
   lines.push(formatAwardSection('🛡️ *BEST DEFENDER* (Pemain Bertahan Terbaik)', awards.bestDefender, 'Defense'));
   lines.push('');
 
-  // 4. Best Winning Goalkeeper
+  // 4. Best Winning Goalkeeper (Team Award representing GK saves)
   lines.push(
     formatAwardSection(
-      '🧤 *BEST WINNING GOALKEEPER* (Kiper Terbaik Laga Menang)',
+      '🧤 *BEST WINNING GOALKEEPER* (Pertahanan / Kiper Tim Terbaik)',
       awards.bestWinningGoalkeeper,
-      'Saves'
+      'Saves',
+      {
+        isTeamAward: true,
+        teamAwardNote: 'Penghargaan kiper dianugerahkan kepada Tim mewakili seluruh rotasi kiper',
+      }
     )
   );
 
@@ -345,7 +349,17 @@ export function formatAwardsAnnouncement(
   return lines.join('\n');
 }
 
-function formatAwardSection(header: string, award: AwardDetail, metricUnit: string): string {
+interface AwardFormatOptions {
+  isTeamAward?: boolean;
+  teamAwardNote?: string;
+}
+
+function formatAwardSection(
+  header: string,
+  award: AwardDetail,
+  metricUnit: string,
+  options?: AwardFormatOptions
+): string {
   const lines: string[] = [header];
 
   if (award.winners.length === 0) {
@@ -353,15 +367,32 @@ function formatAwardSection(header: string, award: AwardDetail, metricUnit: stri
     return lines.join('\n');
   }
 
-  if (award.isTie) {
-    lines.push(`  🤝 *Pemenang Bersama (Co-Winners) — ${award.winners[0].metricValue} ${metricUnit}:*`);
-    for (const w of award.winners) {
-      lines.push(`  • *${w.nicknameRaw}* (${w.teamName}) — ${w.gamesPlayed} laga`);
+  if (options?.isTeamAward) {
+    if (award.isTie) {
+      lines.push(`  🤝 *Tim Pemenang Bersama (Co-Winners) — ${award.winners[0].metricValue} ${metricUnit}:*`);
+      for (const w of award.winners) {
+        lines.push(`  • 🛡️ *${w.teamName}* (Kiper: ${w.nicknameRaw}) — ${w.gamesPlayed} laga`);
+      }
+    } else {
+      const w = award.winners[0];
+      lines.push(`  👑 Tim: *${w.teamName}*`);
+      lines.push(`  🧤 Kiper Utama: *${w.nicknameRaw}*`);
+      lines.push(`  Total: *${w.metricValue} ${metricUnit}* (${w.gamesPlayed} laga dimainkan)`);
+    }
+    if (options.teamAwardNote) {
+      lines.push(`  _(${options.teamAwardNote})_`);
     }
   } else {
-    const w = award.winners[0];
-    lines.push(`  👑 *${w.nicknameRaw}* (${w.teamName})`);
-    lines.push(`  Total: *${w.metricValue} ${metricUnit}* (${w.gamesPlayed} laga dimainkan)`);
+    if (award.isTie) {
+      lines.push(`  🤝 *Pemenang Bersama (Co-Winners) — ${award.winners[0].metricValue} ${metricUnit}:*`);
+      for (const w of award.winners) {
+        lines.push(`  • *${w.nicknameRaw}* (${w.teamName}) — ${w.gamesPlayed} laga`);
+      }
+    } else {
+      const w = award.winners[0];
+      lines.push(`  👑 *${w.nicknameRaw}* (${w.teamName})`);
+      lines.push(`  Total: *${w.metricValue} ${metricUnit}* (${w.gamesPlayed} laga dimainkan)`);
+    }
   }
 
   if (award.isOverride) {
