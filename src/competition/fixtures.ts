@@ -290,7 +290,7 @@ export async function generateKnockoutFixtures(
   db: Client,
   tournamentId: string,
   qualifiers: KnockoutQualifier[]
-): Promise<{ fixtures: Fixture[]; series: Series[] }> {
+): Promise<{ fixtures: Fixture[]; series: Series[]; byeTeamId: string | null }> {
   if (qualifiers.length < 2) {
     throw new Error('Minimal 2 tim yang lolos untuk membentuk bracket Knockout');
   }
@@ -301,15 +301,22 @@ export async function generateKnockoutFixtures(
     throw new Error('Bracket tidak valid: ada tim yang dipasangkan dengan dirinya sendiri (kualifikasi duplikat).');
   }
 
-  // Separate group winners and runners-up
-  const winners = qualifiers.filter((q) => q.group_rank === 1);
-  const runnersUp = qualifiers.filter((q) => q.group_rank === 2);
-
-  if (winners.length !== runnersUp.length) {
-    throw new Error('Jumlah juara grup (rank 1) harus sama dengan runner-up grup (rank 2)');
+  // AUDIT-VERIFY-T2 (21 Nov 2026): an ODD number of survivors (e.g. 3 after a
+  // D-032 double-loss bye in the previous round) used to make
+  // winners.length !== runnersUp.length and throw, deadlocking the bracket.
+  // Instead, grant a BYE to the LAST qualifier: it advances without playing,
+  // and the remaining even pool is paired (adjacent rotation when balanced,
+  // sequential pairing otherwise). The bye recipient is reported via the
+  // return value so the group announcement can explain it.
+  let byeQualifier: KnockoutQualifier | null = null;
+  if (qualifiers.length % 2 === 1) {
+    byeQualifier = qualifiers[qualifiers.length - 1]!;
   }
+  const pool = byeQualifier ? qualifiers.slice(0, -1) : qualifiers;
 
-  const numGroups = winners.length;
+  const winners = pool.filter((q) => q.group_rank === 1);
+  const runnersUp = pool.filter((q) => q.group_rank === 2);
+
   const now: ISODateString = new Date().toISOString();
   const createdFixtures: Fixture[] = [];
   const createdSeries: Series[] = [];
@@ -319,15 +326,21 @@ export async function generateKnockoutFixtures(
   // Winner is assigned left side (host recommendation)
   const firstRoundMatches: { team_a: KnockoutQualifier; team_b: KnockoutQualifier }[] = [];
 
-  for (let i = 0; i < numGroups; i++) {
-    const winner = winners[i]!;
-    const runnerUpIndex = (i + 1) % numGroups;
-    const runnerUp = runnersUp[runnerUpIndex]!;
-
-    firstRoundMatches.push({
-      team_a: winner,
-      team_b: runnerUp,
-    });
+  if (winners.length === runnersUp.length && winners.length > 0) {
+    const numGroups = winners.length;
+    for (let i = 0; i < numGroups; i++) {
+      const winner = winners[i]!;
+      const runnerUpIndex = (i + 1) % numGroups;
+      const runnerUp = runnersUp[runnerUpIndex]!;
+      firstRoundMatches.push({ team_a: winner, team_b: runnerUp });
+    }
+  } else {
+    // Unbalanced sides (odd survivor pool after removing the bye): pair the
+    // even pool sequentially in qualifier order. Guarantees every team plays
+    // exactly once and no self-match.
+    for (let i = 0; i + 1 < pool.length; i += 2) {
+      firstRoundMatches.push({ team_a: pool[i]!, team_b: pool[i + 1]! });
+    }
   }
 
   let roundCode = 'ROUND_OF_16';
@@ -434,7 +447,9 @@ export async function generateKnockoutFixtures(
     createdSeries.push(s);
   }
 
-  return { fixtures: createdFixtures, series: createdSeries };
+  // AUDIT-VERIFY-T2: report the bye recipient (if any) so the caller can
+  // announce WHO advanced without playing and WHY (odd survivor pool).
+  return { fixtures: createdFixtures, series: createdSeries, byeTeamId: byeQualifier?.team_id ?? null };
 }
 
 /**

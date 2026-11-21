@@ -3040,7 +3040,7 @@ export function registerTournamentCommands(
           });
         }
 
-        const { fixtures: nextFixtures, series: nextSeries } = await generateKnockoutFixtures(
+        const { fixtures: nextFixtures, series: nextSeries, byeTeamId: nextRoundByeTeamId } = await generateKnockoutFixtures(
           db,
           tournamentId,
           nextQualifiers
@@ -3100,7 +3100,16 @@ export function registerTournamentCommands(
         });
 
         // Append explicit bye notices so the group sees WHO advanced without
-        // playing and WHY (double-loss pairing, D-032 revised).
+        // playing and WHY (double-loss pairing, D-032 revised — and the odd-
+        // survivor pool bye from AUDIT-VERIFY-T2).
+        if (nextRoundByeTeamId) {
+          const byeName = winners.find((w) => w.team_id === nextRoundByeTeamId)?.team_name || null;
+          if (byeName) {
+            byeMessages.push(
+              `➡️ *BYE OTOMATIS:* *${byeName}* lolos ke ronde berikutnya tanpa bertanding — jumlah tim yang lolos ganjil setelah hasil ronde ini, sehingga satu tim mendapat bye (D-032 revisi).`
+            );
+          }
+        }
         const fullAnnouncement = byeMessages.length > 0
           ? `${announcement}\n\n${byeMessages.join('\n')}`
           : announcement;
