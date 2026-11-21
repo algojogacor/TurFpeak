@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
+import { recalculateAndPersistGroupStandings } from './standings.js';
 import type {
   Fixture,
   Series,
@@ -456,6 +457,15 @@ export async function generateKnockoutFixtures(
  * Derives Knockout Stage qualifiers from final persisted group standings:
  * exactly the top 2 teams of every group (O-004, FR-COMP-011).
  * Rejects when any group has unresolved tied ranks at the qualifying cut.
+ *
+ * AUDIT-VERIFY-T15 (21 Nov 2026): ranking is computed by the same engine
+ * !standings uses (computeGroupStandings via recalculateAndPersistGroupStandings).
+ * The old raw SQL ordered by points/GD/GF only, which diverged from
+ * !standings whenever head-to-head resolved a tie (H2H GD/GF are not
+ * persisted in the standings table, so SQL alone could never replicate it)
+ * and could qualify a different runner-up than the table shown to
+ * participants. A COMPLETE tie at the cut (incl. head-to-head) still throws
+ * and asks the organizer to resolve it manually.
  */
 export async function deriveKnockoutQualifiers(
   db: Client,
@@ -482,46 +492,48 @@ export async function deriveKnockoutQualifiers(
     const groupId = String((gRow as Record<string, unknown>).id);
     const groupCode = String((gRow as Record<string, unknown>).group_code);
 
-    const standingsRes = await db.execute({
-      sql: `
-        SELECT s.team_id, t.team_name, s.points, s.goal_difference, s.goals_for
-        FROM standings s
-        JOIN teams t ON s.team_id = t.id
-        WHERE s.group_id = ?
-        ORDER BY s.points DESC, s.goal_difference DESC, s.goals_for DESC
-      `,
-      args: [groupId],
-    });
+    // AUDIT-VERIFY-T15: rank via the SAME engine !standings uses. The old
+    // raw-SQL ordering (points/GD/GF only) diverged from computeGroupStandings
+    // whenever a tie was resolved by head-to-head (H2H points, and H2H GD/GF
+    // which are not even persisted in the standings table), so the bracket
+    // could qualify a different runner-up than the table shown to
+    // participants. Recomputing here guarantees identical ordering and also
+    // refreshes the persisted projection.
+    const standings = await recalculateAndPersistGroupStandings(db, tournamentId, groupId);
 
-    if (standingsRes.rows.length < 2) {
+    if (standings.length < 2) {
       throw new Error(
         `Klasemen grup ${groupCode} belum lengkap untuk menentukan kualifikasi knockout.`
       );
     }
 
-    const first = standingsRes.rows[0] as unknown as Record<string, unknown>;
-    const second = standingsRes.rows[1] as unknown as Record<string, unknown>;
+    const first = standings[0]!;
+    const second = standings[1]!;
 
-    const firstKey = `${Number(first.points)}-${Number(first.goal_difference)}-${Number(first.goals_for)}`;
-    const secondKey = `${Number(second.points)}-${Number(second.goal_difference)}-${Number(second.goals_for)}`;
+    // Policy guard kept from the original implementation: a COMPLETE tie at
+    // the qualifying cut (points, GD, GF, and head-to-head all equal — the
+    // table order would then rest on team-name alphabetical order only) must
+    // be resolved by the organizer, not silently by name order.
+    const firstKey = `${first.points}-${first.goal_difference}-${first.goals_for}-${first.head_to_head_points}`;
+    const secondKey = `${second.points}-${second.goal_difference}-${second.goals_for}-${second.head_to_head_points}`;
 
     if (firstKey === secondKey) {
       throw new Error(
-        `Peringkat 1 dan 2 di grup ${groupCode} masih seri penuh (poin, selisih gol, gol dicetak). ` +
+        `Peringkat 1 dan 2 di grup ${groupCode} masih seri penuh (poin, selisih gol, gol dicetak, head-to-head). ` +
         'Tidak dapat menentukan kualifikasi knockout secara adil. ' +
         'Panitia harus menyelesaikan seri tersebut terlebih dahulu (misal via pertandingan tambahan atau keputusan manual).'
       );
     }
 
     qualifiers.push({
-      team_id: String(first.team_id),
-      team_name: String(first.team_name),
+      team_id: first.team_id,
+      team_name: first.team_name,
       group_code: groupCode,
       group_rank: 1,
     });
     qualifiers.push({
-      team_id: String(second.team_id),
-      team_name: String(second.team_name),
+      team_id: second.team_id,
+      team_name: second.team_name,
       group_code: groupCode,
       group_rank: 2,
     });
