@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
-import { handleGroupDoubleWalkover } from '../competition/walkover.js';
+import { handleGroupDoubleWalkover, handleKnockoutDoubleRoomCardFailure } from '../competition/walkover.js';
 import { recalculateAndPersistGroupStandings } from '../competition/standings.js';
 import type { WhatsAppSender } from '../whatsapp/sender.js';
 
@@ -24,8 +24,10 @@ export interface MatchdayServiceDeps {
 export interface MatchdayFixtureItem {
   id: string;
   roundCode: string;
-  groupId: string;
-  groupCode: string;
+  /** 'GROUP' or 'KNOCKOUT' (AUDIT-VERIFY-T17: knockout fixtures must be visible to the cutoff). */
+  stage: string;
+  groupId: string | null;
+  groupCode: string | null;
   teamAName: string;
   teamBName: string;
   hostName: string;
@@ -193,6 +195,11 @@ export class MatchdayService {
 
   /**
    * Retrieves fixtures for a specific round with delegate WhatsApp identities.
+   *
+   * AUDIT-VERIFY-T17 (21 Nov 2026): the INNER JOIN on groups silently dropped
+   * every KNOCKOUT fixture (group_id NULL) — the 19:59 cutoff was a no-op for
+   * the knockout phase. The join is now a LEFT JOIN and the stage is carried
+   * through so the cutoff can dispatch per-stage.
    */
   public async getRoundFixturesWithDelegates(
     tournamentId: string,
@@ -200,9 +207,10 @@ export class MatchdayService {
   ): Promise<MatchdayFixtureItem[]> {
     const res = await this.db.execute({
       sql: `
-        SELECT 
+        SELECT
           f.id,
           f.round_code,
+          f.stage,
           f.group_id,
           g.group_code,
           ta.team_name as team_a_name,
@@ -212,12 +220,12 @@ export class MatchdayService {
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address,
           f.status
         FROM fixtures f
-        JOIN groups g ON f.group_id = g.id
+        LEFT JOIN groups g ON f.group_id = g.id
         JOIN teams ta ON f.team_a_id = ta.id
         JOIN teams tb ON f.team_b_id = tb.id
         LEFT JOIN teams tl ON f.left_side_team_id = tl.id
         WHERE f.tournament_id = ? AND f.round_code = ?
-        ORDER BY g.group_code ASC, f.id ASC
+        ORDER BY CASE WHEN f.stage = 'GROUP' THEN 0 ELSE 1 END, g.group_code ASC, f.id ASC
       `,
       args: [tournamentId, roundCode],
     });
@@ -243,8 +251,9 @@ export class MatchdayService {
       return {
         id: String(r.id),
         roundCode: String(r.round_code),
-        groupId: String(r.group_id),
-        groupCode: String(r.group_code),
+        stage: String(r.stage),
+        groupId: r.group_id ? String(r.group_id) : null,
+        groupCode: r.group_code ? String(r.group_code) : null,
         teamAName: String(r.team_a_name),
         teamBName: String(r.team_b_name),
         hostName: String(r.host_name),
@@ -298,15 +307,33 @@ export class MatchdayService {
 
     const expiredFixtures: MatchdayFixtureItem[] = [];
     const modifiedGroupIds = new Set<string>();
+    const expiredKoFixtures: MatchdayFixtureItem[] = [];
 
     for (const pf of pendingFixtures) {
+      // AUDIT-VERIFY-T17: dispatch per stage. GROUP fixtures keep the D-031
+      // double-walkover (0 pts each + standings recalc). KNOCKOUT fixtures use
+      // the D-032 double-loss handler: the series closes with no winner and
+      // the fixture is marked WALKOVER, which is exactly the signal
+      // !startknockout uses to grant the pairing partner a bye into the next
+      // round (the T2 odd-survivor handling already copes with the resulting
+      // uneven pool).
+      if (pf.stage === 'KNOCKOUT') {
+        await handleKnockoutDoubleRoomCardFailure(
+          this.db,
+          pf.id,
+          'Batas waktu matchday 19:59 WIB habis tanpa pertandingan knockout dimainkan (D-032)'
+        );
+        expiredKoFixtures.push(pf);
+        expiredFixtures.push(pf);
+        continue;
+      }
       await handleGroupDoubleWalkover(
         this.db,
         pf.id,
         'DOUBLE_ABSENT',
         'Batas waktu matchday 19:59 WIB habis tanpa pertandingan dimainkan (D-031)'
       );
-      modifiedGroupIds.add(pf.groupId);
+      if (pf.groupId) modifiedGroupIds.add(pf.groupId);
       expiredFixtures.push(pf);
     }
 
@@ -351,12 +378,22 @@ export class MatchdayService {
       lines.push(`🏆 *${tournamentName}* — *${roundLabel}*`);
       lines.push(``);
       lines.push(`Pertandingan berikut tidak dimainkan hingga batas waktu:`);
-      for (const ef of expiredFixtures) {
-        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}* (Grup ${ef.groupCode})`);
+      const expiredGroupFixtures = expiredFixtures.filter((f) => f.stage !== 'KNOCKOUT');
+      for (const ef of expiredGroupFixtures) {
+        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}*${ef.groupCode ? ` (Grup ${ef.groupCode})` : ''}`);
+      }
+      for (const ef of expiredKoFixtures) {
+        lines.push(`• *${ef.teamAName}* vs *${ef.teamBName}* (Knockout)`);
       }
       lines.push(``);
-      lines.push(`📌 *Regulasi Turnamen (D-031):*`);
-      lines.push(`Kedua tim dinyatakan tidak hadir (Double Walkover). Skor dicatat 0–0 dan masing-masing tim mendapatkan *0 poin*.`);
+      if (expiredGroupFixtures.length > 0) {
+        lines.push(`📌 *Regulasi Turnamen (D-031):*`);
+        lines.push(`Kedua tim dinyatakan tidak hadir (Double Walkover). Skor dicatat 0–0 dan masing-masing tim mendapatkan *0 poin*.`);
+      }
+      if (expiredKoFixtures.length > 0) {
+        lines.push(`📌 *Regulasi Knockout (D-032):*`);
+        lines.push(`Series di atas dinyatakan *KALAH GANDA* (tidak ada pemenang). Pasangan bracket-nya akan mendapat *bye otomatis* ke ronde berikutnya saat Panitia menjalankan *!startknockout*.`);
+      }
       lines.push(`──────────────────────────────`);
     }
 
