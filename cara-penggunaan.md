@@ -525,7 +525,7 @@ Panitia ketik `!startknockout` lagi → bot membentuk pasangan ronde berikutnya 
 ## Kalau Ada Masalah di Knockout
 
 - **Foto game dobel (kebal/terkirim ulang):** bot membalas "foto ini duplikat hasil game ke-N yang sudah tercatat — tidak dihitung sebagai game baru". Aman, tidak ada hitungan ganda.
-- **Foto beda skor untuk game yang sudah tercatat (bentrok):** bot menyimpan buktinya tapi **tidak mencatat otomatis** — sistem menandainya butuh review, dan panitia menyelesaikan lewat `!kores`.
+- **Foto beda skor / urutan kacau:** sistem selalu mengisi slot game yang benar (slot terbuka pertama), jadi foto tidak pernah "menimpa" hasil yang sudah tercatat. Kalau ada sengketa hasil (mis. skor yang tercatat memang salah), panitia mengoreksinya lewat `!kores` — termasuk mengubah hasil game di series yang sudah selesai.
 - **AI tidak terbaca / tidak terkonfigurasi:** bot membalas menyuruh panitia mencatat lewat `!kores`.
 - **Kedua tim tidak punya kartu room di knockout:** lihat `!roomcard ... habis` di bagian sebelumnya — kalah ganda, lawan pasangannya di ronde berikutnya dapat **bye otomatis** (lolos tanpa bertanding).
 - **Koreksi hasil game oleh panitia** (`!kores`, hanya panitia):
