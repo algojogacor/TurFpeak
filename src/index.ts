@@ -1074,6 +1074,50 @@ export class FlashPeakApp {
         } else {
           lines.push('💡 _Panitia memicu ronde berikutnya dengan *!startknockout* setelah semua series ronde ini selesai._');
         }
+
+        // AI-NATIVE (D-040): engagement hype recap + champion celebration.
+        // Fires AFTER the official result message is built. The recap is a
+        // SEPARATE follow-up message (sent via sender) so the formal result
+        // stays unambiguous. Hype uses ONLY real facts (series score, margin,
+        // round) — AI formats presentation, never invents. Champion celebration
+        // fires only on Grand Final completion. Both silently skip if AI
+        // unavailable (non-critical).
+        if (this.engagement && this.sender) {
+          const hypeFacts = {
+            stage: 'KNOCKOUT' as const,
+            team_a_name: ctxInfo.teamAName,
+            team_b_name: ctxInfo.teamBName,
+            team_a_score: outcome.seriesScore.team_a,
+            team_b_score: outcome.seriesScore.team_b,
+            context_summary: `${ctxInfo.roundCode || 'KO'} ${outcome.seriesFormat}, pemenang ${winnerName}`,
+            form_notes: [],
+          };
+          // Detached — never blocks the reply.
+          Promise.resolve().then(async () => {
+            try {
+              if (ctxInfo.roundCode === 'FINAL' && outcome.winnerTeamId) {
+                // Champion celebration instead of generic hype.
+                const tRes = await this.db.execute({ sql: 'SELECT name FROM tournaments WHERE id = ?', args: [ctxInfo.tournamentId] });
+                const tName = tRes.rows.length > 0 ? String((tRes.rows[0] as unknown as Record<string, unknown>)[0] ?? (tRes.rows[0] as unknown as Record<string, unknown>).name) : 'Turnamen Flash Peak';
+                const celeb = await this.engagement!.buildChampionCelebration({
+                  tournament_name: tName,
+                  champion_team_name: winnerName,
+                  champion_path_summary: `Series final ${outcome.seriesScore.team_a}-${outcome.seriesScore.team_b} (${outcome.seriesFormat})`,
+                });
+                if (celeb && this.sender) {
+                  await this.sender.sendText(message.chat_id, celeb);
+                }
+              } else {
+                const hype = await this.engagement!.buildHypeRecap(hypeFacts);
+                if (hype && this.sender) {
+                  await this.sender.sendText(message.chat_id, hype);
+                }
+              }
+            } catch {
+              // best-effort; never let engagement break the result flow
+            }
+          });
+        }
       } else if (outcome.status === 'SERIES_ALREADY_COMPLETE') {
         lines.push(outcome.message);
       } else if (outcome.status === 'DUPLICATE') {
