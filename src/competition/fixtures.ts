@@ -291,12 +291,105 @@ export async function generateGroupStageFixtures(
 export interface GenerateKnockoutOptions {
   /**
    * BRACKET-REDRAW (Arya decision, 21 Nov 2026): for SECOND-AND-LATER knockout
-   * rounds, the surviving teams are RE-DRAWN (re-paired) each round instead of
+   * rounds the surviving teams are RE-DRAWN (re-paired) each round instead of
    * being mapped from the previous round's fixture order. The shuffle function
    * is injectable so tests can make the draw deterministic; production passes
    * cryptoFisherYates (same primitive as the group-stage !draw).
    */
   shuffle?: <T>(array: T[]) => T[];
+}
+
+/**
+ * Canonical knockout round progression, from widest to narrowest. Round labels
+ * are derived from this order so every round of a tournament gets a UNIQUE,
+ * human-readable label that reflects how far the bracket has progressed.
+ */
+const KNOCKOUT_ROUND_PROGRESSION = [
+  'ROUND_OF_32',
+  'ROUND_OF_16',
+  'QUARTER_FINAL',
+  'SEMI_FINAL',
+  'FINAL',
+] as const;
+
+/**
+ * REVIEW-FIX blocker-roundcode (21 Nov 2026): the round label used to be
+ * derived from the NUMBER OF FIXTURES in the round being created
+ * (1->FINAL, 2->SEMI_FINAL, 4->QUARTER_FINAL, else->ROUND_OF_16). Two
+ * different rounds can produce the same fixture count (e.g. a 6-group
+ * tournament: 12 qualifiers -> 6 fixtures, then 6 winners -> 3 fixtures
+ * labeled ROUND_OF_16 AGAIN by the old default). Because !startknockout
+ * collects winners via `WHERE round_code = <label>`, a repeated label makes
+ * it resurrect teams that were already eliminated — the tournament never
+ * converges to a final.
+ *
+ * The label is now derived from the tournament's ACTUAL round history in the
+ * DB: pick the natural label for this fixture count, but if it (or any
+ * earlier label) is already taken, advance along the progression to the next
+ * unused label; if the whole progression is exhausted (very large brackets,
+ * or repeated odd-survivor rounds), fall back to a unique generic
+ * KNOCKOUT_ROUND_<n> label so labels can never collide.
+ */
+export async function deriveKnockoutRoundCode(
+  db: Client,
+  tournamentId: string,
+  matchCount: number
+): Promise<string> {
+  const usedRes = await db.execute({
+    sql: `SELECT DISTINCT round_code FROM fixtures
+          WHERE tournament_id = ? AND stage = 'KNOCKOUT' AND round_code IS NOT NULL`,
+    args: [tournamentId],
+  });
+  const used = new Set(
+    usedRes.rows.map((r) => String((r as { round_code?: unknown }).round_code ?? ''))
+  );
+
+  // Natural label for this bracket size (what participants expect to read).
+  // REVIEW-FIX: a single-fixture round is ALWAYS the FINAL in this system
+  // (the next round after it ends the tournament), even when earlier rounds
+  // took the "FINAL" slot of the progression — a 2-survivor round is the
+  // last one by definition, so it is named FINAL regardless.
+  const natural =
+    matchCount === 1
+      ? 'FINAL'
+      : matchCount === 2
+        ? 'SEMI_FINAL'
+        : matchCount === 4
+          ? 'QUARTER_FINAL'
+          : matchCount === 8
+            ? 'ROUND_OF_16'
+            : matchCount === 16
+              ? 'ROUND_OF_32'
+              : null;
+
+  // A 1-match round is always the FINAL, never a duplicate label.
+  if (natural === 'FINAL') return 'FINAL';
+
+  const order = [...KNOCKOUT_ROUND_PROGRESSION];
+  // Where to start scanning for a free label:
+  // - With a natural label (standard bracket sizes), start there — a normal
+  //   16-team tournament still reads QF -> SF -> FINAL exactly as before.
+  // - Without one (odd survivor pools, e.g. 3 fixtures), start AFTER the
+  //   DEEPEST label already used, so the label always NARROWS (a round that
+  //   follows ROUND_OF_16 becomes QUARTER_FINAL, never a wider ROUND_OF_32).
+  let startIndex: number;
+  if (natural) {
+    startIndex = order.indexOf(natural);
+  } else {
+    let deepestUsed = -1;
+    for (let i = 0; i < order.length; i++) {
+      if (used.has(order[i]!)) deepestUsed = i;
+    }
+    startIndex = deepestUsed + 1;
+  }
+  for (let i = Math.max(0, startIndex); i < order.length; i++) {
+    if (!used.has(order[i]!)) return order[i]!;
+  }
+
+  // Progression exhausted: unique generic label (never collides).
+  let n = used.size + 1;
+  while (used.has(`KNOCKOUT_ROUND_${n}`)) n++;
+  return `KNOCKOUT_ROUND_${n}`;
 }
 
 export async function generateKnockoutFixtures(
@@ -346,7 +439,18 @@ export async function generateKnockoutFixtures(
 
   if (options?.shuffle) {
     const drawn = options.shuffle(pool);
-    if (drawn.length !== pool.length || new Set(drawn).size !== drawn.length) {
+    // REVIEW-FIX quickwin-shuffle-validation (21 Nov 2026): the old check
+    // used Set identity of the ARRAY ELEMENTS (object references), so a
+    // tampered shuffle that returned NEW objects with swapped/duplicated
+    // team_ids passed validation and could produce a self-match X vs X.
+    // The draw is now validated by team_id multiset: the drawn pool must
+    // contain EXACTLY the same team ids as the pre-draw pool (no team
+    // added, dropped, duplicated, or mutated).
+    const poolIds = pool.map((q) => q.team_id).sort();
+    const drawnIds = drawn.map((q) => q.team_id).sort();
+    const idsMatch =
+      poolIds.length === drawnIds.length && poolIds.every((id, i) => id === drawnIds[i]);
+    if (drawn.length !== pool.length || !idsMatch) {
       throw new Error('Draw ulang bracket tidak valid: hasil shuffle mengubah jumlah/isi tim.');
     }
     pool = drawn;
@@ -373,14 +477,12 @@ export async function generateKnockoutFixtures(
     }
   }
 
-  let roundCode = 'ROUND_OF_16';
-  if (firstRoundMatches.length === 1) {
-    roundCode = 'FINAL';
-  } else if (firstRoundMatches.length === 2) {
-    roundCode = 'SEMI_FINAL';
-  } else if (firstRoundMatches.length === 4) {
-    roundCode = 'QUARTER_FINAL';
-  }
+  // REVIEW-FIX blocker-roundcode (21 Nov 2026): the label is derived from the
+  // tournament's EXISTING knockout rounds (see deriveKnockoutRoundCode), so a
+  // second round with the "default" fixture count can never reuse a label
+  // that is already in the DB (which used to resurrect eliminated teams via
+  // !startknockout's per-label winner collection).
+  const roundCode = await deriveKnockoutRoundCode(db, tournamentId, firstRoundMatches.length);
 
   for (const match of firstRoundMatches) {
     const fixtureId: UUID = randomUUID();
