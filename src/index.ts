@@ -512,11 +512,25 @@ export class FlashPeakApp {
     }
 
     // 1.5 Pending Manual Report Confirmation / Correction Check
+    // AUDIT-VERIFY-T8: a staged manual-report draft is the ORGANIZER's draft
+    // (staged via !manualreport). Plain-text 'ok'/corrections from other group
+    // members used to confirm/modify it (confirmPending hardcodes
+    // is_organizer: true) — now only the organizer may do either. Delegates
+    // can still use !ok/!confirm/!batal which are ORGANIZER-role gated in the
+    // router.
     if (this.manualReportSession.hasPending(message.chat_id, message.sender_normalized_address)) {
       const normText = rawMsgText.toLowerCase();
+      const senderIsOrganizer = this.commandRouter.isSenderOrganizer(message);
       const isConfirm = ['ok', 'ya', 'confirm', '!ok', '!confirm', 'lanjut', 'benar', 'sudah benar'].includes(normText);
 
       if (isConfirm) {
+        if (!senderIsOrganizer) {
+          return {
+            handled: true,
+            type: 'COMMAND',
+            replyText: '⛔ Konfirmasi draf laporan manual hanya dapat dilakukan oleh Panitia (yang membuat drafnya). Ketik *!ok* sebagai Panitia untuk mengonfirmasi.',
+          };
+        }
         const organizerId = message.sender_normalized_address || 'ORGANIZER';
         const confirmRes = await this.manualReportSession.confirmPending(
           this.db,
@@ -542,6 +556,13 @@ export class FlashPeakApp {
         normText.startsWith('b:');
 
       if (isCorrection) {
+        if (!senderIsOrganizer) {
+          return {
+            handled: true,
+            type: 'COMMAND',
+            replyText: '⛔ Koreksi draf laporan manual hanya dapat dilakukan oleh Panitia.',
+          };
+        }
         const organizerId = message.sender_normalized_address || 'ORGANIZER';
         const correctionRes = this.manualReportSession.applyCorrection(
           message.chat_id,
