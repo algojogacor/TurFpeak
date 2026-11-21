@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { recalculateAndPersistGroupStandings } from './standings.js';
+import { cryptoFisherYates } from './draw.js';
 import type {
   Fixture,
   Series,
@@ -287,10 +288,22 @@ export async function generateGroupStageFixtures(
  * Exactly 2 teams qualify per group: 1st place and 2nd place.
  * Knockout format: BO3 before final; BO5 for Grand Final.
  */
+export interface GenerateKnockoutOptions {
+  /**
+   * BRACKET-REDRAW (Arya decision, 21 Nov 2026): for SECOND-AND-LATER knockout
+   * rounds, the surviving teams are RE-DRAWN (re-paired) each round instead of
+   * being mapped from the previous round's fixture order. The shuffle function
+   * is injectable so tests can make the draw deterministic; production passes
+   * cryptoFisherYates (same primitive as the group-stage !draw).
+   */
+  shuffle?: <T>(array: T[]) => T[];
+}
+
 export async function generateKnockoutFixtures(
   db: Client,
   tournamentId: string,
-  qualifiers: KnockoutQualifier[]
+  qualifiers: KnockoutQualifier[],
+  options?: GenerateKnockoutOptions
 ): Promise<{ fixtures: Fixture[]; series: Series[]; byeTeamId: string | null }> {
   if (qualifiers.length < 2) {
     throw new Error('Minimal 2 tim yang lolos untuk membentuk bracket Knockout');
@@ -313,7 +326,7 @@ export async function generateKnockoutFixtures(
   if (qualifiers.length % 2 === 1) {
     byeQualifier = qualifiers[qualifiers.length - 1]!;
   }
-  const pool = byeQualifier ? qualifiers.slice(0, -1) : qualifiers;
+  let pool = byeQualifier ? qualifiers.slice(0, -1) : qualifiers;
 
   const winners = pool.filter((q) => q.group_rank === 1);
   const runnersUp = pool.filter((q) => q.group_rank === 2);
@@ -322,12 +335,29 @@ export async function generateKnockoutFixtures(
   const createdFixtures: Fixture[] = [];
   const createdSeries: Series[] = [];
 
-  // Pair winners against adjacent group runners-up so no same-group rematch in first KO round:
-  // Winner Group i vs Runner-up Group (i + 1) % numGroups
-  // Winner is assigned left side (host recommendation)
   const firstRoundMatches: { team_a: KnockoutQualifier; team_b: KnockoutQualifier }[] = [];
 
-  if (winners.length === runnersUp.length && winners.length > 0) {
+  // BRACKET-REDRAW: when a shuffle function is supplied (later rounds via
+  // !startknockout), the pool is re-drawn: shuffle first, then pair
+  // sequentially. This makes the pairing independent of any previous round's
+  // fixture order/indices. Without a shuffle (first knockout round derived
+  // from group standings), the classic seeding is kept:
+  const hasRealGroupSeeding = winners.length === runnersUp.length && winners.length > 0;
+
+  if (options?.shuffle) {
+    const drawn = options.shuffle(pool);
+    if (drawn.length !== pool.length || new Set(drawn).size !== drawn.length) {
+      throw new Error('Draw ulang bracket tidak valid: hasil shuffle mengubah jumlah/isi tim.');
+    }
+    pool = drawn;
+    for (let i = 0; i + 1 < pool.length; i += 2) {
+      firstRoundMatches.push({ team_a: pool[i]!, team_b: pool[i + 1]! });
+    }
+  } else if (hasRealGroupSeeding) {
+    // First knockout round from group standings: pair winners against adjacent
+    // group runners-up so no same-group rematch (Winner Group i vs Runner-up
+    // Group (i + 1) % numGroups). Winner is assigned left side (host
+    // recommendation).
     const numGroups = winners.length;
     for (let i = 0; i < numGroups; i++) {
       const winner = winners[i]!;
@@ -336,9 +366,8 @@ export async function generateKnockoutFixtures(
       firstRoundMatches.push({ team_a: winner, team_b: runnerUp });
     }
   } else {
-    // Unbalanced sides (odd survivor pool after removing the bye): pair the
-    // even pool sequentially in qualifier order. Guarantees every team plays
-    // exactly once and no self-match.
+    // Unbalanced sides without a shuffle (defensive; !startknockout always
+    // passes one): pair the even pool sequentially in qualifier order.
     for (let i = 0; i + 1 < pool.length; i += 2) {
       firstRoundMatches.push({ team_a: pool[i]!, team_b: pool[i + 1]! });
     }
