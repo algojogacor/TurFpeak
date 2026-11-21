@@ -1,5 +1,105 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: AI-Native Feature Expansion + Hardening + Long-Term Maintainability (Task: flash-peak-tms-ai-native-expansion-v1, Branch: feat/ai-native-expansion-v1)
+
+### Konteks Sesi
+Penyempurnaan menyeluruh proyek Flash Peak TMS (TurFpeak) sesuai brief Arya 22 Nov 2026: hardening, audit fresh-eyes, fitur AI-native baru (!ai/Omak Peak, AI agent admin-eksekusi, !qna/!saveqna, engagement/trivia), dokumentasi sync, maintainability jangka panjang. Branch `feat/ai-native-expansion-v1` dibuat dari master HEAD `86b0c7f` (paling maju — semua 8 PR sebelumnya sudah merged; tidak ada PR terbuka; tidak ada review comment yang belum ditindaklanjuti).
+
+### Pemetaan Awal (verifikasi langsung dari repo + VM)
+- Clone repo, cek semua branch (8 branch selain master, semuanya 0 commit ahead of master — fully merged). `gh pr list --state=all`: 8 PR, semua merged.
+- Baseline: `tsc --noEmit` 0 error; `vitest run` 258/258 PASS (20 file).
+- VM (`forfh`, `20.214.143.187`, user `azureuser`, project `/home/azureuser/flashpeak-tms`) di HEAD master yang sama (tidak ada drift produksi). Tournament `Gojiha Cup S1` status `DRAW_READY` (paused by Arya pasca-draw). 16 tim, 4 grup, 24 fixture, 0 match dimainkan, 0 series, 0 report_versions, 3 audit_events (2 draw + 1 manual roster correction).
+- **Temuan utang teknis #1**: `worklog.md` korupsi duplikasi berlapis — file 1206 baris berisi 5 salinan file lama ter-append berulang (header `# Worklog` muncul 5x). Total sesi unik hanya 18, 4 di antaranya HANYA ada di salinan lama. FIXED: dedupe preserving semua 18 sesi unik (1072 baris final).
+- **Temuan #2**: `inbound_messages` hanya capture pesan evidence/koreksi (bukan semua chat grup). Akibatnya `!saveqna` (butuh last-10 group messages) tidak akan jalan tanpa perluasan capture. FIXED: broad capture semua TEXT message di central group (idempotent via provider_message_key UNIQUE; IMAGE messages untouched — evidence path intact).
+- **Temuan #3**: AGENT.md / AGENTS.md / GEMINI.md adalah 3 copy identik (md5 sama). Dibiarkan (tidak mengganggu; dokumentasi internal).
+- **Observasi**: Arya sudah publik memperkenalkan "Omak Peak" sebagai asisten bot di pesan sambutan grup (2026-11-21 08:25 WIB) — jadi persona `!ai`/Omak Peak sudah dijanjikan ke peserta; fitur ini realisasi-nya.
+
+### Utang Lama Diselesaikan
+1. **worklog.md korupsi duplikasi** — FIXED (lihat di atas).
+2. **Audit log WA terbatas** — FIXED via broad text capture (AI-NATIVE-001 di `src/index.ts`).
+3. Tidak ada PR terbuka / review comment yang belum ditindaklanjuti — verified.
+
+### Fitur Baru Diimplementasikan (D-037..D-040)
+
+**1. `!ai` Omak Peak (D-037)** — `src/application/omak-peak.ts` + `src/ai/prompts/omak-peak.ts` + `omak-peak-context.ts`
+- Read-only AI chat, ANY role, open-scope (turnamen/Flash Peak/casual).
+- Persona "Omak Peak": santai, percaya diri, sesekali nyentil dari sisi konteks Flash Peak; bukan generic-AI tone.
+- Rolling-window rate limit 2/user/60s (`RollingRateLimiter` class, in-memory, per-sender).
+- Context builder: active tournament, fixtures, standings, teams+delegates (contacts shareable per D-037), qna, rules summary — semua read-only.
+- AI-unavailable graceful fallback; rate-limit message dengan retry-after hint.
+- First-use/no-arg: intro message (no state write — read-only invariant preserved).
+
+**2. Organizer AI Agent (D-038)** — `src/application/agent-planner.ts` + `agent-actions.ts`
+- `!agent <instruction>`: AI menyusun rencana dari CLOSED action catalog (reopen_report, override_lock, forfeit_winner, reschedule_fixture, cancel_fixture, set_tournament_status, record_ko_game_score, announce). AI NEVER produces free-form SQL/code.
+- `!agentconfirm <code>`: atomic claim PENDING→EXECUTING; transactional execute (libSQL `db.transaction('write')`); semua aksi all-or-nothing; rollback pada kegagalan.
+- **Idempotency (non-negotiable)**: double-confirm EXPLICITLY rejected dengan prior outcome + timestamp (tidak silently ignored). Atomic claim via `UPDATE status='EXECUTING' WHERE plan_code=? AND status='PENDING' AND expires_at > now` — affected rows = 0 means lost the race.
+- Plan TTL 10 menit; expired/cancelled/cross-organizer semua ditolak eksplisit.
+- Audit trail: `audit_events` per execution (AI_AGENT_PLAN_EXECUTED / AI_AGENT_PLAN_FAILED) dengan before/after JSON + instruction + plan_code.
+- Crash recovery: `recoverInterruptedPlans()` di `FlashPeakApp.start()` mark stale EXECUTING (>5 min) sebagai FAILED.
+- `set_tournament_status` action menggantikan manual SQL UPDATE yang Arya lakukan di VM pasca-draw (worklog 2026-11-21).
+- Test idempotency + transactional rollback + cross-organizer reject + crash recovery: `tests/unit/ai_native.test.ts` (29 tests).
+
+**3. `!qna` / `!saveqna` (D-039)** — `src/application/qna.ts`
+- `!qna` (ANY): list living FAQ.
+- `!saveqna [n]` (ORGANIZER): AI ekstrak Q&A dari last-N (default 10, max 50) group messages. AI decides mana Q&A valid vs obrolan (no rigid heuristic). Dedup via AI marking + UNIQUE(question, answer) constraint. Rate guard 30s cooldown.
+- Bergantung pada broad text capture (AI-NATIVE-001).
+
+**4. Engagement & Hiburan (D-040)** — `src/application/engagement.ts` + `trivia.ts`
+- `EngagementService.buildHypeRecap(facts)`: 2-4 kalimat hype setelah KO series selesai. Facts dari DB (skor, margin, round); AI format presentation only; never invents in-match events. Wired di `handleKoGameEvidenceMessage` (detached follow-up, non-blocking).
+- `EngagementService.buildChampionCelebration(facts)`: pesan juara saat Grand Final selesai. Wired di tempat yang sama.
+- `!trivia`: random verified Flash Peak fact dari curated JSON DB (`src/data/flashpeak-trivia.json`, researched via web at dev time). Runtime AI only rephrases; never invents.
+- `!quiz`: quiz question + delayed answer reveal (15s).
+- `!pantun`: AI-generated pantun (no factual claims; safe to invent).
+- Group-stage report-lock hype: designed tapi belum di-wire ke approval flow (documented as follow-up — wiring ke flow yang well-tested riskier; service siap).
+
+### Foundation Changes
+- **Migration 004** (`migrations/004_ai_native_features.sql`): `ai_action_plans` (plan_code UNIQUE, status CHECK PENDING/EXECUTING/EXECUTED/EXPIRED/CANCELLED/FAILED) + `qna_entries` (UNIQUE question+answer). `provider_usage` CHECK expanded via table rebuild (rename-copy-drop) untuk task_type baru.
+- **AITaskType** (`src/shared/types/index.ts`): +CHAT_OMAK_PEAK, PLAN_AGENT, EXTRACT_QNA, FORMAT_HYPE, GENERATE_PANTUN, REPHRASE_TRIVIA.
+- **Broad text capture** (`src/index.ts` AI-NATIVE-001): semua TEXT message di central group di-capture ke `inbound_messages` (idempotent; IMAGE untouched).
+- **AI-native command registration** (`src/application/ai-native-commands.ts`): module terpisah agar `tournament-commands.ts` (3729 baris) tidak tambah besar. Modularisasi precedent dilanjutkan.
+- **Flash Peak trivia DB** (`src/data/flashpeak-trivia.json`): 21 fakta + 10 quiz, terverifikasi via web research (Google Play com.moco.crgame, flashpeak.net, Threads/@apixelart, duniagames.co.id). Fakta: developer Moco Studios/Garena, 4v4 arcade, 5-min match, third-person single-character, no offside, Free Fire crossover characters (Shirou/Homer/Alvaro/Kelly/Hayato/Moco), 7 ranked tiers, dll.
+
+### Bukti & Verifikasi Empiris
+- `npx tsc --noEmit`: **0 error** (clean).
+- `npx vitest run`: **287/287 PASS** (21 file; 258 lama + 29 baru di `tests/unit/ai_native.test.ts`; 0 regresi).
+- Migration 004 apply test: fresh `:memory:` DB via `runMigrations` → tables `ai_action_plans`, `qna_entries`, `provider_usage` ada; CHECK constraint include `EXECUTING` + `CHAT_OMAK_PEAK`.
+- Test spesifik idempotency: double-confirm rejected dengan "SUDAH DIEKSEKUSI" + "idempotency"; expired plan rejected; cancelled plan rejected; cross-organizer rejected; transactional rollback (2-action plan dengan action ke-2 invalid → tournament status TIDAK berubah, plan FAILED, audit_event AI_AGENT_PLAN_FAILED tercatat); crash recovery (stale EXECUTING >5min → FAILED dengan "Interrupted" reason).
+- Test rate limiter: 2 uses dalam 60s allowed, 3rd rejected dengan retryAfterMs 30-45s; rolling window (oldest expires → 3rd allowed); per-sender独立.
+- Test catalog preview: reopen_report rejects unknown fixture / non-COMPLETED status; forfeit_winner rejects winning_team_id not in fixture; catalog.toPromptJson lists all 8 action_ids.
+- Test qna: listEntries empty-state + with entries; extractAndSave graceful when no messages; rate-guard 30s.
+- Test trivia: loads curated DB; randomFact returns content; randomQuiz returns Q+A.
+
+### Audit Fresh-Eyes (REPORTED, tidak difix kecuali in-scope)
+1. **[LOW] Approval flow tidak transactional** (`src/reports/approval.ts:180-260`): insert approval + check 3-approval + LOCK transition adalah separate `db.execute`, tidak wrapped dalam transaction. Crash di antara bisa meninggalkan version dengan 3 approval tapi status PENDING_APPROVAL. Tidak difix (flow well-tested; WhatsApp messages sequential; practical impact near-zero; changing risks regression).
+2. **[LOW] Numeric-index column access fragility** (widespread `rows[0][0]`): works (libsql rows array-like) tapi fragile kalau SELECT column order berubah. Tidak difix (cosmetic; menyentuh banyak file).
+3. **[RECOMMENDATION] AI-first nickname-to-roster matching**: tiered deterministic matcher (`src/reports/validation.ts`, added 2026-11-21) working dengan zero false positives. Enhancement: pass roster di MAIN_MATCH_PROMPT trusted context, AI propose matched_player_id, deterministic matcher sebagai authoritative fallback. Tidak diimplement di PR ini (changing extraction schema/prompt warrants separate review; current state solid). Design sketch di PR description.
+4. **[RECOMMENDATION] Modularisasi `tournament-commands.ts` (3729 baris)**: AI-native commands sudah dipisah ke `ai-native-commands.ts`. Full decomposition (standings-awards, schedule, draw, teams, roster, roomcard, wo, knockout, rules) recommended sebagai PR terpisah (pure code-motion, behavior-preserving).
+
+### Audit Log WA (Task #3 — report only)
+Scan `logs/bot-out.log` (14344 lines, covering 2026-11-20 to 2026-11-21) + `inbound_messages` (27 rows) di VM. Central tournament group: `120363412423738009@g.us`. Arya LID: `165210883154071@lid`.
+- **Tidak ada pertanyaan peserta yang kelewat** dalam window yang ter-log. Arya sangat responsif (typikal <30s).
+- Contoh Q&A terverifikasi terjawab: "besok main harus bgt jam 8?" → "nggak bang" + "jadi dimulai dari 20.00 besok sampai 19.59 lusa"; "Sehari 1 ronde?" → "sehari 1 ronde"; "Ngitungnya manual apa pake bot?" → "bot" + explanation; "GK ku 2 bisa ga?" → "masukin ke cadangan"; "Cadangan ku penuh 3" → "sesuaiin itu bg"; "klao jam 7?" → "tergantung perjanjian sama lawannya".
+- Catatan: bot sudah restart 47x, jadi history log terbatas (~1.9MB). Pesan TEXT sebelum broad-capture fix tidak persistent di DB (hanya di stdout log). Setelah deploy PR ini, future messages akan persistent → audit capability lebih baik ke depan.
+
+### Dokumentasi Diupdate
+- `DECISIONS.md`: +D-037 (Omak Peak), D-038 (Agent), D-039 (QnA), D-040 (Engagement) — confirmed per task brief 2026-11-22.
+- `README.md`: section "AI-native expansion" baru.
+- `DATA_MODEL.md`: `ai_action_plans`, `qna_entries`, `provider_usage` CHECK expansion.
+- `PROMPT_CATALOG.md`: §12 — 6 prompt baru (omak_peak_chat_v1, agent_planner_v1, qna_extractor_v1, engagement_formatter_v1, pantun_generator_v1, trivia_rephrase_v1).
+- `WORKFLOWS.md`: §13 — flows untuk !ai, !agent/confirm/cancel, !qna/!saveqna, engagement hooks.
+- `MANIFEST.json`: version 0.2.0-draft, changelog, research sources updated (Flash Peak game sources).
+- `worklog.md`: entry sesi ini + dedup fix.
+
+### File yang Berubah
+- New: `migrations/004_ai_native_features.sql`, `src/application/{omak-peak,agent-actions,agent-planner,ai-native-commands,qna,engagement,trivia}.ts`, `src/ai/prompts/{omak-peak,omak-peak-context}.ts`, `src/data/flashpeak-trivia.json`, `tests/unit/ai_native.test.ts`.
+- Modified: `src/index.ts` (broad capture + AI-native wiring + engagement hooks + agent recovery), `src/shared/types/index.ts` (AITaskType expansion), `worklog.md` (dedup + this entry), `flash-peak-tms/{DECISIONS,README,DATA_MODEL,PROMPT_CATALOG,WORKFLOWS}.md`, `flash-peak-tms/MANIFEST.json`.
+
+### Hal yang Dipertimbangkan tapi Sengaja Tidak Diubah
+- Approval flow transactionality (LOW risk, well-tested; separate PR).
+- tournament-commands.ts modularization (separate PR, pure code-motion).
+- AI-first nickname matching (separate review; current tiered matcher solid).
+- AGENT.md/AGENTS.md/GEMINI.md triplicate (cosmetic; tidak mengganggu).
+
 ## [2026-11-21] Sesi Fitur: Implementasi Tiered Player-to-Roster Matcher (Task: flash-peak-tms-tiered-roster-matcher-v1)
 
 ### Konteks Sesi

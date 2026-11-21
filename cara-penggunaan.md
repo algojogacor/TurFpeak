@@ -602,6 +602,24 @@ Semua yang tercatat bot — foto bukti, hasil, approval, koreksi, bahkan alasan 
 | `!reopen <id> <alasan>` | panitia | buka ulang laporan LOCKED |
 | `!override <id> <alasan>` | panitia | kunci paksa (darurat) |
 
+### AI-native (update 22 Nov 2026 — D-037..D-040)
+
+| Perintah | Peran | Fungsi |
+|---|---|---|
+| `!ai <pertanyaan>` | siapa saja | Tanya Omak Peak — asisten AI read-only. Bisa soal turnamen, Flash Peak, atau ngobrol santai. Batas 2x/menit/user. |
+| `!qna` | siapa saja | Lihat FAQ hidup (pertanyaan-jawaban yang sudah terkumpul). |
+| `!saveqna [n]` | panitia | Ekstrak Q&A dari N pesan terakhir grup (default 10) lewat AI. |
+| `!trivia` | siapa saja | Fakta acak soal Flash Peak (dari basis data terverifikasi). |
+| `!quiz` | siapa saja | Quiz Flash Peak — pertanyaan dulu, jawaban muncul 15 detik kemudian. |
+| `!pantun` | siapa saja | Pantun acak bergaya Flash Peak / turnamen. |
+| `!agent <instruksi>` | panitia | AI agent: susun rencana aksi dari instruksi bahasa natural (preview, butuh konfirmasi). |
+| `!agentconfirm <kode>` | panitia | Eksekusi rencana yang sudah disusun (idempotent — konfirmasi dobel ditolak eksplisit). |
+| `!agentcancel <kode>` | panitia | Batalkan rencana yang masih pending. |
+
+**Catatan Omak Peak:** AI ini read-only — tidak bisa mengubah hasil/jadwal/roster apa pun. Kalau butuh aksi (ubah hasil, reopen, override, dll), pakai command admin di atas atau `!agent` (panitia). Kontak delegasi peserta boleh dibagikan oleh Omak Peak karena memang dibutuhkan untuk kesepakatan match (room host, jadwal).
+
+**Catatan AI Agent (panitia):** Setiap rencana punya kode (mis. `AGENT-7F3K`) dan kedaluwarsa dalam 10 menit. Konfirmasi pakai `!agentconfirm <kode>`. Eksekusi transaksional (all-or-nothing); kalau satu aksi gagal, semua di-rollback. Double-confirm ditolak eksplisit (bukan diabaikan diam-diam). Semua eksekusi tercatat di audit trail.
+
 ---
 
 _Panduan ini mengikuti perilaku bot persis seperti kodenya saat ini (termasuk sistem pelaporan knockout per-game). Kalau kamu menemukan perilaku bot yang berbeda dari panduan ini, kabari panitia supaya diperbaiki — bisa jadi ada pembaruan yang belum masuk ke dokumen._

@@ -47,6 +47,19 @@ Flash Peak TMS is a WhatsApp-group-operated tournament administration system. It
 - AI is an assistive extractor, never the authority for official results. Corrections and approvals remain explicit.
 - If AI providers are unavailable, report the failure and route the delegate to the organizer's manual process.
 
+## AI-native expansion (2026-11-22, D-037..D-040)
+
+The system now includes AI-native participant- and organizer-facing features:
+
+- `!ai <question>` — **Omak Peak**, a read-only AI assistant for any group participant. Open-scope (turnamen, Flash Peak, casual chat), santai persona, rolling-window rate limit (2/min/user). Delegate contacts shareable per the tournament's open-communication norm; internal system data is never exposed.
+- `!agent <instruction>` / `!agentconfirm <code>` / `!agentcancel <code>` — **organizer AI agent**: turns natural-language instructions into a typed action plan from a closed catalog (reopen, override-lock, forfeit/WO, reschedule, cancel, set-tournament-status, record-KO-score, announce). Explicit confirm-by-code, idempotent (double-confirm explicitly rejected), transactional execution (all-or-nothing), full audit trail, crash recovery. Replaces the manual SQL UPDATE previously used to pause the tournament.
+- `!qna` — living FAQ list (any role). `!saveqna [n]` (organizer) — AI extracts Q&A pairs from the last N group messages.
+- `!trivia` — random verified Flash Peak fact (curated DB, AI rephrases only). `!quiz` — quiz with delayed answer reveal.
+- `!pantun` — AI-generated Flash-Peak-themed pantun (no factual claims).
+- **Engagement hooks**: hype recap after KO series completion; champion celebration on Grand Final completion — grounded in real DB facts, AI formats presentation only.
+
+See `DECISIONS.md` D-037 through D-040 for the full confirmed design. New tables: `ai_action_plans`, `qna_entries` (migration 004). `provider_usage.task_type` CHECK expanded for the new AI tasks.
+
 ## Research notes
 
 Prompt design in this package follows current official guidance: clear instruction hierarchy, separated context and untrusted inputs, explicit output schemas, examples, and repeatable evaluation. See:

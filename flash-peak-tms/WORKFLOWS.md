@@ -182,3 +182,54 @@ If team, player ordering, or target report is ambiguous, ask one focused clarifi
 - Series ends when target game wins reached.
 - Grand Final uses BO5.
 - Champion and awards calculated from locked eligible data.
+
+## 13. AI-native flows (D-037..D-040, 2026-11-22)
+
+### 13.1 `!ai` Omak Peak (read-only chat)
+
+1. Any participant (or delegate, or organizer) sends `!ai <question>` in the central group or DM.
+2. Rate limiter checks rolling window: max 2 uses per sender per 60 seconds. On exceed, reply with retry-after hint. No state mutation.
+3. Context builder gathers read-only DB state: active tournament, fixtures, standings, teams+delegates, qna entries, rules summary.
+4. AI provider router executes CHAT_OMAK_PEAK task with the Omak Peak system prompt + trusted context + delimited user message.
+5. Reply is sent. Truncated to 1800 chars if needed.
+6. On AI failure: graceful fallback message (not a crash). On rate limit: explicit cooldown message.
+7. NO write to tournament state ever occurs. The only persistence is the broad text capture of the inbound `!ai` message itself (AI-NATIVE-001, applies to all central-group TEXT messages).
+
+### 13.2 `!agent` / `!agentconfirm` / `!agentcancel` (organizer AI agent)
+
+**Plan staging (`!agent <instruction>`):**
+1. Organizer sends `!agent <instruction>`.
+2. Planner context built: active tournament, recent fixtures with IDs, action catalog (action_id + description + parameter shapes).
+3. AI executes PLAN_AGENT task → returns JSON `{ actions: [{ action_id, params, rationale }] }`.
+4. For each proposed action: backend validates action_id exists, params match Zod schema, preview() passes (no validation errors). Invalid actions reject the whole plan with a per-action error list.
+5. On valid plan: generate unique plan_code (e.g. `AGENT-7F3K`), insert into `ai_action_plans` (status PENDING, expires_at = now + 10 min).
+6. Reply with plan preview: per-action summary (old → new), plan_code, confirm/cancel instructions, TTL.
+
+**Confirm & execute (`!agentconfirm <code>`):**
+1. Load plan by plan_code.
+2. Authorize: only the stager may confirm.
+3. Status gate: if not PENDING, EXPLICITLY reject with prior outcome + timestamp (idempotency — double-confirm is rejected, not silently ignored). Expired plans are lazily flipped to EXPIRED.
+4. Atomic claim: `UPDATE status='EXECUTING' WHERE plan_code=? AND status='PENDING' AND expires_at > now`. If affected rows = 0, lost the race — re-read and report actual state.
+5. Open a libSQL transaction (`db.transaction('write')`). For each action: re-preview inside tx (catches races), then execute. If any action fails, rollback the entire transaction, mark plan FAILED with reason, record audit_event AI_AGENT_PLAN_FAILED, reply with failure message.
+6. On success: commit, update plan status EXECUTED with execution_result_json, record audit_event AI_AGENT_PLAN_EXECUTED with before/after JSON, send post-commit side-effects (announce messages via sender).
+7. Crash recovery: at app start, `recoverInterruptedPlans()` marks stale EXECUTING (older than 5 min) as FAILED.
+
+**Cancel (`!agentcancel <code>`):** only PENDING plans can be cancelled; sets status CANCELLED.
+
+### 13.3 `!qna` / `!saveqna` (living FAQ)
+
+**`!qna` (any role):** list active qna_entries (newest first, max 50), formatted with Q/A/category.
+
+**`!saveqna [n]` (organizer):**
+1. Rate guard: 30-second cooldown between invocations.
+2. Fetch last N (default 10, max 50) TEXT messages from central group in inbound_messages (broad capture AI-NATIVE-001).
+3. Fetch existing qna_entries for dedup.
+4. AI executes EXTRACT_QNA task → returns JSON `{ pairs: [{ question, answer, category, duplicate_of_existing }] }`.
+5. Persist non-duplicate pairs via `INSERT OR IGNORE` (UNIQUE(question, answer) is the final guard).
+6. Reply with summary: messages read, pairs inserted, duplicates skipped.
+
+### 13.4 Engagement hooks (automatic)
+
+- **KO series completion**: after the official result message is returned, a detached follow-up calls `EngagementService.buildHypeRecap(facts)` (non-FINAL) or `buildChampionCelebration(facts)` (Grand Final). Facts come from DB (series score, margin, round, champion path). AI formats presentation only. Silently skips if AI unavailable.
+- **Group-stage report-lock hype**: designed but not yet wired (documented follow-up).
+- **`!trivia` / `!quiz` / `!pantun`**: on-demand engagement commands; see PROMPT_CATALOG §12.
