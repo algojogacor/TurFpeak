@@ -36,6 +36,7 @@ Pengujian screenshot pertandingan tim Agility Starlight mengungkap bahwa pemain 
 
 ---
 
+
 ## [2026-11-21] Sesi Operasional VM: Pause Turnamen ke DRAW_READY Pasca-Draw (Task: flash-peak-tms-pause-draw-ready-v1)
 
 ### Konteks Sesi
@@ -59,6 +60,7 @@ Pengundian grup (`!draw`) untuk turnamen `Gojiha Cup S1` telah sukses dilaksanak
 - **Status Sesudah**: `Status: DRAW_READY` (diperbarui di `local.sqlite` pada `2026-11-21T14:25:55Z`).
 
 ---
+
 
 ## [2026-11-21] Sesi Follow-up 3: Fix Blocker & Quick-Wins dari Second-Opinion Review PR #8 (Task: flash-peak-tms-followup-roundcode-blocker-v1, Branch: audit/verify-fix-v1)
 
@@ -104,6 +106,7 @@ Second-opinion review independen atas PR #8 (`PR8_second_opinion_review.md`) men
 - Check scripts baru: `verify-artifacts/check_roundcode_fix.mts`, `verify-artifacts/check_quickwins_fix.mts`.
 - Tidak ada perubahan skema/migrasi; tidak merge/push ke master.
 
+
 ## [2026-11-21] Sesi Follow-up 2: Keputusan Bug Baru #1 & #2 (Task: flash-peak-tms-followup-resolveidentity-fix-v1, Branch: audit/verify-fix-v1)
 
 ### Konteks Sesi
@@ -126,6 +129,7 @@ Keputusan Arya 21 Nov 2026: grup WhatsApp turnamen bersifat tertutup (Arya sendi
 ### Scope Sesi Ini
 - File produksi berubah: `src/application/report-correction-coordinator.ts` (1 pemanggilan). Tanpa perubahan untuk item 1.
 - Check scripts baru: `check_resolveidentity_1arg.mts` (verifikasi vonis), `check_resolveidentity_fix.mts` (bukti fix via spy).
+
 
 ## [2026-11-21] Sesi Follow-up: Keputusan Kebijakan T10/T17 + Re-draw Bracket Knockout (Task: flash-peak-tms-followup-policy-and-redraw-v1, Branch: audit/verify-fix-v1)
 
@@ -158,6 +162,7 @@ Lanjutan task verifikasi & perbaikan audit T1–T18 (HEAD awal `d9349e3`, belum 
 - Dry-run: `check_t10_behavior.mts`, `check_t17_fix.mts`, `check_bye_index_bug.mts`, `check_bye_index_bug2.mts`, `check_bracket_redraw.mts` (QF klasik → SF re-draw sesuai shuffle → FINAL+bye pool ganjil), `check_bracket_redraw_e2e.mts` (rantai penuh `!startknockout` via CommandRouter: SF → FINAL → series COMPLETED; skenario QF double-loss → 3 survivor unik → FINAL + bye + notice DRAW ULANG) — semua VERIFIED.
 - Temuan menarik dari E2E: 8 tim QF + satu double-loss menghasilkan 3 survivor unik (penerima bye = pemenang fixture partner yang memang sudah seed) → 1 FINAL + 1 bye — konsisten semantik T2, bukan bug.
 - Scope: 4 commit baru di atas `d9349e3` (`1254f8e`, `a512ad6`, `4b960ad`, `b2a0c43`); file produksi berubah: `src/application/matchday-service.ts`, `src/application/tournament-commands.ts`, `src/competition/fixtures.ts`, `tests/unit/competition.test.ts`. Tidak merge/push (menunggu review Arya).
+
 
 ## [2026-11-21] Sesi Verifikasi & Perbaikan Temuan Audit Independen T1–T18 (Task: flash-peak-tms-verify-and-fix-audit-v1, Branch: audit/verify-fix-v1)
 
@@ -212,6 +217,7 @@ Audit independen fresh-session (Laporan_Audit_FlashPeak_TMS.pdf, 29 asersi dry-r
 - **Final sweep**: seluruh 13 skrip check dijalankan ulang sekaligus setelah semua fix — 13/13 VERIFIED; `tsc` clean; `vitest` 248/248 PASS di HEAD branch (`298415a`).
 - **Scope disiplin**: tidak ada merge/push ke master (sesuai instruksi menunggu review Arya); semua kerja di branch `audit/verify-fix-v1`; file produksi yang berubah: `src/application/ko-evidence-pipeline.ts`, `src/application/tournament-commands.ts`, `src/application/fixture-resolver.ts`, `src/application/report-correction-coordinator.ts`, `src/competition/fixtures.ts`, `src/competition/series.ts`, `src/identity/resolver.ts`, `src/reports/approval.ts` (tidak berubah — fix T3 di router), `src/whatsapp/router.ts`, `src/reports/manual.ts`, `src/index.ts`, `tests/integration/full_flow.test.ts`, `cara-penggunaan.md`.
 
+
 ## [2026-11-21] Sesi Pull PR #7 & Redeploy VM: AI Resilience Notifications & Retry Queue (Task: flash-peak-tms-merge-pr7-redeploy-v1)
 
 ### Konteks Sesi
@@ -259,6 +265,7 @@ Mengeksekusi sinkronisasi pasca-merge PR #7 (`feat(ai): failure-cause-differenti
 
 ---
 
+
 ## [2026-11-20] Sesi Merge PR #5 & Redeploy VM: Fix 4 Audit Findings + Dynamic Group Sizing (Task: flash-peak-tms-merge-pr5-redeploy-v1)
 
 ### Konteks Sesi
@@ -293,6 +300,7 @@ Mengeksekusi merge Pull Request #5 (`fix(audit): resolve 4 audit findings + dyna
 
 ---
 
+
 ## [2026-11-20] Sesi Pendaftaran LID Organizer Arya (Task: flash-peak-tms-register-organizer-lid-v1)
 
 ### Konteks Sesi
@@ -311,6 +319,7 @@ Dari hasil pengetesan command `!id` oleh Arya di grup target (`12036341242373800
    - Startup log mengonfirmasi Baileys terhubung kembali (`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! Akun Bot JID: 6288242980462:2@s.whatsapp.net`).
 
 ---
+
 
 ## [2026-11-20] Sesi Fitur: Command !id & !myid untuk Pengecekan Identitas & Grup (Task: flash-peak-tms-command-id-v1)
 
@@ -343,6 +352,7 @@ Menambahkan perintah bawaan `!id` (dan alias `!myid`) pada CommandRouter WhatsAp
 - **Audit Wiring Suite (`audit_command_router_wiring.ts`)**: **38/38 commands SUCCESS**.
 
 ---
+
 
 ## [2026-11-20] Sesi Hotfix Konfigurasi: Nomor Organizer Arya (Task: flash-peak-tms-fix-organizer-number-v1)
 
@@ -379,6 +389,7 @@ Mengoreksi konfigurasi identitas nomor WhatsApp organizer turnamen pada file `.e
   ```
 
 ---
+
 
 ## [2026-11-20] Sesi Deployment & Reset Data Turnamen di VM (Task: flash-peak-tms-deploy-update-vm-v1)
 
@@ -446,6 +457,7 @@ Memperbarui deployment Flash Peak TMS (TurFpeak) yang sedang berjalan di VM (`fo
 
 ---
 
+
 ## [2026-11-20] Sesi Merge Koordinasi 4 PR ke master (Task: flash-peak-tms-analyze-and-merge-prs-v1)
 
 ### Konteks Sesi
@@ -478,6 +490,7 @@ Alasan urutan: (1) PR #1 zero-risk masuk duluan supaya laporan audit hidup di ma
 ### Catatan
 - Token GHP dipakai via file chmod-600 di luar repo (tidak pernah di-commit, tidak pernah ditampilkan ulang). Token pernah tercantum sebagai teks di chat — owner disarankan revoke/rotate setelah sesi ini.
 
+
 ## [2026-11-20] Sesi Dokumentasi: Panduan Penggunaan Bot untuk Organizer & Delegasi (Task: flash-peak-tms-cara-penggunaan-doc-v1, Branch: docs/cara-penggunaan)
 
 ### Konteks Sesi
@@ -505,43 +518,6 @@ Seluruh isi dokumen diverifikasi terhadap perilaku kode nyata saat penulisan:
 ### Status PR
 Commit di branch `docs/cara-penggunaan` (dari `fix/second-opinion-findings`), PR terbuka ke master, tidak di-merge — menunggu review Arya.
 
-# Worklog — Flash Peak TMS (TurFpeak)
-
-## [2026-11-21] Sesi Fitur: Implementasi Tiered Player-to-Roster Matcher (Task: flash-peak-tms-tiered-roster-matcher-v1)
-
-### Konteks Sesi
-Pengujian screenshot pertandingan tim Agility Starlight mengungkap bahwa pemain yang terdaftar dengan variasi karakter Unicode / titik pemisah (seperti `AGIㆍIshikawa` vs `AGI • Ishikawa`, atau `AGIㆍL∆RZZ☢️` vs `AGI • LΛRZZ ☣`) gagal dicocokkan oleh kode validator backend (`src/reports/validation.ts`) meskipun AI Vision berhasil membaca teks screenshot dengan sempurna. Investigasi pada seluruh 16 tim di database (`local.sqlite`) menemukan bahwa kesamaan clan tag (seperti `AVO`, `7SB_`, `TZ`, `AGI`) membuat pemain dalam tim yang sama memiliki kemiripan bawaan hingga 66.7% - 80% (misal `TZ Kuroko` vs `TZ Kurona` 80%). Oleh karena itu, penggunaan threshold similarity tunggal yang rendah (misal 60%) berisiko tinggi menyebabkan salah identifikasi / tertukarnya pemain. Dibutuhkan sistem pencocokan bertingkat (*Tiered Matching*) yang tangguh terhadap variasi dekoratif dan typo OCR minor dengan jaminan zero false positives.
-
-### Langkah & Perubahan yang Dieksekusi
-1. **Peningkatan Mesin Pencocokan Roster (`src/reports/validation.ts`)**:
-   - Menambahkan fungsi `cleanSearchKey(nick: string)`: menormalkan string ke NFKD, huruf kecil, dan membuang semua karakter non-alfanumerik (`[^a-z0-9]`).
-   - Menambahkan fungsi `computeSimilarity(str1: string, str2: string)` berbasis Levenshtein distance dari `fastest-levenshtein`.
-   - Mengimplementasikan `matchPlayerToRoster(raw: RawPlayerMatchStat, roster: Player[])`:
-     - **Tier 1 (Exact Raw Match)**: `raw.nickname_raw === p.nickname_raw`.
-     - **Tier 2 (NFC Normalized Match)**: `normalize(raw) === normalize(p)`.
-     - **Tier 3 (Clean Alphanumeric Key Match)**: mencocokkan `cleanSearchKey` dari input terhadap `cleanSearchKey(p.nickname_raw)` atau `p.nickname_search_key`. Ini secara otomatis mengatasi perbedaan titik pemisah (`•` vs `ㆍ`), spasi, simbol clan tag (`|`, `〆`, `☣`, `☢️`), dan variasi alfabet dekoratif (`∆` vs `Λ`) dengan skor 100% cocok.
-     - **Tier 4 (Safe Fuzzy Match)**: Ambang batas minimum similarity `>= 0.75` **DAN** wajib memiliki selisih skor (*safety margin gap*) `>= 0.15` di atas kandidat runner-up dalam tim. Jika selisih terlalu tipis / ambigu (misal typo di antara dua pemain mirip), sistem menolak tebakan (*returns null*) dan mewajibkan konfirmasi manual.
-2. **Sinkronisasi Pemetaan Goalkeeper Saves (`src/application/evidence-batch-processor.ts`)**:
-   - Memperbarui fungsi `resolvePlayerSaves` agar juga memeriksa kesamaan `cleanSearchKey`, sehingga saves dari screenshot detail kiper tetap terpetakan dengan benar meski ada perbedaan simbol dekoratif di summary screen.
-3. **Penambahan Test Suite Permanen (`tests/unit/reports.test.ts`)**:
-   - Menambahkan describe block `Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)` yang menguji:
-     - Exact raw dan NFC matching.
-     - Stylized OCR variations (`AGI • Ishikawa` ➔ `AGIㆍIshikawa`, `AGI • ZKII☣` ➔ `AGIㆍZKII☣`, `AGI • LΛRZZ ☣` ➔ `AGIㆍL∆RZZ☢️`).
-     - Safe fuzzy match untuk typo minor 1 karakter.
-     - Penolakan input ambigu dengan safety gap < 15% (kasus `TZ Kuroko` vs `TZ Kurona`).
-     - Penolakan tegas pemain tak terdaftar (`AGI • DIKZ`).
-
-### Bukti & Verifikasi Empiris
-- **Unit & Integration Tests**:
-  - `npx vitest run tests/unit/reports.test.ts`: **25 tests passed (100%)**.
-  - `npm run build` (`tsc`): **Clean compile tanpa error (Exit code 0)**.
-- **Validasi terhadap Screenshot Agility Starlight**:
-  - `AGI • LΛRZZ ☣` ➔ Cocok ke Slot 1 (`AGIㆍL∆RZZ☢️`) via Tier 3.
-  - `AGI • Ishikawa` ➔ Cocok ke Slot 3 (`AGIㆍIshikawa`) via Tier 3.
-  - `AGI • ZKII☣` ➔ Cocok ke Slot 2 (`AGIㆍZKII☣`) via Tier 3.
-  - `AGI • DIKZ` ➔ Ditolak (Pemain Tidak Terdaftar, skor tertinggi di tim hanya 57.1%).
-
----
 
 ## [2026-11-20] Sesi Lanjutan PR #2: Pipeline Knockout Interaktif + Approval Reset + Revisi Aturan Double-Loss (Task: flash-peak-tms-knockout-pipeline-and-override-v2)
 
@@ -628,43 +604,6 @@ Sesi ini MELANJUTKAN branch `fix/second-opinion-findings` (PR #2, masih terbuka,
 
 **Dry-run second-opinion lintas-branch**: 34/34 PASS. **Typecheck**: hanya 5 error pre-existing master (identik baseline; bukan regresi — lihat catatan #2).
 
-# Worklog — Flash Peak TMS (TurFpeak)
-
-## [2026-11-21] Sesi Fitur: Implementasi Tiered Player-to-Roster Matcher (Task: flash-peak-tms-tiered-roster-matcher-v1)
-
-### Konteks Sesi
-Pengujian screenshot pertandingan tim Agility Starlight mengungkap bahwa pemain yang terdaftar dengan variasi karakter Unicode / titik pemisah (seperti `AGIㆍIshikawa` vs `AGI • Ishikawa`, atau `AGIㆍL∆RZZ☢️` vs `AGI • LΛRZZ ☣`) gagal dicocokkan oleh kode validator backend (`src/reports/validation.ts`) meskipun AI Vision berhasil membaca teks screenshot dengan sempurna. Investigasi pada seluruh 16 tim di database (`local.sqlite`) menemukan bahwa kesamaan clan tag (seperti `AVO`, `7SB_`, `TZ`, `AGI`) membuat pemain dalam tim yang sama memiliki kemiripan bawaan hingga 66.7% - 80% (misal `TZ Kuroko` vs `TZ Kurona` 80%). Oleh karena itu, penggunaan threshold similarity tunggal yang rendah (misal 60%) berisiko tinggi menyebabkan salah identifikasi / tertukarnya pemain. Dibutuhkan sistem pencocokan bertingkat (*Tiered Matching*) yang tangguh terhadap variasi dekoratif dan typo OCR minor dengan jaminan zero false positives.
-
-### Langkah & Perubahan yang Dieksekusi
-1. **Peningkatan Mesin Pencocokan Roster (`src/reports/validation.ts`)**:
-   - Menambahkan fungsi `cleanSearchKey(nick: string)`: menormalkan string ke NFKD, huruf kecil, dan membuang semua karakter non-alfanumerik (`[^a-z0-9]`).
-   - Menambahkan fungsi `computeSimilarity(str1: string, str2: string)` berbasis Levenshtein distance dari `fastest-levenshtein`.
-   - Mengimplementasikan `matchPlayerToRoster(raw: RawPlayerMatchStat, roster: Player[])`:
-     - **Tier 1 (Exact Raw Match)**: `raw.nickname_raw === p.nickname_raw`.
-     - **Tier 2 (NFC Normalized Match)**: `normalize(raw) === normalize(p)`.
-     - **Tier 3 (Clean Alphanumeric Key Match)**: mencocokkan `cleanSearchKey` dari input terhadap `cleanSearchKey(p.nickname_raw)` atau `p.nickname_search_key`. Ini secara otomatis mengatasi perbedaan titik pemisah (`•` vs `ㆍ`), spasi, simbol clan tag (`|`, `〆`, `☣`, `☢️`), dan variasi alfabet dekoratif (`∆` vs `Λ`) dengan skor 100% cocok.
-     - **Tier 4 (Safe Fuzzy Match)**: Ambang batas minimum similarity `>= 0.75` **DAN** wajib memiliki selisih skor (*safety margin gap*) `>= 0.15` di atas kandidat runner-up dalam tim. Jika selisih terlalu tipis / ambigu (misal typo di antara dua pemain mirip), sistem menolak tebakan (*returns null*) dan mewajibkan konfirmasi manual.
-2. **Sinkronisasi Pemetaan Goalkeeper Saves (`src/application/evidence-batch-processor.ts`)**:
-   - Memperbarui fungsi `resolvePlayerSaves` agar juga memeriksa kesamaan `cleanSearchKey`, sehingga saves dari screenshot detail kiper tetap terpetakan dengan benar meski ada perbedaan simbol dekoratif di summary screen.
-3. **Penambahan Test Suite Permanen (`tests/unit/reports.test.ts`)**:
-   - Menambahkan describe block `Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)` yang menguji:
-     - Exact raw dan NFC matching.
-     - Stylized OCR variations (`AGI • Ishikawa` ➔ `AGIㆍIshikawa`, `AGI • ZKII☣` ➔ `AGIㆍZKII☣`, `AGI • LΛRZZ ☣` ➔ `AGIㆍL∆RZZ☢️`).
-     - Safe fuzzy match untuk typo minor 1 karakter.
-     - Penolakan input ambigu dengan safety gap < 15% (kasus `TZ Kuroko` vs `TZ Kurona`).
-     - Penolakan tegas pemain tak terdaftar (`AGI • DIKZ`).
-
-### Bukti & Verifikasi Empiris
-- **Unit & Integration Tests**:
-  - `npx vitest run tests/unit/reports.test.ts`: **25 tests passed (100%)**.
-  - `npm run build` (`tsc`): **Clean compile tanpa error (Exit code 0)**.
-- **Validasi terhadap Screenshot Agility Starlight**:
-  - `AGI • LΛRZZ ☣` ➔ Cocok ke Slot 1 (`AGIㆍL∆RZZ☢️`) via Tier 3.
-  - `AGI • Ishikawa` ➔ Cocok ke Slot 3 (`AGIㆍIshikawa`) via Tier 3.
-  - `AGI • ZKII☣` ➔ Cocok ke Slot 2 (`AGIㆍZKII☣`) via Tier 3.
-  - `AGI • DIKZ` ➔ Ditolak (Pemain Tidak Terdaftar, skor tertinggi di tim hanya 57.1%).
-
----
 
 ## [2026-11-20] Sesi Perbaikan Temuan Second-Opinion Audit (Task: flash-peak-tms-fix-second-opinion-findings-v1)
 
@@ -807,43 +746,6 @@ Sesi ini adalah tindak lanjut dari laporan second-opinion audit independen `flas
 
 **Dry-run second-opinion lintas-branch** (`second-opinion-audit-artifacts/dryrun_e2e.ts` dari branch `audit/second-opinion-v1`, dijalankan terhadap kode hasil fix): **34/34 PASS**.
 
-# Worklog — Flash Peak TMS (TurFpeak)
-
-## [2026-11-21] Sesi Fitur: Implementasi Tiered Player-to-Roster Matcher (Task: flash-peak-tms-tiered-roster-matcher-v1)
-
-### Konteks Sesi
-Pengujian screenshot pertandingan tim Agility Starlight mengungkap bahwa pemain yang terdaftar dengan variasi karakter Unicode / titik pemisah (seperti `AGIㆍIshikawa` vs `AGI • Ishikawa`, atau `AGIㆍL∆RZZ☢️` vs `AGI • LΛRZZ ☣`) gagal dicocokkan oleh kode validator backend (`src/reports/validation.ts`) meskipun AI Vision berhasil membaca teks screenshot dengan sempurna. Investigasi pada seluruh 16 tim di database (`local.sqlite`) menemukan bahwa kesamaan clan tag (seperti `AVO`, `7SB_`, `TZ`, `AGI`) membuat pemain dalam tim yang sama memiliki kemiripan bawaan hingga 66.7% - 80% (misal `TZ Kuroko` vs `TZ Kurona` 80%). Oleh karena itu, penggunaan threshold similarity tunggal yang rendah (misal 60%) berisiko tinggi menyebabkan salah identifikasi / tertukarnya pemain. Dibutuhkan sistem pencocokan bertingkat (*Tiered Matching*) yang tangguh terhadap variasi dekoratif dan typo OCR minor dengan jaminan zero false positives.
-
-### Langkah & Perubahan yang Dieksekusi
-1. **Peningkatan Mesin Pencocokan Roster (`src/reports/validation.ts`)**:
-   - Menambahkan fungsi `cleanSearchKey(nick: string)`: menormalkan string ke NFKD, huruf kecil, dan membuang semua karakter non-alfanumerik (`[^a-z0-9]`).
-   - Menambahkan fungsi `computeSimilarity(str1: string, str2: string)` berbasis Levenshtein distance dari `fastest-levenshtein`.
-   - Mengimplementasikan `matchPlayerToRoster(raw: RawPlayerMatchStat, roster: Player[])`:
-     - **Tier 1 (Exact Raw Match)**: `raw.nickname_raw === p.nickname_raw`.
-     - **Tier 2 (NFC Normalized Match)**: `normalize(raw) === normalize(p)`.
-     - **Tier 3 (Clean Alphanumeric Key Match)**: mencocokkan `cleanSearchKey` dari input terhadap `cleanSearchKey(p.nickname_raw)` atau `p.nickname_search_key`. Ini secara otomatis mengatasi perbedaan titik pemisah (`•` vs `ㆍ`), spasi, simbol clan tag (`|`, `〆`, `☣`, `☢️`), dan variasi alfabet dekoratif (`∆` vs `Λ`) dengan skor 100% cocok.
-     - **Tier 4 (Safe Fuzzy Match)**: Ambang batas minimum similarity `>= 0.75` **DAN** wajib memiliki selisih skor (*safety margin gap*) `>= 0.15` di atas kandidat runner-up dalam tim. Jika selisih terlalu tipis / ambigu (misal typo di antara dua pemain mirip), sistem menolak tebakan (*returns null*) dan mewajibkan konfirmasi manual.
-2. **Sinkronisasi Pemetaan Goalkeeper Saves (`src/application/evidence-batch-processor.ts`)**:
-   - Memperbarui fungsi `resolvePlayerSaves` agar juga memeriksa kesamaan `cleanSearchKey`, sehingga saves dari screenshot detail kiper tetap terpetakan dengan benar meski ada perbedaan simbol dekoratif di summary screen.
-3. **Penambahan Test Suite Permanen (`tests/unit/reports.test.ts`)**:
-   - Menambahkan describe block `Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)` yang menguji:
-     - Exact raw dan NFC matching.
-     - Stylized OCR variations (`AGI • Ishikawa` ➔ `AGIㆍIshikawa`, `AGI • ZKII☣` ➔ `AGIㆍZKII☣`, `AGI • LΛRZZ ☣` ➔ `AGIㆍL∆RZZ☢️`).
-     - Safe fuzzy match untuk typo minor 1 karakter.
-     - Penolakan input ambigu dengan safety gap < 15% (kasus `TZ Kuroko` vs `TZ Kurona`).
-     - Penolakan tegas pemain tak terdaftar (`AGI • DIKZ`).
-
-### Bukti & Verifikasi Empiris
-- **Unit & Integration Tests**:
-  - `npx vitest run tests/unit/reports.test.ts`: **25 tests passed (100%)**.
-  - `npm run build` (`tsc`): **Clean compile tanpa error (Exit code 0)**.
-- **Validasi terhadap Screenshot Agility Starlight**:
-  - `AGI • LΛRZZ ☣` ➔ Cocok ke Slot 1 (`AGIㆍL∆RZZ☢️`) via Tier 3.
-  - `AGI • Ishikawa` ➔ Cocok ke Slot 3 (`AGIㆍIshikawa`) via Tier 3.
-  - `AGI • ZKII☣` ➔ Cocok ke Slot 2 (`AGIㆍZKII☣`) via Tier 3.
-  - `AGI • DIKZ` ➔ Ditolak (Pemain Tidak Terdaftar, skor tertinggi di tim hanya 57.1%).
-
----
 
 ## [2026-11-20] Sesi Independen: Fix 2 Bug TypeScript Pre-Existing dari master (Task: flash-peak-tms-fix-preexisting-ts-bugs-v1, Branch: fix/preexisting-ts-bugs → PR baru)
 
@@ -878,43 +780,6 @@ Saat typecheck di master murni awal sesi, kedua bug terkonfirmasi persis seperti
 1. Branch `fix/preexisting-ts-bugs` dibuat **dari master terkini** (bukan dari branch PR #2) karena task ini independen; PR baru dibuka ke master dan **tidak di-merge** — menunggu review Arya, konsisten dengan proses sebelumnya.
 2. PR #2 (`fix/second-opinion-findings`) tidak disentuh sama sekali di sesi ini; kedua bug fix ini akan berujung konflik minimal dengan PR #2 karena perubahan di area yang sama (`tournament-commands.ts` `!claimwo`) bersifat tambahan baris `id: randomUUID()` dan penghapusan fallback — mudah di-resolve saat merge.
 
-# Worklog — Flash Peak TMS (TurFpeak)
-
-## [2026-11-21] Sesi Fitur: Implementasi Tiered Player-to-Roster Matcher (Task: flash-peak-tms-tiered-roster-matcher-v1)
-
-### Konteks Sesi
-Pengujian screenshot pertandingan tim Agility Starlight mengungkap bahwa pemain yang terdaftar dengan variasi karakter Unicode / titik pemisah (seperti `AGIㆍIshikawa` vs `AGI • Ishikawa`, atau `AGIㆍL∆RZZ☢️` vs `AGI • LΛRZZ ☣`) gagal dicocokkan oleh kode validator backend (`src/reports/validation.ts`) meskipun AI Vision berhasil membaca teks screenshot dengan sempurna. Investigasi pada seluruh 16 tim di database (`local.sqlite`) menemukan bahwa kesamaan clan tag (seperti `AVO`, `7SB_`, `TZ`, `AGI`) membuat pemain dalam tim yang sama memiliki kemiripan bawaan hingga 66.7% - 80% (misal `TZ Kuroko` vs `TZ Kurona` 80%). Oleh karena itu, penggunaan threshold similarity tunggal yang rendah (misal 60%) berisiko tinggi menyebabkan salah identifikasi / tertukarnya pemain. Dibutuhkan sistem pencocokan bertingkat (*Tiered Matching*) yang tangguh terhadap variasi dekoratif dan typo OCR minor dengan jaminan zero false positives.
-
-### Langkah & Perubahan yang Dieksekusi
-1. **Peningkatan Mesin Pencocokan Roster (`src/reports/validation.ts`)**:
-   - Menambahkan fungsi `cleanSearchKey(nick: string)`: menormalkan string ke NFKD, huruf kecil, dan membuang semua karakter non-alfanumerik (`[^a-z0-9]`).
-   - Menambahkan fungsi `computeSimilarity(str1: string, str2: string)` berbasis Levenshtein distance dari `fastest-levenshtein`.
-   - Mengimplementasikan `matchPlayerToRoster(raw: RawPlayerMatchStat, roster: Player[])`:
-     - **Tier 1 (Exact Raw Match)**: `raw.nickname_raw === p.nickname_raw`.
-     - **Tier 2 (NFC Normalized Match)**: `normalize(raw) === normalize(p)`.
-     - **Tier 3 (Clean Alphanumeric Key Match)**: mencocokkan `cleanSearchKey` dari input terhadap `cleanSearchKey(p.nickname_raw)` atau `p.nickname_search_key`. Ini secara otomatis mengatasi perbedaan titik pemisah (`•` vs `ㆍ`), spasi, simbol clan tag (`|`, `〆`, `☣`, `☢️`), dan variasi alfabet dekoratif (`∆` vs `Λ`) dengan skor 100% cocok.
-     - **Tier 4 (Safe Fuzzy Match)**: Ambang batas minimum similarity `>= 0.75` **DAN** wajib memiliki selisih skor (*safety margin gap*) `>= 0.15` di atas kandidat runner-up dalam tim. Jika selisih terlalu tipis / ambigu (misal typo di antara dua pemain mirip), sistem menolak tebakan (*returns null*) dan mewajibkan konfirmasi manual.
-2. **Sinkronisasi Pemetaan Goalkeeper Saves (`src/application/evidence-batch-processor.ts`)**:
-   - Memperbarui fungsi `resolvePlayerSaves` agar juga memeriksa kesamaan `cleanSearchKey`, sehingga saves dari screenshot detail kiper tetap terpetakan dengan benar meski ada perbedaan simbol dekoratif di summary screen.
-3. **Penambahan Test Suite Permanen (`tests/unit/reports.test.ts`)**:
-   - Menambahkan describe block `Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)` yang menguji:
-     - Exact raw dan NFC matching.
-     - Stylized OCR variations (`AGI • Ishikawa` ➔ `AGIㆍIshikawa`, `AGI • ZKII☣` ➔ `AGIㆍZKII☣`, `AGI • LΛRZZ ☣` ➔ `AGIㆍL∆RZZ☢️`).
-     - Safe fuzzy match untuk typo minor 1 karakter.
-     - Penolakan input ambigu dengan safety gap < 15% (kasus `TZ Kuroko` vs `TZ Kurona`).
-     - Penolakan tegas pemain tak terdaftar (`AGI • DIKZ`).
-
-### Bukti & Verifikasi Empiris
-- **Unit & Integration Tests**:
-  - `npx vitest run tests/unit/reports.test.ts`: **25 tests passed (100%)**.
-  - `npm run build` (`tsc`): **Clean compile tanpa error (Exit code 0)**.
-- **Validasi terhadap Screenshot Agility Starlight**:
-  - `AGI • LΛRZZ ☣` ➔ Cocok ke Slot 1 (`AGIㆍL∆RZZ☢️`) via Tier 3.
-  - `AGI • Ishikawa` ➔ Cocok ke Slot 3 (`AGIㆍIshikawa`) via Tier 3.
-  - `AGI • ZKII☣` ➔ Cocok ke Slot 2 (`AGIㆍZKII☣`) via Tier 3.
-  - `AGI • DIKZ` ➔ Ditolak (Pemain Tidak Terdaftar, skor tertinggi di tim hanya 57.1%).
-
----
 
 ## [2026-11-20] Sesi Perbaikan Temuan Audit Independen (Task: flash-peak-tms-fix-audit-findings-v1)
 
@@ -1199,6 +1064,7 @@ Mengalihkan atribusi penghargaan kiper terbaik (*Best Winning Goalkeeper*) pada 
   npm test
   ```
   Output: `Test Files: 20 passed (20), Tests: 258 passed (258)`.
+
 
 
 

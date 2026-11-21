@@ -1,0 +1,551 @@
+/**
+ * AI-Native Feature Tests (D-037..D-040)
+ *
+ * Covers the safety-critical properties required by the task brief:
+ * - Omak Peak rate limit: rolling window 2/60s, third call rejected with retry hint.
+ * - Omak Peak read-only intro on no-arg invocation.
+ * - Agent action catalog: preview rejects invalid fixture / wrong winning_team.
+ * - Agent planner idempotency: double-confirm EXPLICITLY rejected (not silently ignored).
+ * - Agent planner: expired plan rejected; cancelled plan rejected; cross-organizer reject.
+ * - Agent planner: transactional rollback when an action fails mid-plan.
+ * - QnA service: list empty + with entries; table-missing graceful.
+ * - Trivia service: loads curated DB; randomFact works without AI (raw fact path).
+ * - Migration 004: ai_action_plans + qna_entries tables exist; provider_usage CHECK expanded.
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { createClient } from '@libsql/client';
+import { runMigrations } from '../../src/db/migrate.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO } from '../../src/application/omak-peak.js';
+import {
+  AgentActionCatalog,
+  buildDefaultAgentActionCatalog,
+  reopenReportParams,
+  forfeitWinnerParams,
+  setTournamentStatusParams,
+} from '../../src/application/agent-actions.js';
+import { AgentPlannerService } from '../../src/application/agent-planner.js';
+import { QnaService } from '../../src/application/qna.js';
+import { TriviaService } from '../../src/application/trivia.js';
+import type { Client } from '@libsql/client';
+
+async function freshDb(): Promise<Client> {
+  const db = createClient({ url: ':memory:' });
+  await runMigrations(db);
+  return db;
+}
+
+async function seedTournamentFixture(db: Client): Promise<{
+  tournamentId: string;
+  teamAId: string;
+  teamBId: string;
+  fixtureId: string;
+}> {
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+          VALUES ('tourn-1', 'Gojiha Cup Test', 'ACTIVE', 'Asia/Jakarta', '1.0', '{}', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO delegates (id, display_name, status, created_at, updated_at) VALUES ('del-a', 'Del A', 'ACTIVE', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO delegates (id, display_name, status, created_at, updated_at) VALUES ('del-b', 'Del B', 'ACTIVE', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO teams (id, tournament_id, team_name, team_code, delegate_id, registration_status, created_at, updated_at)
+          VALUES ('team-a', 'tourn-1', 'Singa FC', 'SIN', 'del-a', 'VERIFIED', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO teams (id, tournament_id, team_name, team_code, delegate_id, registration_status, created_at, updated_at)
+          VALUES ('team-b', 'tourn-1', 'Elang FC', 'ELG', 'del-b', 'VERIFIED', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO group_draws (id, tournament_id, status, group_config_json, eligible_team_snapshot_json,
+                                    algorithm, algorithm_version, next_reveal_index, created_at)
+          VALUES ('draw-1', 'tourn-1', 'COMPLETED', '{}', '[]', 'fisher-yates', '1.0', 0, ?)`,
+    args: [now],
+  });
+  await db.execute({
+    sql: `INSERT INTO groups (id, draw_id, group_code, display_order) VALUES ('grp-1', 'draw-1', 'A', 1)`,
+  });
+  await db.execute({
+    sql: `INSERT INTO group_members (group_id, team_id, draw_position) VALUES ('grp-1', 'team-a', 1), ('grp-1', 'team-b', 2)`,
+  });
+  await db.execute({
+    sql: `INSERT INTO fixtures (id, tournament_id, stage, group_id, round_code, team_a_id, team_b_id,
+                                left_side_team_id, scheduled_at, timezone, status, created_at, updated_at)
+          VALUES ('fix-1', 'tourn-1', 'GROUP', 'grp-1', 'MD1', 'team-a', 'team-b', 'team-a', ?, 'Asia/Jakarta', 'SCHEDULED', ?, ?)`,
+    args: [now, now, now],
+  });
+  return { tournamentId: 'tourn-1', teamAId: 'team-a', teamBId: 'team-b', fixtureId: 'fix-1' };
+}
+
+// =============================================================================
+// RollingRateLimiter
+// =============================================================================
+
+describe('RollingRateLimiter (Omak Peak rate limit, D-037)', () => {
+  it('allows 2 uses within 60s, rejects 3rd with retry-after', () => {
+    const rl = new RollingRateLimiter(2, 60_000);
+    const t0 = 1_000_000;
+    expect(rl.check('user-A', t0).allowed).toBe(true);
+    expect(rl.check('user-A', t0 + 10_000).allowed).toBe(true); // 2nd within window
+    const third = rl.check('user-A', t0 + 20_000);
+    expect(third.allowed).toBe(false);
+    if (!third.allowed) {
+      // Retry-after should be ~40s (60 - 20 elapsed since oldest at t0).
+      expect(third.retryAfterMs).toBeGreaterThanOrEqual(30_000);
+      expect(third.retryAfterMs).toBeLessThanOrEqual(45_000);
+    }
+  });
+
+  it('rolling window: after oldest expires, 3rd use allowed', () => {
+    const rl = new RollingRateLimiter(2, 60_000);
+    const t0 = 1_000_000;
+    expect(rl.check('user-B', t0).allowed).toBe(true);
+    expect(rl.check('user-B', t0 + 5_000).allowed).toBe(true);
+    // 61s later — oldest (t0) is outside the 60s window; a new use should be allowed.
+    expect(rl.check('user-B', t0 + 61_000).allowed).toBe(true);
+  });
+
+  it('rate limit is per-sender (different users have separate budgets)', () => {
+    const rl = new RollingRateLimiter(2, 60_000);
+    const t0 = 1_000_000;
+    expect(rl.check('alice', t0).allowed).toBe(true);
+    expect(rl.check('alice', t0 + 1_000).allowed).toBe(true);
+    // Bob has his own budget.
+    expect(rl.check('bob', t0 + 2_000).allowed).toBe(true);
+    expect(rl.check('bob', t0 + 3_000).allowed).toBe(true);
+    // Alice still rate-limited.
+    expect(rl.check('alice', t0 + 4_000).allowed).toBe(false);
+  });
+});
+
+// =============================================================================
+// OmakPeakService
+// =============================================================================
+
+describe('OmakPeakService (D-037)', () => {
+  let db: Client;
+
+  beforeEach(async () => {
+    db = await freshDb();
+  });
+
+  it('no-arg invocation returns intro (no AI call, no rate-limit consumption)', async () => {
+    const svc = new OmakPeakService({ db }); // no providerRouter
+    const res = await svc.handleAiCommand('user-A', '');
+    expect(res.rateLimited).toBe(false);
+    expect(res.replyText).toBe(OMAK_PEAK_INTRO);
+  });
+
+  it('without providerRouter, returns graceful fallback (not a crash)', async () => {
+    const svc = new OmakPeakService({ db });
+    const res = await svc.handleAiCommand('user-A', 'siapa topskor?');
+    expect(res.rateLimited).toBe(false);
+    expect(res.replyText).toContain('AI provider');
+  });
+
+  it('rate-limits the 3rd call within 60s even with providerRouter present', async () => {
+    // Mock router that never gets called for the 3rd call.
+    const fakeRouter: any = {
+      execute: async () => ({ raw_text: 'mock jawaban', telemetry: {} }),
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    const r1 = await svc.handleAiCommand('user-A', 'pertanyaan 1');
+    const r2 = await svc.handleAiCommand('user-A', 'pertanyaan 2');
+    const r3 = await svc.handleAiCommand('user-A', 'pertanyaan 3');
+    expect(r1.rateLimited).toBe(false);
+    expect(r2.rateLimited).toBe(false);
+    expect(r3.rateLimited).toBe(true);
+    expect(r3.replyText).toContain('cooldown');
+    expect(r3.retryAfterSeconds).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
+// AgentActionCatalog
+// =============================================================================
+
+describe('AgentActionCatalog preview validation (D-038)', () => {
+  let db: Client;
+  let catalog: AgentActionCatalog;
+
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedTournamentFixture(db);
+    catalog = buildDefaultAgentActionCatalog(db);
+  });
+
+  it('reopen_report: rejects unknown fixture_id', async () => {
+    const def = catalog.get('reopen_report')!;
+    const r = await def.preview(db, reopenReportParams.parse({
+      fixture_id: '00000000-0000-0000-0000-000000000000',
+      reason: 'test',
+    }));
+    expect(r.validation_errors.length).toBeGreaterThan(0);
+    expect(r.validation_errors[0]).toContain('tidak ditemukan');
+  });
+
+  it('reopen_report: rejects fixture that is not COMPLETED/WALKOVER (no LOCKED version to reopen)', async () => {
+    const def = catalog.get('reopen_report')!;
+    const r = await def.preview(db, reopenReportParams.parse({
+      fixture_id: 'fix-1',
+      reason: 'test',
+    }));
+    expect(r.validation_errors.length).toBeGreaterThan(0);
+    // fix-1 is SCHEDULED — preview rejects on status before reaching the LOCKED-version check.
+    expect(r.validation_errors[0]).toMatch(/COMPLETED|WALKOVER|LOCKED/);
+  });
+
+  it('forfeit_winner: rejects winning_team_id not in fixture', async () => {
+    const def = catalog.get('forfeit_winner')!;
+    const r = await def.preview(db, forfeitWinnerParams.parse({
+      fixture_id: 'fix-1',
+      winning_team_id: '00000000-0000-0000-0000-000000000000',
+      reason: 'test',
+    }));
+    expect(r.validation_errors.length).toBeGreaterThan(0);
+    expect(r.validation_errors[0]).toContain('bukan peserta');
+  });
+
+  it('forfeit_winner: accepts valid winning_team_id, produces summary', async () => {
+    const def = catalog.get('forfeit_winner')!;
+    const r = await def.preview(db, forfeitWinnerParams.parse({
+      fixture_id: 'fix-1',
+      winning_team_id: 'team-a',
+      reason: 'lawan no-show',
+    }));
+    expect(r.validation_errors).toEqual([]);
+    expect(r.summary).toContain('Singa FC');
+    expect(r.summary).toContain('Elang FC');
+  });
+
+  it('catalog.toPromptJson lists all action_ids with parameter shapes', () => {
+    const json = catalog.toPromptJson();
+    const parsed = JSON.parse(json);
+    const ids = parsed.map((a: any) => a.action_id);
+    expect(ids).toContain('reopen_report');
+    expect(ids).toContain('override_lock');
+    expect(ids).toContain('forfeit_winner');
+    expect(ids).toContain('reschedule_fixture');
+    expect(ids).toContain('cancel_fixture');
+    expect(ids).toContain('set_tournament_status');
+    expect(ids).toContain('record_ko_game_score');
+    expect(ids).toContain('announce');
+  });
+});
+
+// =============================================================================
+// AgentPlannerService — idempotency is the non-negotiable safety property
+// =============================================================================
+
+describe('AgentPlannerService idempotency & state machine (D-038)', () => {
+  let db: Client;
+  let catalog: AgentActionCatalog;
+  let planner: AgentPlannerService;
+
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedTournamentFixture(db);
+    catalog = buildDefaultAgentActionCatalog(db);
+    planner = new AgentPlannerService({ db, actionCatalog: catalog });
+  });
+
+  /** Helper: directly stage a plan with a set_tournament_status action. */
+  async function stagePlan(organizerAddress: string, tournamentId: string, newStatus: string): Promise<string> {
+    const planId = 'plan-' + Math.random().toString(36).slice(2, 8);
+    const planCode = 'AGENT-' + planId.slice(5, 9).toUpperCase();
+    const now = new Date();
+    const expires = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+    const planJson = {
+      actions: [{
+        action_id: 'set_tournament_status',
+        params: setTournamentStatusParams.parse({
+          tournament_id: tournamentId,
+          new_status: newStatus,
+          reason: 'test plan',
+        }),
+        rationale: 'test',
+        preview_summary: 'ubah status test',
+      }],
+    };
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans
+              (id, plan_code, tournament_id, organizer_address, organizer_delegate_id,
+               instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NULL, ?, ?, 'PENDING', ?, ?, ?)`,
+      args: [planId, planCode, tournamentId, organizerAddress, 'test instruction', JSON.stringify(planJson), expires, now.toISOString(), now.toISOString()],
+    });
+    return planCode;
+  }
+
+  it('confirmAndExecute executes a PENDING plan and marks it EXECUTED', async () => {
+    const code = await stagePlan('org-1@s.whatsapp.net', 'tourn-1', 'DRAW_READY');
+    const res = await planner.confirmAndExecute(code, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(true);
+    expect(res.responseText).toContain('PLAN DIEKSEKUSI');
+    // Verify DB state.
+    const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [code] });
+    expect(String((row.rows[0] as any).status)).toBe('EXECUTED');
+    const t = await db.execute({ sql: 'SELECT status FROM tournaments WHERE id = ?', args: ['tourn-1'] });
+    expect(String((t.rows[0] as any).status)).toBe('DRAW_READY');
+  });
+
+  it('DOUBLE-CONFIRM is explicitly rejected (idempotency) — not silently ignored', async () => {
+    const code = await stagePlan('org-1@s.whatsapp.net', 'tourn-1', 'ARCHIVED');
+    const first = await planner.confirmAndExecute(code, 'org-1@s.whatsapp.net');
+    expect(first.success).toBe(true);
+    const second = await planner.confirmAndExecute(code, 'org-1@s.whatsapp.net');
+    expect(second.success).toBe(false);
+    expect(second.responseText).toContain('SUDAH DIEKSEKUSI');
+    expect(second.responseText).toContain('idempotency');
+  });
+
+  it('expired plan is rejected with explicit message', async () => {
+    // Stage a plan with expiry in the past.
+    const planId = 'plan-expired';
+    const planCode = 'AGENT-EXP1';
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, 'org-1@s.whatsapp.net', 'test', '{"actions":[]}', 'PENDING', ?, ?, ?)`,
+      args: [planId, planCode, pastExpiry, now, now],
+    });
+    const res = await planner.confirmAndExecute(planCode, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('KEDALUWARSA');
+    // Verify status flipped to EXPIRED.
+    const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [planCode] });
+    expect(String((row.rows[0] as any).status)).toBe('EXPIRED');
+  });
+
+  it('cancelled plan is rejected', async () => {
+    const code = await stagePlan('org-1@s.whatsapp.net', 'tourn-1', 'ARCHIVED');
+    const cancel = await planner.cancelPlan(code, 'org-1@s.whatsapp.net');
+    expect(cancel.success).toBe(true);
+    const confirm = await planner.confirmAndExecute(code, 'org-1@s.whatsapp.net');
+    expect(confirm.success).toBe(false);
+    expect(confirm.responseText).toContain('dibatalkan');
+  });
+
+  it('cross-organizer confirm is rejected (only the stager may confirm)', async () => {
+    const code = await stagePlan('org-1@s.whatsapp.net', 'tourn-1', 'ARCHIVED');
+    const res = await planner.confirmAndExecute(code, 'org-2@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('organizer lain');
+  });
+
+  it('cancel of a non-PENDING plan is rejected', async () => {
+    const code = await stagePlan('org-1@s.whatsapp.net', 'tourn-1', 'ARCHIVED');
+    await planner.confirmAndExecute(code, 'org-1@s.whatsapp.net'); // EXECUTED
+    const cancel = await planner.cancelPlan(code, 'org-1@s.whatsapp.net');
+    expect(cancel.success).toBe(false);
+    expect(cancel.responseText).toContain('tidak bisa dibatalkan');
+  });
+
+  it('transactional rollback: if an action throws mid-plan, no partial changes persist', async () => {
+    // Stage a 2-action plan where the SECOND action will fail (invalid tournament_id).
+    // The first action (set_tournament_status ACTIVE→DRAW_READY) should roll back.
+    const planId = 'plan-rollback';
+    const planCode = 'AGENT-RB01';
+    const now = new Date();
+    const expires = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+    const planJson = {
+      actions: [
+        {
+          action_id: 'set_tournament_status',
+          params: { tournament_id: 'tourn-1', new_status: 'DRAW_READY', reason: 'first action' },
+          rationale: 'should roll back',
+          preview_summary: 'first',
+        },
+        {
+          action_id: 'set_tournament_status',
+          params: { tournament_id: '00000000-0000-0000-0000-000000000000', new_status: 'ARCHIVED', reason: 'second action — will fail' },
+          rationale: 'invalid tournament',
+          preview_summary: 'second (invalid)',
+        },
+      ],
+    };
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, tournament_id, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, 'tourn-1', 'org-1@s.whatsapp.net', 'rollback test', ?, 'PENDING', ?, ?, ?)`,
+      args: [planId, planCode, JSON.stringify(planJson), expires, now.toISOString(), now.toISOString()],
+    });
+
+    // First, set tournament to ACTIVE (already is). The plan's first action changes it to DRAW_READY.
+    // The second action's preview will fail (invalid tournament_id) inside the tx → rollback.
+    const res = await planner.confirmAndExecute(planCode, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('GAGAL');
+    expect(res.responseText).toContain('rollback');
+
+    // Verify tournament status is STILL ACTIVE (first action rolled back).
+    const t = await db.execute({ sql: 'SELECT status FROM tournaments WHERE id = ?', args: ['tourn-1'] });
+    expect(String((t.rows[0] as any).status)).toBe('ACTIVE');
+
+    // Verify plan marked FAILED.
+    const planRow = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: [planCode] });
+    expect(String((planRow.rows[0] as any).status)).toBe('FAILED');
+    expect(String((planRow.rows[0] as any).failure_reason).length).toBeGreaterThan(0);
+
+    // Verify audit event recorded for the failure.
+    const audit = await db.execute({ sql: "SELECT event_type FROM audit_events WHERE entity_id = ?", args: [planId] });
+    expect(audit.rows.length).toBe(1);
+    expect(String((audit.rows[0] as any).event_type)).toBe('AI_AGENT_PLAN_FAILED');
+  });
+
+  it('recoverInterruptedPlans marks stale EXECUTING as FAILED', async () => {
+    // Insert a plan in EXECUTING with an old updated_at.
+    const planId = 'plan-stale';
+    const planCode = 'AGENT-STLE';
+    const staleTime = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, 'org-1@s.whatsapp.net', 'stale', '{"actions":[]}', 'EXECUTING', ?, ?, ?)`,
+      args: [planId, planCode, staleTime, staleTime, staleTime],
+    });
+    const n = await planner.recoverInterruptedPlans();
+    expect(n).toBe(1);
+    const row = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: [planCode] });
+    expect(String((row.rows[0] as any).status)).toBe('FAILED');
+    expect(String((row.rows[0] as any).failure_reason)).toContain('Interrupted');
+  });
+});
+
+// =============================================================================
+// QnaService
+// =============================================================================
+
+describe('QnaService (D-039)', () => {
+  let db: Client;
+
+  beforeEach(async () => {
+    db = await freshDb();
+  });
+
+  it('listEntries returns empty-state message when no entries', async () => {
+    const svc = new QnaService({ db });
+    const text = await svc.listEntries();
+    expect(text).toContain('Belum ada');
+    expect(text).toContain('!saveqna');
+  });
+
+  it('listEntries renders entries when present', async () => {
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO qna_entries (id, question, answer, category, created_by_organizer, is_active, created_at, updated_at)
+            VALUES ('q-1', 'Kapan main?', 'Besok jam 8 malam.', 'jadwal', 1, 1, ?, ?)`,
+      args: [now, now],
+    });
+    const svc = new QnaService({ db });
+    const text = await svc.listEntries();
+    expect(text).toContain('Kapan main?');
+    expect(text).toContain('Besok jam 8 malam.');
+    expect(text).toContain('jadwal');
+  });
+
+  it('extractAndSave returns graceful message when no messages captured yet', async () => {
+    // Provide a fake router so the message-fetch path runs (and finds nothing).
+    const fakeRouter: any = { execute: async () => ({ raw_text: '{"pairs":[]}', telemetry: {} }) };
+    const svc = new QnaService({ db, providerRouter: fakeRouter });
+    const res = await svc.extractAndSave({
+      chatId: 'group-x@g.us',
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    });
+    expect(res.success).toBe(false);
+    expect(res.responseText.toLowerCase()).toContain('belum ada pesan');
+  });
+
+  it('extractAndSave without providerRouter returns AI-provider-missing message', async () => {
+    const svc = new QnaService({ db });
+    const res = await svc.extractAndSave({
+      chatId: 'group-x@g.us',
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    });
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('AI provider');
+  });
+
+  it('extractAndSave rate-guards rapid repeated calls', async () => {
+    const fakeRouter: any = { execute: async () => ({ raw_text: '{"pairs":[]}', telemetry: {} }) };
+    const svc = new QnaService({ db, providerRouter: fakeRouter });
+    const args = {
+      chatId: 'group-x@g.us',
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    };
+    await svc.extractAndSave(args); // sets cooldown
+    const r2 = await svc.extractAndSave(args);
+    expect(r2.success).toBe(false);
+    expect(r2.responseText).toContain('detik');
+  });
+});
+
+// =============================================================================
+// TriviaService
+// =============================================================================
+
+describe('TriviaService (D-040)', () => {
+  it('loads the curated trivia DB and randomFact returns content', async () => {
+    const svc = new TriviaService({}); // no providerRouter → raw fact path
+    const text = await svc.randomFact();
+    expect(text).toContain('TRIVIA FLASH PEAK');
+    expect(text.length).toBeGreaterThan(50);
+  });
+
+  it('randomQuiz returns a question + answer pair', async () => {
+    const svc = new TriviaService({});
+    const res = await svc.randomQuiz();
+    expect(res.success).toBe(true);
+    expect(res.question).toBeTruthy();
+    expect(res.answer).toBeTruthy();
+  });
+});
+
+// =============================================================================
+// Migration 004 schema verification
+// =============================================================================
+
+describe('Migration 004 schema (D-037..D-040)', () => {
+  let db: Client;
+
+  beforeEach(async () => {
+    db = await freshDb();
+  });
+
+  it('ai_action_plans table exists with EXECUTING in CHECK', async () => {
+    const res = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'ai_action_plans'");
+    const sql = String((res.rows[0] as any).sql);
+    expect(sql).toContain('ai_action_plans');
+    expect(sql).toContain('EXECUTING');
+    expect(sql).toContain('plan_code');
+  });
+
+  it('qna_entries table exists with UNIQUE(question, answer)', async () => {
+    const res = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'qna_entries'");
+    const sql = String((res.rows[0] as any).sql);
+    expect(sql).toContain('qna_entries');
+    expect(sql).toContain('UNIQUE(question, answer)');
+  });
+
+  it('provider_usage CHECK expanded to include CHAT_OMAK_PEAK', async () => {
+    const res = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'provider_usage'");
+    const sql = String((res.rows[0] as any).sql);
+    expect(sql).toContain('CHAT_OMAK_PEAK');
+    expect(sql).toContain('PLAN_AGENT');
+    expect(sql).toContain('EXTRACT_QNA');
+  });
+});
