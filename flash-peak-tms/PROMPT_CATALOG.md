@@ -334,14 +334,14 @@ version pinning in source control.
 - Rules: only genuine participant-question + organizer-answer pairs; ignore spam/chat; max 10 pairs; never invent; mark duplicates against existing Q&A.
 
 ### prompt: engagement_formatter_v1 (task FORMAT_HYPE)
-- File: `src/ai/prompts/engagement.ts` (inline system prompt in `engagement.ts`)
+- File: inline system prompts in `src/application/engagement.ts` (`buildHypeRecap` / `buildStandingsCommentary` / `buildChampionCelebration`)
 - Role: Omak Peak formatting 2-4 sentence hype / 1-2 sentence standings commentary / champion celebration.
 - Trusted context: REAL facts (DB-collected) — score, margin, series score, standings rows, champion path. Passed as `<facts>`.
 - Hard rule: use ONLY facts in `<facts>`; never invent in-match events, temporal narratives, or stats not present. If facts are minimal, make a general comment grounded in what's there.
 - Output: free-form Indonesian text (WhatsApp-friendly).
 
 ### prompt: pantun_generator_v1 (task GENERATE_PANTUN)
-- File: `src/ai/prompts/engagement.ts`
+- File: inline system prompt in `src/application/engagement.ts` (`generatePantun`)
 - Role: generate one 4-line pantun (ab-ab rhyme) themed Flash Peak / tournament / Indonesian gamer community.
 - No factual claims — pure language generation. Safe to invent at runtime.
 - Output: 4 lines only, no explanation.
