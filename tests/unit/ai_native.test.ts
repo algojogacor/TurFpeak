@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { runMigrations } from '../../src/db/migrate.js';
-import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext } from '../../src/application/omak-peak.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, ConversationMemory } from '../../src/application/omak-peak.js';
 import { buildOmakPeakPrompt } from '../../src/ai/prompts/omak-peak.js';
 import {
   AgentActionCatalog,
@@ -141,14 +141,14 @@ describe('OmakPeakService (D-037)', () => {
 
   it('no-arg invocation returns intro (no AI call, no rate-limit consumption)', async () => {
     const svc = new OmakPeakService({ db }); // no providerRouter
-    const res = await svc.handleAiCommand('user-A', '');
+    const res = await svc.handleAiCommand('user-A', '', 'grp-test@g.us');
     expect(res.rateLimited).toBe(false);
     expect(res.replyText).toBe(OMAK_PEAK_INTRO);
   });
 
   it('without providerRouter, returns graceful fallback (not a crash)', async () => {
     const svc = new OmakPeakService({ db });
-    const res = await svc.handleAiCommand('user-A', 'siapa topskor?');
+    const res = await svc.handleAiCommand('user-A', 'siapa topskor?', 'grp-test@g.us');
     expect(res.rateLimited).toBe(false);
     expect(res.replyText).toContain('AI provider');
   });
@@ -159,9 +159,9 @@ describe('OmakPeakService (D-037)', () => {
       execute: async () => ({ raw_text: 'mock jawaban', telemetry: {} }),
     };
     const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
-    const r1 = await svc.handleAiCommand('user-A', 'pertanyaan 1');
-    const r2 = await svc.handleAiCommand('user-A', 'pertanyaan 2');
-    const r3 = await svc.handleAiCommand('user-A', 'pertanyaan 3');
+    const r1 = await svc.handleAiCommand('user-A', 'pertanyaan 1', 'grp-test@g.us');
+    const r2 = await svc.handleAiCommand('user-A', 'pertanyaan 2', 'grp-test@g.us');
+    const r3 = await svc.handleAiCommand('user-A', 'pertanyaan 3', 'grp-test@g.us');
     expect(r1.rateLimited).toBe(false);
     expect(r2.rateLimited).toBe(false);
     expect(r3.rateLimited).toBe(true);
@@ -180,7 +180,7 @@ describe('OmakPeakService (D-037)', () => {
       }),
     };
     const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
-    const res = await svc.handleAiCommand('user-B', 'halo omak');
+    const res = await svc.handleAiCommand('user-B', 'halo omak', 'grp-test@g.us');
     expect(res.rateLimited).toBe(false);
     expect(res.replyText).toContain('Halo! Ini jawaban Omak Peak untuk kamu.');
     expect(res.replyText).not.toContain('thinking');
@@ -193,15 +193,95 @@ describe('OmakPeakService (D-037)', () => {
       execute: async () => ({ raw_text: '```json\n{"speak": "jawaban dalam fence"}\n```', telemetry: {} }),
     };
     const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
-    const res = await svc.handleAiCommand('user-C', 'tes fence');
+    const res = await svc.handleAiCommand('user-C', 'tes fence', 'grp-test@g.us');
     expect(res.replyText).toBe('jawaban dalam fence');
 
     const fakeRouter2: any = {
       execute: async () => ({ raw_text: 'jawaban plain biasa aja', telemetry: {} }),
     };
     const svc2 = new OmakPeakService({ db, providerRouter: fakeRouter2 });
-    const res2 = await svc2.handleAiCommand('user-D', 'tes plain');
+    const res2 = await svc2.handleAiCommand('user-D', 'tes plain', 'grp-test@g.us');
     expect(res2.replyText).toBe('jawaban plain biasa aja');
+  });
+
+  it('ConversationMemory: records, returns oldest-first within TTL, prunes expired', () => {
+    let clock = 1_000_000;
+    const mem = new ConversationMemory(6, 1000, () => clock);
+    expect(mem.recent('grp@g.us')).toEqual([]);
+
+    mem.record('grp@g.us', 'arya', 'siapa juara?', 'nggak ada yang main');
+    mem.record('grp@g.us', 'jestre', 'coba tebak', 'tebak apa');
+    const r = mem.recent('grp@g.us');
+    expect(r).toHaveLength(2);
+    expect(r[0].question).toBe('siapa juara?');
+    expect(r[1].senderLabel).toBe('jestre');
+
+    // TTL prune: advance past window.
+    clock += 1500;
+    mem.record('grp@g.us', 'x', 'baru', 'baru');
+    const r2 = mem.recent('grp@g.us');
+    expect(r2).toHaveLength(1);
+    expect(r2[0].question).toBe('baru');
+  });
+
+  it('ConversationMemory: bounds to last N turns (ring buffer)', () => {
+    const mem = new ConversationMemory(3, 60_000);
+    for (let i = 0; i < 7; i++) mem.record('g@us', `u${i}`, `q${i}`, `a${i}`);
+    const r = mem.recent('g@us');
+    expect(r).toHaveLength(3);
+    expect(r.map((t) => t.question)).toEqual(['q4', 'q5', 'q6']);
+  });
+
+  it('ConversationMemory: scoped per chat (different groups do not share)', () => {
+    const mem = new ConversationMemory();
+    mem.record('grpA@g.us', 'arya', 'qa', 'aa');
+    mem.record('grpB@g.us', 'arya', 'qb', 'bb');
+    expect(mem.recent('grpA@g.us')).toHaveLength(1);
+    expect(mem.recent('grpA@g.us')[0].question).toBe('qa');
+    expect(mem.recent('grpB@g.us')[0].question).toBe('qb');
+  });
+
+  it('!ai injects prior turn into the prompt on a follow-up in the same group (rolling memory)', async () => {
+    const seen: Array<{ system: string; prompt: string }> = [];
+    const fakeRouter: any = {
+      execute: async (req: any) => {
+        seen.push({ system: req.system_prompt, prompt: req.prompt });
+        return { raw_text: 'ok jawaban', telemetry: {} };
+      },
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    // Turn 1: arya asks "siapa juara grup B"
+    await svc.handleAiCommand('6281@lid', 'siapa juara grup B', '120363@g.us', 'arya');
+    // Turn 2: jestre follows up with vague "coba tebak terserah"
+    await svc.handleAiCommand('6282@lid', 'coba tebak terserah', '120363@g.us', 'jestre');
+
+    expect(seen).toHaveLength(2);
+    // First call: system prompt must NOT carry the question as memory (it's
+    // only in `prompt` as the current user message).
+    expect(seen[0].system).not.toContain('siapa juara grup B');
+    // Second call must carry the prior turn so the model can connect "tebak terserah".
+    expect(seen[1].system).toContain('siapa juara grup B');
+    expect(seen[1].system).toContain('arya');
+    // Sanity: the JSON array marker for populated memory only appears in turn 2.
+    expect(seen[1].system).toContain('"recent_ai_turns": [');
+    expect(seen[0].system).not.toContain('"recent_ai_turns": [');
+  });
+
+  it('!ai does NOT share memory across different group chats', async () => {
+    const seen: string[] = [];
+    const fakeRouter: any = {
+      execute: async (req: any) => {
+        seen.push(req.system_prompt);
+        return { raw_text: 'ok', telemetry: {} };
+      },
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    await svc.handleAiCommand('u1', 'rahasia grup A', 'grpA@g.us', 'arya');
+    await svc.handleAiCommand('u2', 'apa kabar', 'grpB@g.us', 'jestre');
+    // Group B's prompt must not leak group A's secret question (no populated
+    // memory array, and the secret question text must be absent).
+    expect(seen[1]).not.toContain('rahasia grup A');
+    expect(seen[1]).not.toContain('"recent_ai_turns": [');
   });
 });
 

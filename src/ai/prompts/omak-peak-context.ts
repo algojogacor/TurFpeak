@@ -85,4 +85,18 @@ export interface OmakPeakContext {
    * full document (which would bloat tokens).
    */
   rules_summary: string;
+  /**
+   * Rolling conversation memory — recent !ai Q&A turns in THIS group chat
+   * within the TTL window (default 15 minutes). Injected by OmakPeakService
+   * (not by buildOmakPeakContext, since memory is in-process state, not DB).
+   * Lets the model treat follow-ups like "coba tebak terserah" as a
+   * continuation of a prior "siapa juara" turn instead of a fresh cold start.
+   * Older turns first; bounded to a small N (default 6).
+   */
+  recent_ai_turns?: Array<{
+    sender_label: string;
+    question: string;
+    answer: string;
+    ts: string; // ISO 8601
+  }>;
 }

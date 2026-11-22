@@ -95,6 +95,65 @@ export class RollingRateLimiter {
 }
 
 // =============================================================================
+// Conversation memory — rolling per-group ring buffer of recent !ai turns.
+//
+// Omak Peak was originally stateless (each !ai call = a fresh cold turn), which
+// produced jarring UX in fast-moving group chats: a user replying "coba tebak
+// terserah" right after another user's "siapa juara" got a confused "percakapan
+// baru mulai" reply. This buffer keeps the last N Q&A pairs per central group
+// chat (with a TTL so stale context drops off), in-memory only — no DB writes
+// (read-only invariant preserved). Restart resets it; that is acceptable for a
+// community chat-assistant context.
+// =============================================================================
+
+export interface MemoryTurn {
+  senderLabel: string;
+  question: string;
+  answer: string;
+  ts: number; // epoch ms
+}
+
+export class ConversationMemory {
+  private readonly turns = new Map<string, MemoryTurn[]>();
+
+  constructor(
+    private readonly maxTurns = 6,
+    private readonly ttlMs = 15 * 60 * 1000,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  /** Append a Q&A turn for a chat, trimming to the last maxTurns. */
+  record(chatId: string, senderLabel: string, question: string, answer: string): void {
+    const key = this.key(chatId);
+    const arr = (this.turns.get(key) || []).filter((t) => this.now() - t.ts < this.ttlMs);
+    arr.push({ senderLabel, question, answer, ts: this.now() });
+    while (arr.length > this.maxTurns) arr.shift();
+    this.turns.set(key, arr);
+  }
+
+  /** Return fresh (within-TTL) turns for a chat, oldest first. Lazily prunes. */
+  recent(chatId: string): MemoryTurn[] {
+    const key = this.key(chatId);
+    const arr = this.turns.get(key);
+    if (!arr || arr.length === 0) return [];
+    const cutoff = this.now() - this.ttlMs;
+    const fresh = arr.filter((t) => t.ts >= cutoff);
+    if (fresh.length !== arr.length) this.turns.set(key, fresh);
+    return fresh;
+  }
+
+  /** Test helper. */
+  reset(chatId?: string): void {
+    if (chatId) this.turns.delete(this.key(chatId));
+    else this.turns.clear();
+  }
+
+  private key(chatId: string): string {
+    return (chatId || '_default').toLowerCase();
+  }
+}
+
+// =============================================================================
 // Omak Peak service
 // =============================================================================
 
@@ -103,25 +162,36 @@ export interface OmakPeakDeps {
   providerRouter?: ProviderRouter;
   /** Injected for tests; defaults to a real RollingRateLimiter in production. */
   rateLimiter?: RollingRateLimiter;
+  /** Injected for tests; defaults to a real ConversationMemory in production. */
+  conversationMemory?: ConversationMemory;
 }
 
 export const OMAK_PEAK_INTRO = `👋 *Omak Peak here.*\n\nAku asisten otomatis turnamen Flash Peak (Gojiha Tournament) di grup ini. Bisa ditanya apa aja — jadwal, hasil, klasemen, aturan, atau sekadar ngobrol soal Flash Peak. Aku read-only: nggak bisa ubah apa pun di sistem, bukan itu peranku. Kalau lo butuh aksi (ubah hasil, reopen, dll), ke Panitia Arya langsung.\n\nCaranya: ketik *!ai <pertanyaan>*. Contoh:\n• *!ai siapa lawan tim aku besok?*\n• *!ai gimana aturan WO?*\n• *!ai skill Homer apa?*\n\n_2x per menit per user, ya — biar adil buat semua._`;
 
 export class OmakPeakService {
   private readonly rateLimiter: RollingRateLimiter;
+  private readonly memory: ConversationMemory;
 
   constructor(private readonly deps: OmakPeakDeps) {
     this.rateLimiter = deps.rateLimiter ?? new RollingRateLimiter(2, 60_000);
+    this.memory = deps.conversationMemory ?? new ConversationMemory();
   }
 
   /**
    * Handles the !ai command.
    * Returns the reply text (and optional metadata). Never throws — AI failures
    * surface as a friendly Omak-Peak-voiced fallback message.
+   *
+   * `chatId` scopes the rolling conversation memory to this group chat so
+   * follow-up turns (across users) get continuity. `senderLabel` (typically
+   * the WA push_name) is stored in memory so the model can attribute prior
+   * turns to a speaker; both fall back gracefully if absent.
    */
   async handleAiCommand(
     senderRawAddress: string,
-    userMessage: string
+    userMessage: string,
+    chatId: string,
+    senderLabel?: string
   ): Promise<{ replyText: string; rateLimited: boolean; retryAfterSeconds?: number }> {
     const trimmed = userMessage.trim();
     if (!trimmed) {
@@ -148,6 +218,11 @@ export class OmakPeakService {
       };
     }
 
+    // Snapshot recent !ai turns in THIS group chat so the model gets continuity.
+    // Captured BEFORE building DB context so memory survives even if DB build
+    // throws (we still want follow-ups to work when the DB hiccups).
+    const recentTurns = this.memory.recent(chatId);
+
     let context: OmakPeakContext;
     try {
       context = await buildOmakPeakContext(this.deps.db);
@@ -161,6 +236,14 @@ export class OmakPeakService {
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
       };
+    }
+    if (recentTurns.length > 0) {
+      context.recent_ai_turns = recentTurns.map((t) => ({
+        sender_label: t.senderLabel,
+        question: t.question,
+        answer: t.answer,
+        ts: new Date(t.ts).toISOString(),
+      }));
     }
 
     const { system_prompt, prompt } = buildOmakPeakPrompt(context, trimmed);
@@ -185,6 +268,11 @@ export class OmakPeakService {
       // Truncate very long AI responses to keep WhatsApp readable.
       const maxLen = 1800;
       const finalText = text.length > maxLen ? text.slice(0, maxLen - 1) + '…' : text;
+      // Record into rolling memory AFTER a successful response. The current
+      // turn is not in the snapshot above, so the model never sees its own
+      // in-progress answer (avoids self-referential noise).
+      const label = (senderLabel && senderLabel.trim()) || senderRawAddress;
+      this.memory.record(chatId, label, trimmed, finalText);
       return { replyText: finalText, rateLimited: false };
     } catch (err) {
       if (err instanceof AllProvidersFailedError) {

@@ -72,7 +72,12 @@ export function registerAiNativeCommands(
     allowedInGroup: true,
     handler: async (ctx: CommandContext) => {
       const userMessage = ctx.rawArgs;
-      const res = await omakPeak.handleAiCommand(ctx.message.sender_raw_address, userMessage);
+      const res = await omakPeak.handleAiCommand(
+        ctx.message.sender_raw_address,
+        userMessage,
+        ctx.message.chat_id,
+        ctx.message.push_name || undefined
+      );
       return {
         success: !res.rateLimited,
         responseText: res.replyText,
