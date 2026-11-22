@@ -50,6 +50,17 @@
 ### Verifikasi Empiris
 - `npx tsc --noEmit`: 0 error.
 - `npx vitest run`: 319/319 PASS (23 test files).
+- **Eksekusi Koreksi Database Produksi di VM (`scripts/fix_and_lock_matches.ts`)**:
+  - `7Sins vs Kazekage` (Fixture `b17c0966...`): Validated 2 - 7 (Winner: Kazekage). LOCKED. 10 stats recorded.
+  - `Jestre vs The Apostles Dominion` (Fixture `70ab663b...`): Validated 0 - 9 (Winner: The Apostles Dominion). LOCKED. 10 stats recorded.
+  - `Elite 8 vs AVOID Impact` (Fixture `7e7971d6...`): Validated 7 - 3 (Winner: Elite 8). LOCKED. 10 stats recorded.
+  - `Agility Starlight vs Helix Moonbreaker` (Fixture `7eb46b0f...`): Validated 2 - 6 (Winner: Helix Moonbreaker). LOCKED. 10 stats recorded.
+- **Hasil Klasemen Grup Pasca-Koreksi**:
+  - **Group A**: Helix Moonbreaker (P:1, W:1, GF:6, GA:2, GD:+4, PTS:3), Agility Starlight (P:1, L:1, GF:2, GA:6, GD:-4, PTS:0).
+  - **Group B**: The Apostles Dominion (P:1, W:1, GF:9, GA:0, GD:+9, PTS:3), Jestre (P:1, L:1, GF:0, GA:9, GD:-9, PTS:0).
+  - **Group C**: Elite 8 (P:1, W:1, GF:7, GA:3, GD:+4, PTS:3), AVOID Impact (P:1, L:1, GF:3, GA:7, GD:-4, PTS:0).
+  - **Group D**: Kazekage (P:1, W:1, GF:7, GA:2, GD:+5, PTS:3), 7Sins•BlueLock Inferno (P:1, L:1, GF:2, GA:7, GD:-5, PTS:0).
+- **PM2 State**: `flashpeak-bot` online (PID 3232748), WhatsApp Baileys connected.
 
 ---
 
