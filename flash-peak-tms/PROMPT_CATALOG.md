@@ -317,7 +317,7 @@ version pinning in source control.
 - Output: free-form Indonesian text (WhatsApp-friendly, light Markdown). No JSON schema (chat is free-form).
 
 ### prompt: agent_planner_v1 (task PLAN_AGENT)
-- File: `src/ai/prompts/agent-planner.ts` (inline system prompt in `agent-planner.ts`)
+- File: inline system prompt in `src/application/agent-planner.ts` (`PLANNER_SYSTEM_PROMPT`)
 - Role: AI planner for the organizer (Panitia). Translates NL instruction into typed action plan.
 - Trusted context: active tournament, recent fixtures (with IDs), the available action catalog (action_id + description + parameter shapes).
 - Untrusted evidence: the organizer's `<instruction>`.

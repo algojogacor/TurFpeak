@@ -21,9 +21,9 @@ import type { CommandContext } from '../whatsapp/types.js';
 import type { Client } from '@libsql/client';
 import type { ProviderRouter } from '../ai/router.js';
 import type { WhatsAppSender } from '../whatsapp/sender.js';
-import { OmakPeakService, OMAK_PEAK_INTRO } from './omak-peak.js';
+import { OmakPeakService } from './omak-peak.js';
 import { AgentPlannerService } from './agent-planner.js';
-import { buildDefaultAgentActionCatalog, type AgentActionCatalog } from './agent-actions.js';
+import { buildDefaultAgentActionCatalog } from './agent-actions.js';
 import { QnaService } from './qna.js';
 import { EngagementService } from './engagement.js';
 import { TriviaService } from './trivia.js';
@@ -218,7 +218,7 @@ export function registerAiNativeCommands(
           targetChat,
           `❓ *QUIZ FLASH PEAK*\n\n${res.question}\n\n_Jawaban muncul 15 detik lagi..._`
         );
-      } catch (sendErr) {
+      } catch {
         return { success: false, responseText: '⚠️ Gagal mengirim pertanyaan quiz.' };
       }
       // Schedule the reveal. Use a detached promise — never blocks the handler.

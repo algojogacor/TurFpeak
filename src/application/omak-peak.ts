@@ -122,7 +122,7 @@ export class OmakPeakService {
     let context: OmakPeakContext;
     try {
       context = await buildOmakPeakContext(this.deps.db);
-    } catch (ctxErr) {
+    } catch {
       // Context build failure is non-fatal: proceed with an empty context so the
       // user still gets a response (the AI will hedge about tournament specifics).
       context = {

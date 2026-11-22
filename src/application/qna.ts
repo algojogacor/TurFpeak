@@ -29,7 +29,6 @@ import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import type { ProviderRouter } from '../ai/router.js';
 import { AllProvidersFailedError } from '../ai/router.js';
-import { AIMalformedResponseError } from '../ai/adapter.js';
 
 const SAVEQNA_COOLDOWN_MS = 30_000;
 
@@ -246,6 +245,8 @@ export class QnaService {
     let inserted = 0;
     let skippedDup = 0;
     let skippedUnique = 0;
+    let skippedError = 0;
+    let firstError: string | null = null;
     const insertedPairs: Array<{ question: string; answer: string; category: string | null }> = [];
     for (const p of pairs) {
       if (p.duplicate_of_existing) {
@@ -279,7 +280,10 @@ export class QnaService {
           skippedUnique++;
         }
       } catch (e) {
-        // Skip on error, continue.
+        // Surface non-UNIQUE errors (e.g. missing table) instead of swallowing —
+        // a silent zero-insert success is misleading to the organizer.
+        skippedError++;
+        if (firstError === null) firstError = e instanceof Error ? e.message : String(e);
       }
     }
 
@@ -290,6 +294,7 @@ export class QnaService {
     lines.push(`✅ Ditambahkan ke FAQ: ${inserted} pasangan baru`);
     if (skippedDup > 0) lines.push(`♻️ Duplikat existing (ditandai AI, di-skip): ${skippedDup}`);
     if (skippedUnique > 0) lines.push(`♻️ Duplikat persis (UNIQUE, otomatis di-skip): ${skippedUnique}`);
+    if (skippedError > 0) lines.push(`⚠️ Gagal insert: ${skippedError} pasangan (error: ${firstError?.slice(0, 100)})`);
     if (insertedPairs.length > 0) {
       lines.push('');
       lines.push('*Pasangan baru:*');

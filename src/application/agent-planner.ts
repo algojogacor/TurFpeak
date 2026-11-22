@@ -26,10 +26,9 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
-import { z } from 'zod';
 import type { ProviderRouter } from '../ai/router.js';
 import { AllProvidersFailedError } from '../ai/router.js';
-import { AIError, AIMalformedResponseError } from '../ai/adapter.js';
+import { AIMalformedResponseError } from '../ai/adapter.js';
 import type { AgentActionCatalog, ActionExecuteResult, TxClient } from './agent-actions.js';
 import { extractAnnounceMessages } from './agent-actions.js';
 import type { WhatsAppSender } from '../whatsapp/sender.js';
