@@ -7,6 +7,8 @@
  * include credentials, internal file paths, or system internals.
  */
 
+import type { FlashPeakGameKnowledge } from './flashpeak-game-knowledge.js';
+
 export interface OmakPeakContext {
   tournament?: {
     name: string;
@@ -139,4 +141,9 @@ export interface OmakPeakContext {
     answer: string;
     ts: string; // ISO 8601
   }>;
+  /**
+   * Comprehensive Flash Peak game knowledge (characters, skills, attributes,
+   * combat/tackle formulas, pitch rules, and tactical matchup playbook).
+   */
+  game_knowledge?: FlashPeakGameKnowledge;
 }

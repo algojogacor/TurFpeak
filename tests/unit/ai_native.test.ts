@@ -1230,4 +1230,29 @@ describe('Migration 004 schema (D-037..D-040)', () => {
     expect(sql).toContain('PLAN_AGENT');
     expect(sql).toContain('EXTRACT_QNA');
   });
+
+  it('populates flash_peak_game_knowledge into context and system prompt', async () => {
+    const ctx = await buildOmakPeakContext(db);
+    expect(ctx.game_knowledge).toBeDefined();
+    expect(ctx.game_knowledge?.characters.length).toBe(13);
+
+    const andrew = ctx.game_knowledge?.characters.find((c) => c.name === 'Andrew');
+    expect(andrew).toBeDefined();
+    expect(andrew?.role).toBe('CB');
+    expect(andrew?.power).toBe(87);
+    expect(andrew?.ultimate_skill.name).toContain('Super Tackle');
+    expect(andrew?.ultimate_skill.range_or_duration).toContain('18.0');
+
+    const ford = ctx.game_knowledge?.characters.find((c) => c.name === 'Ford');
+    expect(ford).toBeDefined();
+    expect(ford?.role).toBe('CB');
+    expect(ford?.ultimate_skill.name).toContain('Super Block');
+
+    const { system_prompt } = buildOmakPeakPrompt(ctx, 'kalau dikepung andrew ama ford gmn');
+    expect(system_prompt).toContain('Andrew');
+    expect(system_prompt).toContain('Ford');
+    expect(system_prompt).toContain('Shoulder Barge');
+    expect(system_prompt).toContain('dikepung_andrew_dan_ford');
+    expect(system_prompt).toContain('Catastrophic Knockdown');
+  });
 });

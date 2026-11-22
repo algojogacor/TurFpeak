@@ -29,6 +29,7 @@ import { AllProvidersFailedError } from '../ai/router.js';
 import { AIError } from '../ai/adapter.js';
 import { buildOmakPeakPrompt } from '../ai/prompts/omak-peak.js';
 import type { OmakPeakContext } from '../ai/prompts/omak-peak-context.js';
+import { FLASH_PEAK_GAME_KNOWLEDGE } from '../ai/prompts/flashpeak-game-knowledge.js';
 
 // =============================================================================
 // Output normalization — never post raw AI wrappers into the chat.
@@ -247,6 +248,7 @@ export class OmakPeakService {
         teams_and_delegates: [],
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
+        game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
       };
     }
     if (recentTurns.length > 0) {
@@ -332,6 +334,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
       teams_and_delegates: [],
       qna_entries: [],
       rules_summary: RULES_SUMMARY,
+      game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
     };
   }
   const tRow = tRes.rows[0] as unknown as Record<string, unknown>;
@@ -588,5 +591,6 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     teams_and_delegates,
     qna_entries,
     rules_summary: RULES_SUMMARY,
+    game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
   };
 }

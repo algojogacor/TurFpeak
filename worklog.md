@@ -1,5 +1,137 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Flash Peak Deep Game Knowledge Integration into Omak Peak AI Native Engine
+
+### Konteks Sesi
+- User memeriksa log grup WhatsApp dan mendapati pertanyaan peserta: `"!ai kalau dikepung andrew ama ford gmn"`. Respon bot sebelumnya tidak mengenali Andrew dan Ford karena data game Flash Peak belum tersedia di konteks AI.
+- User menginstruksikan untuk menyelam ke direktori `D:\Projects\FlashPeak` mengerahkan `/swarm` dan `/reverse-engineer-anything` untuk membongkar seluruh aset game tanpa batasan dan menjadikannya sumber pengetahuan otoritatif bagi bot.
+- Swarm `FlashPeak Deep Game Extraction` dibentuk dengan 5 worker terspesialisasi:
+  - `monitor`: stall monitor.
+  - `roster-scout`: reverse engineering 14 karakter, atribut radar (PAC, SHO, PAS, DRI, DEF, PHY), dan rating tier.
+  - `skills-specialist`: reverse engineering seluruh Common Skills, Small Skills, Ultimates, stamina/energy cost, range (meter), cooldown, buff IDs, dan animation cancelling.
+  - `mechanics-deepdive`: reverse engineering pemulihan energi/stamina, geometri pitch (66x103x20m), durasi match (300s), 6x6 tactical grid, pinning & double-teaming debuff (speed 90%), dan aturan kiper (invincible maks 3s, back-pass anti-stall 0.3s).
+  - `binary-archaeologist`: dekompilasi C# `ProjectCR.Runtime.dll` membongkar fixed-point Q32.32, formula $\Delta \text{Power} > 25$ catastrophic knockdown, Andrew 18m SuperTackle dengan `ControlBallImmediately`, Ford 4s SuperBlock dengan `StopFreeMoveBall`, dan perhitungan save kiper.
+
+### Perubahan Kode (Surgical)
+1. **`src/ai/prompts/flashpeak-game-knowledge.ts` (BARU)**:
+   - Modul pengetahuan otoritatif Flash Peak berisi deskripsi lengkap format 4v4, durasi 5 menit, aturan tanpa offside, formula benturan fisik/shoulder barge, penalti double-teaming, aturan kiper, katalog 13 karakter outfield + Maxim (GK) dengan kit/stat lengkap, serta buku strategi taktis (*Tactical Matchup Playbook*) untuk skenario spesifik seperti dikepung Andrew + Ford, counter Orion, counter Hayato, counter Kelly, dll.
+2. **`src/ai/prompts/omak-peak-context.ts`**:
+   - Menambahkan field `game_knowledge?: FlashPeakGameKnowledge` ke interface `OmakPeakContext`.
+3. **`src/ai/prompts/omak-peak.ts`**:
+   - Memperbarui system prompt Omak Peak agar secara eksplisit bertindak sebagai master dan ensiklopedia berjalan game Flash Peak dengan panduan taktis mendalam berdasarkan `game_knowledge` dan `tactical_matchup_playbook`.
+4. **`src/application/omak-peak.ts`**:
+   - Menginjeksi `game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE` ke dalam context builder `buildOmakPeakContext` (baik pada fallback maupun data aktif).
+5. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan unit test `populates flash_peak_game_knowledge into context and system prompt` yang memverifikasi integritas 13 karakter, atribut Andrew/Ford, dan injeksi playbook matchup ke dalam system prompt.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run tests/unit/ai_native.test.ts`: 53/53 tests passed.
+- `npx vitest run`: 325/325 tests passed across all 23 test suites.
+
+---
+
+## [2026-11-23] Sesi: Reverse Engineer Flash Peak Character Skills, Abilities & Mechanics (Skills Specialist)
+
+### Konteks Sesi
+- Tugas delegasi swarm `@skills-specialist`: Melakukan reverse engineering komprehensif terhadap seluruh skill karakter (Common Skills, Small Skills Type 2, Ultimate Skills Type 1), mechanics transition, buff/effect system, formula PowerDiff shoulder barge, range/distance, cooldown, stamina/energy cost, dan tactical effects dari Unity AssetBundles di `D:\Projects\FlashPeak`.
+- Sumber data utama:
+  - `bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data`: `FootballPlayerAbilityTable`, `AbilityTransition`, `PlayerBeShoulderBargeTransition`, `FootballPlayerRecoverEnergyTable`, `FootballPlayerMainTable`, `FootballPlayerAttributeTable`.
+  - `game_data_pulled\files\yoo\Default\BundleFiles`: `BuffConfigDatabase` & `BuffCoexistConfigDatabase` (`b5c5a411e3b4ae467d9f11fd5fc85a1f`), `PlayerAttributeConstants` (`8e0afa426605e8509684ee8eb22d83b5`).
+  - Decompiled C# assemblies: `ProjectCR.Runtime.dll` (`AbilityBehaviour*`, `InteractionShoulderBarge`, `InteractionSuperTackleHandler`, `InteractionFordSuperBlockBall`, `InteractionShirouDualShoot`, `BuffRuntimeConfig`, `PlayerAttributeConstants`).
+
+### Temuan Reverse Engineering Utama
+1. **Resource & Attribute Constants**:
+   - **Energy (Ultimate)**: EnergyMaxA sama persis dengan cost Ultimate (Homer 280 s.d. Orion 530). Regenerasi pasif 3.0/detik + perolehan aktif dari aksi (`FootballPlayerRecoverEnergyTable`).
+   - **Stamina Pool**: Skala 600.0 s.d. 1200.0 stamina. Regenerasi 320.0 - 450.0 stamina/detik. Dribble membawa bola menguras 80.0 stamina/detik (`RunHasBallStaminaCost`). Berlari tanpa bola bebas stamina (0).
+   - **Sprint Speed**: Off-ball 5.2 - 7.3 m/s; With-ball 4.8 - 6.8 m/s; Defense/Jockey 4.2 - 6.5 m/s. Max pass range: 35.0m dengan 60° auto-select cone.
+2. **Formula Matematika Shoulder Barge (`PlayerBeShoulderBargeTransition`)**:
+   - $\Delta \text{Power} = \text{Attacker Power} - \text{Target Power}$, jangkauan 2.0 meter, biaya 400 Stamina.
+   - Jika target berlari/sprint dan $\Delta \text{Power} > 25$: **80% Knockdown (Jatuh)**, 20% Slow Down, bola lepas (KickBall=1, BargeSuccess=1).
+   - Jika $\Delta \text{Power}$ antara 10 s.d. 25: 70% Slow Down & lepas bola, 30% Protect Ball (barge gagal).
+   - Jika $\Delta \text{Power}$ antara -1 s.d. 10: 40% Slow Down, 60% Protect Ball.
+   - Jika target diam (Idle) dan $\Delta \text{Power} > 10$: 100% Stumble, bola lepas.
+   - Hirarki Power level 1: Andrew (87, tertinggi), Ford (79), Oscar (78), Rafael (75), Steffie (75), Homer (72), Hayato (72), Shirou (71), Orion (67), Moco (67), Tatsuya (59), Kelly (58).
+3. **Transition & Animation Cancelling (`AbilityTransition`)**:
+   - `ShootPre` dan `TapPre` dapat dibatalkan seketika menjadi `PullBall` (drag-back cancel).
+   - `TacklePre` dapat bertransisi langsung ke `Shoot`, `Tap`, atau `Tackle` beruntun (dasar mekanik Dual Slide Steffie).
+   - `HitPre` (Stun/Stumble) memblokir seluruh aksi (0).
+4. **Bedah Kit Seluruh 14 Karakter**:
+   - **Andrew (CB)**: Ult Super Tackle (420 Energy, jangkauan **18.0m**, meluncur merebut bola dan **segera menguasai bola di kaki** / `ControlBallImmediately`, +20 Energy recovery). Small Skill Shoulder Barge (400 Stamina, 2m, 87 Power). Aura Intimidasi (`3012`/`30300`: -10 Speed & Shot lawan).
+   - **Ford (CB)**: Ult Super Block (380 Energy, durasi **4.0s**, tag `SuperBlock1009`, memblokir dan menendang balik bola tembakan lawan ke paruh lapangan musuh). Small Skill Shoulder Barge (400 Stamina, 2m, 79 Power).
+   - **Orion (ST)**: Ult Bicycle Kick (530 Energy, salto udara, **kebal tackle 5.0s** via tag `Ball.BallDisableTackle`, tidak bisa diintersepsi 1.63s via `Ball.BallDisableInteractive`, kontrol arah swipe). Small Skill Orion Pull (320 Stamina).
+   - **Hayato (CM)**: Ult Super Dribble (320 Energy, jangkauan **8.0m radius, sudut 120°**, gocekan beruntun melewati hingga **3 lawan sekaligus**). Small Skill Hayato Pull (160 Stamina).
+   - **Kelly (WF)**: Ult Wall Dash (440 Energy, lompat ke dinding stadion **hingga 15m, tinggi 1.8m, ekstensi lari 8m**, kebal tackle tanah, dapat menembak voli di udara). Small Skill Push Ball (150 Stamina). Passive Final Form (`3039`/`30390`: +6% Speed & +3 All Stats selama 30s).
+   - **Shirou (ST)**: Ult Dual Shoot (390 Energy, link rekan setim 10s, tembakan ganda mematikan dengan efek **AoE Knockdown / Hit-Fly Aerial Launch** pada lawan di lintasannya). Small Skill Rainbow Flick (175 Stamina, mengangkat bola melewati bek).
+   - **Rafael (ST)**: Ult Super Fake Shoot (460 Energy, Super Armor 10s, hingga 2 fake shot, lawan di sekitar yang tidak jockey akan **kehilangan keseimbangan / stun**, diakhiri Power Shot tak terhentikan). Small Skill Cut Turn (250 Stamina).
+   - **Moco (CM)**: Ult Hacker Mark (380 Energy, buff seluruh tim **20.0s**, radar passing global ke seluruh penjuru lapangan). Small Skill One-Two Pass (100 Stamina, umpan 1-2 otomatis jangkauan 25m/50m, membutakan fokus kamera lawan 2s via `1008041`).
+   - **Homer (CM)**: Ult Full Vision (280 Energy - termurah, bird's eye view 60s, lemparan/tembakan melengkung dengan **homing capture radius 16.0m**, homing turn 2.0°/frame). Small Skill Elastico (160 Stamina, **hukuman stun panjang** jika lawan tackle saat gerakan berlangsung).
+   - **Oscar (ST)**: Ult Savage Dash (320 Energy, charge lari 5.3s **mendorong/knockback semua lawan di jalurnya**, kecepatan bola tembakan meningkat seiring lamanya charge). Small Skill Two Point Sprint (300 Stamina, charge knockback).
+   - **Steffie (CB)**: Ult Doodle Storm (360 Energy, speed boost tim 3s + buff **Dual Slide 10s** untuk seluruh rekan setim). Small Skill Double Tackle (320 Stamina, sliding tackle ganda berantai tanpa recovery delay).
+   - **Tatsuya (WF)**: Ult Super Dash Shuttle (390 Energy, dash multi-arah kecepatan tinggi, **bonus +1 ekstra dash di area sayap/flank**). Small Skill Dash (0 Stamina / 0 Energy, cooldown 5.5s, burst lari gratis).
+   - **Maxim (GK)**: Suite GK lengkap (Clearing Shoot, Distribution Tap, Diving Saves Low/Mid/High Catch/Punch 45°/67°, Ground Smother Tackle).
+
+### Output & Artefak
+1. **`docs/FLASH_PEAK_SKILLS_AND_ABILITIES.md`**: Dokumen spesifikasi teknis lengkap (27.908 bytes) mencakup arsitektur energi, tabel recovery, matriks probabilitas shoulder barge, tabel animasi cancel, dan kit detail 14 karakter.
+2. **`docs/flash_peak_skills_catalog.json`**: Dataset katalog JSON terstruktur berformat mesin dari seluruh skill dan mekanisme game.
+
+### Verifikasi Empiris
+- Script ekstraksi Python (`dump_abilities.py`, `inspect_character_kits.py`, `inspect_buff_durations.py`, `find_attr_constants.py`, `build_full_markdown_docs.py`) membaca langsung Unity AssetBundles dan decompiled C# assembly.
+- Data numerik terverifikasi dari typetree dan fixed-point 64: Stamina (600-1200), Recovery (320-450), Speed (3.5-7.3 m/s), Pass Range (35m), Ult Cost (280-530).
+
+---
+
+
+### Konteks Sesi
+- Tugas delegasi swarm `@roster-scout`: melakukan reverse engineering menyeluruh terhadap roster karakter game Flash Peak dan atribut-atributnya dari Unity AssetBundles di `D:\Projects\FlashPeak`.
+- Sumber data utama:
+  - `bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data` (`FootballPlayerMainTable`, `FootballPlayerAttributeTable`, `PlayerRatingTable`, `FootballPlayerAbilityTable`)
+  - `table_outgame.bundle` (`Item`, `FootballPlayerPassiveSkillTable`, `FootballPlayerPassiveUnlock`, `FootballPlayerUpgrade`)
+  - `localization_zh-cn_strings.bundle`, `localization_en_strings.bundle`, `localization_id_strings.bundle`
+  - Decompiled C# assemblies: `ProjectCR.Runtime.dll` (`CharacterDataConfigHelper`, `AttributeInfo`, `SubAttributeInfo`, `PlayerAttributeComponent`, `RatingTier`)
+
+### Temuan Reverse Engineering
+1. **Total Roster Karakter (14 Karakter)**:
+   - 1 Karakter Template / Benchmark (ID 1000 `1000_Template`, 模板 / Template, ST).
+   - 13 Karakter Resmi / Playable (IDs 1001 s.d. 1013):
+     - **ST (Striker)**: Orion (1001), Shirou (1006 / 士郎), Rafael (1007 / 拉斐尔), Oscar (1011 / 奥斯卡).
+     - **CM (Central Midfielder)**: Hayato (1002 / 夜神隼), Moco (1008 / 莫科), Homer (1010 / 赫马).
+     - **CB (Center Back)**: Andrew (1003 / 安德鲁), Ford (1009 / 福特), Steffie (1012 / 史黛菲).
+     - **WF (Wing Forward)**: Kelly (1004 / 凯莉), Tatsuya (1013 / 达也).
+     - **GK (Goalkeeper)**: Maxim (1005 / 马克西姆).
+2. **Item Rarity & Rating Tier**:
+   - Rarity Avatar Item di tabel `Item`: Seluruh 14 karakter memiliki `Rare = 4` (Gold / 金色 / Legendary).
+   - In-game Match Rating Tiers (`PlayerRatingTable` & enum `RatingTier`):
+     - Low Tier: Nilai awal 6.0, batas minimum 3.0.
+     - Mid Tier (Silver): >= 6.0 (`ColorSilverThreshold`).
+     - High Tier (Gold): >= 7.5 (`ColorGoldThreshold`).
+     - Top Tier (Rainbow / Colorful): >= 9.0 (`ColorColorfulThreshold`), batas maksimal 10.0.
+3. **Arsitektur Atribut Radar (Display) vs Sub-Atribut**:
+   - 6 Display Radar Stats (`AttributeType` 1-6) dihitung sebagai rata-rata aritmatika (`sum / count`) dari sub-atributnya:
+     - **DRI (Dribble)**: Rata-rata dari Agility (1), Balance (2), Ball Control (3), First Touch (4).
+     - **SHO (Shoot)**: Rata-rata dari Finishing (5), Shot Power (6), Long Shot (7), Volley (8), Charge Speed (9), Curve (10).
+     - **PAS (Pass)**: Rata-rata dari Short Pass Power (11), Lob Pass Power (12).
+     - **DEF (Defense)**: Rata-rata dari Clearance (13), Standing Tackle (14), Sliding Tackle (15), Blocking (16).
+     - **PAC (Pace / Speed)**: Rata-rata dari Dribble Run (18), Dribble Sprint (19), Off-ball Run (20), Off-ball Sprint (21), Jockey Speed (22).
+     - **PHY (Physical / Physique)**: Rata-rata dari Stamina (23), Stamina Recovery (24), Strength (25), Ball Winning / Scramble (17).
+4. **Mekanik Khusus Goalkeeper (Maxim ID 1005)**:
+   - Maxim memiliki atribut dasar level 1 yang dominan pada Strength (100), Short Pass (100), Jockey Speed (100), Clearance (90), Shot Power (90), Volley (90).
+   - Memiliki 4 Ability Controller GK khusus:
+     - `GoalKeeperShootAbility` (100501)
+     - `GoalKeeperTapAbility` (100502)
+     - `GoalKeeperDiveAbility` (100503)
+     - `GoalKeeperTackleAbility` (100504)
+     - Komponen AI & Handler: `AbilityBehaviourGoalKeeperTakeBall`, `PlayerAbilityBehaviourComponent::TrySelectGoalKeeperTakeBallAbility`.
+
+### Output & Artefak
+1. **`docs/FLASH_PEAK_CHARACTERS.md`**: Dokumentasi lengkap 14 karakter, rumus radar, perbandingan level 1 vs level 20, deskripsi lore EN & ZH, ultimate skill, dan passives.
+2. **`docs/flash_peak_roster_catalog.json`**: Dataset JSON lengkap terstruktur dari seluruh tabel karakter untuk konsumsi sistem.
+
+### Verifikasi Empiris
+- Script ekstraksi Python (`build_roster_catalog.py`, `generate_docs.py`) berhasil membaca Unity AssetBundles secara langsung melalui UnityPy dan Mono.Cecil.
+- File dokumentasi `docs/FLASH_PEAK_CHARACTERS.md` berukuran 59.397 bytes terbuat dengan valid.
+
+
 ## [2026-11-23] Sesi: Implement 5,000-Char Smart Safety Guard on Omak Peak Chat Responses
 
 ### Konteks Sesi
@@ -1602,3 +1734,199 @@ Gambar uji 512×512 (JPEG 7.2KB; ~380 image token bila diproses vs ~40 bila diab
 
 ### 4. Backlog provider failure monitoring (fitur baru — rencana SAJA, belum dieksekusi)
 Rencana 3 fase di-dokumentasikan dan dibuat sebagai **Issue #11** (label backlog+enhancement): (1) wire `onTelemetry` → isi `provider_usage` real (fire-and-forget, tanpa migrasi); (2) deteksi SUSPICIOUS: HTTP 200 tapi image-token/ prompt_tokens < ambang → error_code `IMAGE_TOKENS_MISSING` (pelajaran kasus Mistral + drop gambar mungil); (3) command WA `!aistatus` (organizer) untuk ringkasan 24 jam per provider. Menunggu review Arya.
+
+
+---
+
+## Sesi 2026-11-23: Flash Peak Core Assembly & Binary Reverse Engineering (Specialist: binary-archaeologist)
+
+### 1. Tujuan Sesi
+Melakukan audit dan reverse engineering assembly C# (`ProjectCR.Runtime.dll` & `ProjectCR.CoreUnity.Runtime.dll`) serta tabel TextAsset YooAsset (`10ee363dd89953d507c7b97d19d20485\__data`) untuk mengekstrak rumus kalkulasi collision combat, tackling, shoulder barge, goalkeeper save mechanics, ball physics, dan eksekusi skill karakter di bawah kap mesin.
+
+### 2. Temuan & Formula Assembly Terverifikasi
+- **Deterministic Fixed-Point Engine**:
+  - `ProjectCR.CoreUnity.Runtime.FixedPointPhysics.FixedPoint64`: Format signed Q32.32 (64-bit int, 32 fractional bits, `ONE = 4,294,967,296`). Look-Up Tables (`LUT_SIZE = 205,887`) untuk `Sin`, `Acos`, `Tan` untuk eliminasi IEEE 754 drift pada lockstep cross-platform.
+  - `ParabolaCalculator`: Gravitasi deterministik `Gravity = -9.82 m/s²` (`-982 / (10 * 10)`).
+  - `PhysicMaterialTable`:
+    - Grass: Normal bounce 0.5, Tangential 0.7, Threshold 0.6 m/s, Rolling resistance 0.5, Stop 0.05 m/s.
+    - Woodwork (Tiang gawang/Metal): Normal bounce 0.9, Tangential 0.9 (rebound 90% velocity).
+    - Wall (Dinding perimeter): Normal bounce 0.55, Tangential 0.6.
+    - Net (Jaring): Normal bounce 0.3.
+  - `BallBounceOnFreeMovePlayerBehaviour`: Redaman tumbukan tubuh pemain non-ball carrier = 0.75 (menyerap 25% laju bola), deviasi horizontal 15°, vertikal -10° s/d 0°.
+
+- **Formula Atribut & Scaling**:
+  - `AttributeBaseValue = 50`.
+  - Rumus LV3 Runtime: `Effect_LV3 = (Constants.EffectMax / 50) * (Attr_LV2 - 50)`.
+  - Base stat 50 menghasilkan modifier netral 0; stat > 50 memberikan bonus linier hingga `EffectMax`; stat < 50 memberikan penalti.
+  - `StumbleHardReduceTime_LV3` (mengurangi durasi stun/knockdown) diskalakan dari `Balance_LV2 (2002)`.
+  - `TackleIncrease_LV3` & `TackleHardReduceTime_LV3` diskalakan dari `Tackle_LV2 (2015)`.
+  - `StandingTackleIncrease_LV3` diskalakan dari `StandingTackle_LV2 (2014)`.
+  - `Power_LV3 (3040)` langsung dipetakan dari `Power_LV2 (2024)`.
+
+- **Shoulder Barge & Player Overlap Collision**:
+  - `PlayerOverlapComponent`: Silinder tabrakan 2.0m tinggi (`m_OverlapHeight`), radius dasar `PushRadius = 0.5m`. Syarat tabrakan: `distXZ² <= (pushRadiusA + pushRadiusB)²`.
+  - `InteractionShoulderBarge` & `PlayerBeShoulderBargeTransition`:
+    - `PowerDiff = Power(Attacker) - Power(Receiver)` (`Power_LV3`).
+    - **Tier 1 (`PowerDiff > 25`)**: Catastrophic Knockdown! Flank hit (45°-160° / 200°-315°) = 80% `Stumble_S2_FallDown` (jatuh telentang), 20% `SlowDown`. 100% bola lepas (`KickBall=1`).
+    - **Tier 2 (`10 < PowerDiff <= 25`)**: Dominant Barge. 70% `SlowDown` + `KickBall=1` (lepas bola); 30% `ProtectBall` + `KickBall=0` (bola terlindungi).
+    - **Tier 3 (`-1 <= PowerDiff <= 10`)**: Contested. Running: 40% lepas bola, 60% lindungi bola. Idle: 20% lepas, 80% lindungi.
+    - **Tier 4 (`PowerDiff < -1`)**: Resisted. Korban lebih berotot dari penyerang, penyerang gagal total (`IsBargeSuccess=0`).
+
+- **Tackling & Possession Transfer**:
+  - Tackle standar (`InteractionTackle` / `InteractionStandingTackle`): Mengetuk bola lepas lewat `InteractionBallMove::HandleMovement` dan memicu timeline `BeTackle` pada korban via `m_BeTackleSelector`.
+  - Andrew SuperTackle (`InteractionSuperTackleHandler`): Tidak hanya melepas bola, melainkan memanggil `InteractionBallSplit::ControlBallImmediately(andrew, ball)`! Eksekusi 18m slide tackle homing (`18² = 324` range check) menghasilkan **instant guaranteed ball steal**, transfer kontrol langsung ke Andrew, dan refund energi.
+
+- **GoalKeeper Save Mechanics**:
+  - `InteractionGoalKeeperDive` menghitung kontak normalized height `[0, 1]` dan signed width `[-1, +1]`.
+  - `AbilityBehaviourGoalKeeperTakeBall`: Mengevaluasi `m_GoalKeeperTakeBallSelector` terhadap 4 tier jarak (0-1m, 1-2m, 2-3m, >3m) dan 4 tier waktu antisipasi (0-0.4s, 0.4-0.7s, 0.7-1.2s, 1.2-5.0s) pada rentang kecepatan 20 - 50 m/s.
+  - Tangkapan (`BallInHand` tag): Memegang bola via `PlayerGoalKeeperComponent::TryHoldBall` (Save Sukses instan).
+  - Tinju/Tepisan (`InteractionGoalKeeperPunch`): Bola > 34 m/s memicu `MissedGoalDeflection` dengan probabilitas dasar 30% (mengecil saat tembakan lebih jauh) dan sudut deviasi 13° - 21°.
+
+- **Ford SuperBlock Mechanics**:
+  - `InteractionFordSuperBlockBall`: Intersepsi tembakan seketika memanggil `InteractionBallSplit::StopFreeMoveBall(ballEntity)` — kecepatan proyektil dinolkan seketika (bola jatuh mati di kaki Ford).
+
+- **Skill Karakter Lainnya**:
+  - Orion (`OrionSuperShoot`): Dual path `TryHandleHasBallShoot` (saat membawa bola) dan `TryHandleNoBallShoot` (saat bola bebas masuk push trigger dan berstatus `NoBallInteractive` — tendangan voli instan).
+  - Hayato (`HayatoSuperDribble`): `FindClosestOpponentInSectorAngle` memindai cone pandangan kamera depan, menandai target dengan `HayatoSuperDribbleSelectedTarget`, dan mengeksekusi animasi dribble terobosan melewati lawan tersebut.
+  - Kelly (`KellyJumpWallDribble`): Raycasting dinding perimeter (`TryGetWallNormal`), membatasi pada tepi tiang gawang, dan memantul melompati bek.
+
+### 3. Verifikasi Empiris
+- Disassembly langsung Mono.Cecil via script `D:\Projects\FlashPeak\scratch_disasm.py` terhadap `ProjectCR.Runtime.dll` dan `ProjectCR.CoreUnity.Runtime.dll`.
+- Ekstraksi langsung TextAsset CSV via UnityPy terhadap bundle YooAsset `bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data`.
+
+
+---
+
+## [2026-11-23] Reverse Engineering Game Mechanics, Tactical AI, Pitch Geometry & Energy Systems (mechanics-deepdive)
+
+### 1. Tujuan Sesi
+Melakukan dekonstruksi mendalam terhadap sistem fisika, mekanik taktis AI, geometri lapangan, sistem pemulihan energi/stamina, dinamika pressing/pinning, dan aturan penjaga gawang pada Flash Peak dari bundle data Unity (`bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data`, `extracted_base\assets\yoo\Default`, dan `update_2026_10_28\decompiled_dlls`).
+
+### 2. Temuan & Analisis Mendalam
+
+#### A. Pemulihan Energi (Ultimate Meter)
+- **Tabel Sumber**: `FootballPlayerRecoverEnergyTable` (Cap/Max: 100).
+- **Mekanisme Pasif**: `PlayerEnergyComponent::Tick` menambahkan energi per detik = `EnergyRecovery` (3.0 poin/detik pada atribut level dasar) dikalikan `LogicFrameDeltaTime`. Recovery dapat dihentikan sementara jika pemain memiliki tag `SuppressEnergyRecovery`.
+- **Mekanisme Aktif (Per Action Gain)**:
+  - **Defender (Andrew 1003, Ford 1009, Steffie 1012)**: Mendapat regenerasi energi terbesar dari aksi defensif:
+    - `Tackle`: **+20 energi** (Steffie: +15, Orion/Shirou/Rafael hanya +5)
+    - `StandingTackle`: **+20 energi**
+    - `ShoulderBarge`: **+3 (Andrew), +5 (Ford), +6 (Steffie)** (Penyerang: 0)
+  - **Striker/Finisher (Orion 1001, Shirou 1006, Oscar 1011, Rafael 1007)**:
+    - `NoBallShoot` (Tendangan voli tanpa bola): **+16 hingga +20 energi** (Rafael: +20)
+    - `HasBallShoot` (Tendangan saat bawa bola): **+12 energi**
+    - `PullBall`: **+3 hingga +8 energi** (Rafael: +8)
+  - **Midfielder (Hayato 1002, Homer 1010)**:
+    - `HasBallTap` / `NoBallTap` (Passing): **+10 hingga +12 energi**
+    - `Tackle` / `StandingTackle`: **+10 energi**
+  - **Winger (Kelly 1004, Tatsuya 1013)**:
+    - `PushBall` (Sprint dribble): **+3 energi**
+    - `NoBallShoot`: **+13 energi**, `HasBallTap`: **+8 energi**
+
+#### B. Pemulihan Stamina & Konsumsi Lari
+- **Komponen**: `PlayerStaminaComponent` & scriptable binary `PlayerAttributeConstants` (format Q32.32 FixedPoint64).
+- **Statistik Stamina**:
+  - Kolam Stamina Maksimum (`StaminaAMin` ~ `StaminaAMax`): **600.0 hingga 1200.0 poin**.
+  - Laju Pemulihan Stamina (`StaminaRecoveryAMin` ~ `StaminaRecoveryAMax`): **320.0 hingga 450.0 poin/detik**.
+- **Konsumsi Lari**:
+  - Lari tanpa bola (`RunNoBallStaminaCost`): **0 stamina** (lari biasa tidak menguras stamina).
+  - Lari membawa bola (`RunHasBallStaminaCost`): **80.0 poin/detik**.
+- **Mekanisme Kelelahan & Delay Pemulihan**:
+  - Jika stamina habis, pemain masuk status `LowStamina` dan tombol Sprint dinonaktifkan.
+  - Sprint baru dapat diaktifkan kembali setelah stamina pulih minimal ke ambang batas `SprintResumeStamina` = **400.0 poin**.
+  - **Delay Sebelum Regenerasi Dimulai (`m_ResumeStaminaDelay`)**:
+    - Saat diam (Idle): `IdleResumeStaminaDelay` = **400 * EN2 = 4.0 detik**.
+    - Saat bergerak/jogging (NotIdle): `NotIdleResumeStaminaDelay` = **200 * EN2 = 2.0 detik**.
+
+#### C. Grid Scoring AI & Posisioning Tanpa Bola (Off-Ball Positioning)
+- **Struktur Grid**: Lapangan dibagi menjadi matriks **6 x 6 = 36 sel** (`SpatialGridCount = 6`, cellIndex 0-35).
+  - Row 0 (Sel 0-5): Area pertahanan sendiri / depan gawang sendiri.
+  - Row 1-2 (Sel 6-17): Sepertiga pertahanan & transisi tengah belakang.
+  - Row 3-4 (Sel 18-29): Sepertiga tengah menyerang & sayap.
+  - Row 5 (Sel 30-35): Kotak penalti lawan.
+- **Tabel Skoring AI**:
+  - `AttackNoBallGridScoreTable`:
+    - **Bek (Andrew 1003, Ford 1009, Steffie 1012)**: Nilai tertinggi di Row 0-1 (skor 35-30 di sel tengah 2-3). Skor Row 4 bernilai 0, dan Row 5 (kotak penalti lawan) bernilai **-20 (penalti berat agar bek tidak overlap berlebihan)**.
+    - **Gelandang Tengah (Homer 1010)**: Puncak skor di Row 2 & Row 3 (skor 35-50 di sel tengah 19-22).
+    - **Winger (Kelly 1004, Tatsuya 1013)**: Puncak skor di sayap (Kolom 0 & 5, skor 45 di sel 24/29 dan skor 50 di half-space sel 31/34).
+    - **Striker (Orion 1001, Shirou 1006, Oscar 1011, Rafael 1007)**: Puncak skor di Row 5 sel 32-33 (skor 50 di depan gawang lawan).
+- **Aturan Passing & Dynamic Scoring (`BehaviorTreeGlobalTable`)**:
+  - Jarak ke pembawa bola:
+    - Tier 1 (0 - 5.5m): **0 skor** (terlalu dekat/menumpuk).
+    - Tier 2 (5.5 - 15m): **+40 skor**.
+    - Tier 3 (15 - 30m): **+70 skor (Sweet Spot passing optimal)**.
+    - Tier 4 (30 - 100m): **0 skor** (terlalu jauh).
+  - Keberadaan musuh di sel target: Penalti **-50 skor** (`AttackNoBall_EnemyInRegionPenalty`).
+  - Koridor passing (lebar 4m): Terhalang musuh = penalti **-75 skor** (`AttackHasBallTap_PathBlockedPenalty`). 3 musuh di target = penalti **-100**, 4+ musuh = **-1000**.
+  - Permintaan umpan (`RequestBall` tag): **+100 bonus skor**.
+  - Rekan adalah pemain manusia (`HumanPlayerBonus`): **+100 bonus skor**.
+
+#### D. Mekanika Pressing, Double-Teaming & Pinning (Andrew + Ford)
+- **Siklus Evaluasi Marking AI**: Dijalankan setiap **0.5 detik** (`Defend_AttentionUpdateIntervalSecs`).
+  - Pemain membawa bola mendapat nilai atensi tertinggi: **150 poin** (`Defend_HasBallAttentionScore`).
+  - Jarak ke musuh dinilai linear antara **3.0m hingga 20.0m** dengan bobot maksimal **100 poin** (`Defend_DistanceToSelfMaxScore`).
+- **Mekanika Overlap / Pinned Player (`GameConfigScriptable`)**:
+  - Ketika 2 pemain bertahan mengapit atau menekan pembawa bola (`OverlapPlayer`):
+    - Penalti Kecepatan Lari Biasa Pembawa Bola: **Faktor 0.90 (pengurangan kecepatan 10%)** (`OverlapPlayerHasBallRunSpeedFactor`).
+    - Penalti Kecepatan Sprint Pembawa Bola: **Faktor 0.90 (pengurangan sprint 10%)** (`OverlapPlayerHasBallSprintSpeedFactor`).
+    - Penalti Pemain Tanpa Bola: **Faktor 0.95**.
+    - Syarat Kecepatan Relatif Tabrakan: minimal **2.5 m/s** (`OverlapPlayerRelativeSpeedMin`).
+    - Interval Feedback Benturan Bahu (`ShoulderBargeFeedbackInterval`): **0.5 detik** (setiap 0.5 detik terjadi evaluasi tabrakan fisik berulang).
+  - **Efek Terjepit (Pinned by Andrew + Ford)**:
+    1. Mobilitas pembawa bola tercekik hingga 90% kecepatan dasar.
+    2. Benturan bahu berulang memicu evaluasi `PlayerBeShoulderBargeTransition`: karena Power Andrew & Ford sangat tinggi (`PowerDiff > 25`), peluang terjadinya **Stumble / Fall Down (jatuh tersungkur)** mencapai 80%, dengan 100% bola lepas (`KickBall=1`).
+    3. Jalur operan terputus: koridor passing tertutup menghasilkan penalti passing -75 hingga -1000, membuat bot menembak panik atau kehilangan bola.
+    4. Di dalam kotak penalti, bek mendapatkan bonus perebutan bola dramatis: `DefenderScrambleLv3BonusInPenaltyArea` = **+6.0 poin kontes**.
+
+#### E. Geometri Lapangan & Batas Area (`Level_General` & `GameModeTable`)
+- **Dimensi Lapangan Utama (`FieldBoundary`)**:
+  - Lebar (X): **66.0 meter** (rentang: -33.0m s/d +33.0m).
+  - Panjang (Z): **103.0 meter** (rentang: -51.5m s/d +51.5m).
+  - Tinggi Ruang (Y): **20.0 meter**.
+- **Batas Luar Dunia (`WorldBoundary`)**: **80.0m x 120.0m x 100.0m**.
+- **Batas Reset Bola (`BallResetBoundary`)**: **65.7m x 102.7m x 20.0m** (jika bola berada di luar batas ini dengan kecepatan rendah selama durasi tertentu, bola otomatis di-reset).
+- **Kotak Penalti (`PenaltyArea`)**: **Lebar 37.0m x Panjang 25.0m x Tinggi 20.0m**.
+  - Team 1 Center Z = -49.4m (rentang -36.9m s/d -61.9m).
+  - Team 2 Center Z = +49.4m (rentang +36.9m s/d +61.9m).
+- **Area Gawang (`GoalArea`)**: **Lebar 20.0m x Panjang 13.0m x Tinggi 40.0m**.
+- **Area Patroli Mandiri Kiper (`DoorMoveableArea`)**: **Lebar 10.41m x Panjang 3.36m x Tinggi 20.0m** tepat di depan garis gawang.
+- **Zona Ancaman Taktis AI (ThreatZones)**:
+  - Level 1 (Atensi 30): 66.4m x 18.0m (lapangan tengah mendekati pertahanan).
+  - Level 2 (Atensi 60): 15.2m x 19.5m (kedua sisi sayap luar).
+  - Level 3 (Atensi 80): 36.0m x 19.5m (tengah luar kotak penalti) + 15.2m x 14.5m (sayap lanjutan).
+  - Level 4 (Atensi 100): 20.0m x 7.5m & 8.0m x 14.5m (tepat di lingkar kotak penalti).
+  - Level 5 (Atensi 120): 20.0m x 7.0m (mulut gawang / bahaya fatal).
+
+#### F. Durasi Pertandingan & Aturan Khusus (`NormalGameProcedureScriptable` & `MatchRule`)
+- **Durasi Waktu Normal (`MatchDurationSec`)**: **300 detik (5 menit)**.
+- **Fase Hitung Mundur Kickoff**: **3.0 detik** (`KickoffCountdownDuration`), input terkunci selama 4.0 detik.
+- **Serangan Terakhir (Last Attack / Final Play)**:
+  - Tim unggul memegang bola: maksimal **10.0 detik**.
+  - Tim tertinggal memegang bola: toleransi diperpanjang hingga **30.0 detik** (maksimal 60 detik jika terjadi perebutan tanpa bola terus-menerus).
+- **Perpanjangan Waktu (Golden Goal)**:
+  - Jika skor imbang setelah 300 detik, pertandingan memasuki `GoldenGoal` (sudden death). Gol pertama langsung mengakhiri laga.
+- **Aturan Mercy / Match Point**: Selisih gol >= **3 gol** (`GoalDifference = 3`) memicu match point / kemenangan mutlak.
+
+#### G. Aturan & Perilaku Penjaga Gawang (Goalkeeper)
+- **Status Invincible & Proteksi Bola**:
+  - Saat kiper menangkap bola di area penalti sendiri (`TryHoldBall`), kiper diberikan tag `BallInHand` dan **`Invincible` (kebal serangan/tackle)**.
+  - Trigger bola dinonaktifkan (`SetBallBaseTriggerEnabled(false)`) sehingga musuh tidak dapat merebut bola dari tangan kiper.
+- **Durasi Memegang Bola**:
+  - Tangkapan normal / hasil penyelamatan: maksimal **3.0 detik** (`GoalKeeperHoldBallInHandTime`).
+- **Aturan Anti-Stall Back-Pass (Operan Balik Rekan Setim)**:
+  - Jika kiper menerima operan dari rekan setim (`IsSameTeam == true`):
+    - Waktu pegang bola dipangkas drastis menjadi hanya **0.3 detik** (`GoalKeeperHoldBallInHandTimeForSameTeam`).
+    - Diberlakukan jendela waktu anti-ulur waktu 3.6 detik (`GoalKeeperBackPassWindowDuration`).
+    - Jika back-pass diulang dalam jendela ini (`BackPassCount >= Threshold`), kiper langsung dipaksa melepaskan bola ke tanah (0 detik hold time).
+- **Pelanggaran Keluar Kotak Penalti**:
+  - Jika kiper melangkah keluar dari kotak penalti (`TickOutOfOwnPenaltyArea`), tag `GoalKeeper` seketika dicabut, status `BallInHand` dibatalkan, dan kiper dipaksa memainkan animasi `PlayBallToFeedAnim` (bola dijatuhkan ke kaki). FSM locomotion kiper berganti menjadi pemain lapangan biasa.
+- **Penyelamatan & Tepisan (Dive & Punch)**:
+  - Parameter Dive: Rentang ancaman bola 8.0m - 20.0m, kecepatan bola 20 - 50 m/s, waktu prediksi 1.5 detik.
+  - Penyelamatan Tepis (`InteractionGoalKeeperPunch`): Tembakan dengan kecepatan > **34.0 m/s** (`MissedGoalBallSpeedThreshold`) memicu defleksi bola dengan peluang dasar 30% dan sudut pembelokan 13° - 21°.
+- **Distribusi Operan Kiper**:
+  - Sangat berhati-hati: Koridor pengecekan musuh selebar 8.0 meter (`PathHalfWidth = 4m`), penalti jalur terhalang -250 skor. Jarak passing ideal kiper: 8 - 20 meter (+120 skor).
+
+### 3. Verifikasi Empiris
+- Ekstraksi 33 file TextAsset CSV dari bundle `bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data`.
+- Pembongkaran biner Q32.32 FixedPoint64 dari ScriptableObjects di bundle `extracted_base\assets\yoo\Default\default_assets_gameres_config_scriptable_game_crgamemode_*.bundle` dan `default_assets_gameres_config_scriptable_entity_player_*.bundle`.
+- Analisis IL disassembly menggunakan Mono.Cecil terhadap runtime gameplay assembly `ProjectCR.Runtime.dll` dan `ProjectCR.CoreUnity.Runtime.dll`.
