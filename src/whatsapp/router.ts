@@ -398,7 +398,7 @@ export class CommandRouter {
     });
 
     // !id & !myid
-    const idHandler = (ctx: CommandContext) => {
+    const idHandler = async (ctx: CommandContext): Promise<CommandResult> => {
       const sender = ctx.message.sender_raw_address || ctx.message.sender_normalized_address;
       const chatId = ctx.message.chat_id;
       const isGroup = chatId.endsWith('@g.us');
@@ -417,20 +417,58 @@ export class CommandRouter {
         `👤 *ID WhatsApp Anda (Sender):* \`${sender}\``,
         `• Tipe Alamat: ${sender.includes('@lid') ? 'WhatsApp LID (Privacy ID)' : 'Phone JID'}`,
         `• Role di Sistem: *${ctx.role}*`,
+      ];
+
+      // UX-ID-001 (22 Nov 2026): a bare "Role: DELEGATE" line left registered
+      // delegates unsure whether their identity was actually in the database,
+      // and never said WHICH team they were bound to. Re-resolve the full
+      // delegate/team record so !myid answers "delegate tim mana" directly.
+      if (ctx.role === 'DELEGATE') {
+        lines.push('• Status Registrasi: ✅ *Terdaftar & Terverifikasi*');
+        try {
+          const resolution = await this.identityResolver.resolveIdentity(sender, chatId);
+          if (resolution.delegate) {
+            lines.push(`• Nama Delegate: *${resolution.delegate.display_name}*`);
+          }
+          if (resolution.team) {
+            const teamLabel = [resolution.team.team_name, resolution.team.division_name]
+              .filter(Boolean)
+              .join(' — ');
+            lines.push(`• Tim Anda: *${teamLabel}*`);
+            if (resolution.tournament_name) {
+              lines.push(`• Turnamen: ${resolution.tournament_name}`);
+            }
+            lines.push(`• Status Tim: ${resolution.team.registration_status}`);
+          } else {
+            lines.push('• Tim Anda: ⚠️ _Belum terikat ke tim mana pun — hubungi Organizer untuk binding tim._');
+          }
+        } catch {
+          lines.push('• Tim Anda: ⚠️ _Gagal memuat detail tim (database error)._');
+        }
+      } else if (ctx.role === 'UNKNOWN') {
+        lines.push('• Status Registrasi: ❌ _Belum terdaftar sebagai Delegate_');
+      }
+
+      lines.push(
         `• Status Organizer: ${isOrg ? '✅ *Terdaftar sebagai Organizer (Full Access)*' : '❌ *Bukan Organizer*'}`,
         '',
         `👥 *ID Chat / Grup Ini:* \`${chatId}\``,
         `• Tipe Chat: ${isGroup ? 'Grup WhatsApp' : 'Direct Message (DM)'}`,
         `• Status Grup: ${groupStatus}`,
-      ];
+      );
 
       if (isOrg) {
         lines.push('', '💡 _Anda memiliki hak penuh Organizer (bisa !setgroup, !createtournament, dll)._');
+      } else if (ctx.role === 'DELEGATE') {
+        lines.push(
+          '',
+          '💡 _Identitas Anda sudah terverifikasi sebagai Delegate resmi — perintah delegate (mis. *!report*) siap digunakan._'
+        );
       } else {
         lines.push(
           '',
-          '💡 _Jika ID Anda adalah @lid atau belum dikenali sebagai Organizer, ' +
-            'daftarkan nilai ID Anda di atas ke konfigurasi WA_ORGANIZER_JID di .env bot._'
+          '💡 _Anda belum terdaftar sebagai Delegate. Hubungi Organizer untuk didaftarkan. ' +
+            'Jika Anda Organizer dengan ID @lid, daftarkan nilai ID Anda di atas ke konfigurasi WA_ORGANIZER_JID di .env bot._'
         );
       }
 

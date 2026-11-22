@@ -295,6 +295,33 @@ describe('CommandRouter (Group Scope & Role Authorization)', () => {
     const resAlias = await router.handleMessage(msgAlias);
     expect(resAlias?.success).toBe(true);
     expect(resAlias?.responseText).toContain(nonOrgSender);
+
+    // 4. Unregistered sender gets explicit "belum terdaftar" status (UX-ID-001)
+    expect(resNonOrg?.responseText).toContain('Belum terdaftar sebagai Delegate');
+
+    // 5. Registered delegate sees their team & tournament, not a bare role word (UX-ID-001)
+    const delegateSender = '6281222222222@s.whatsapp.net';
+    const msgDelegate = createMsg(centralGroupJid, delegateSender, '!myid');
+    const resDelegate = await router.handleMessage(msgDelegate);
+    expect(resDelegate?.success).toBe(true);
+    expect(resDelegate?.responseText).toContain('Terdaftar & Terverifikasi');
+    expect(resDelegate?.responseText).toContain('Verified Delegate');
+    expect(resDelegate?.responseText).toContain('Tsubasa FC');
+    expect(resDelegate?.responseText).toContain('Flash Peak Tourney');
+    expect(resDelegate?.responseText).toContain('DELEGATE');
+
+    // 6. Registered delegate without a team gets a clear "no team bound" line
+    const { delegate: teamless } = await resolver.createDelegateWithIdentity(
+      'Teamless Delegate',
+      '6281333333333@s.whatsapp.net',
+      'JID'
+    );
+    expect(teamless.status).toBe('ACTIVE');
+    const msgTeamless = createMsg(centralGroupJid, '6281333333333@s.whatsapp.net', '!myid');
+    const resTeamless = await router.handleMessage(msgTeamless);
+    expect(resTeamless?.success).toBe(true);
+    expect(resTeamless?.responseText).toContain('Teamless Delegate');
+    expect(resTeamless?.responseText).toContain('Belum terikat ke tim');
   });
 
   it('rejects commands from an unauthorized group (FR-ID-005 Group Scope)', async () => {

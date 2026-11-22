@@ -33,6 +33,8 @@ export interface IdentityResolutionResult {
   delegate?: Delegate;
   identity?: WhatsAppIdentity;
   team?: Team;
+  /** Name of the tournament the resolved team belongs to (UX-ID-001). */
+  tournament_name?: string;
   error?: string;
 }
 
@@ -171,8 +173,9 @@ export class IdentityResolver {
     //   b) team in any not-yet-completed tournament (DRAFT/REGISTRATION/...)
     //   c) most recent team (fallback for admin tooling on archived data)
     let team: Team | undefined;
+    let tournamentName: string | undefined;
     const teamResult = await this.db.execute({
-      sql: `SELECT t.id, t.tournament_id, t.organization_name, t.division_name, t.team_name, t.team_code, t.delegate_id, t.registration_status, t.created_at, t.updated_at
+      sql: `SELECT t.id, t.tournament_id, t.organization_name, t.division_name, t.team_name, t.team_code, t.delegate_id, t.registration_status, t.created_at, t.updated_at, tr.name
             FROM teams t
             JOIN tournaments tr ON t.tournament_id = tr.id
             WHERE t.delegate_id = ?
@@ -201,6 +204,7 @@ export class IdentityResolver {
         created_at: String(tRow[8]),
         updated_at: String(tRow[9]),
       };
+      tournamentName = tRow[10] ? String(tRow[10]) : undefined;
     }
 
     return {
@@ -211,6 +215,7 @@ export class IdentityResolver {
       delegate,
       identity,
       team,
+      tournament_name: tournamentName,
     };
   }
 
