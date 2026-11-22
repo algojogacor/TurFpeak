@@ -177,9 +177,9 @@ describe('New Multi-Provider Adapters & Priority Routing Tests', () => {
     expect(calls[calls.length - 1]).toBe('GROQ');
   });
 
-  it('MistralAdapter vision default is the validated mistral-medium-latest, not the retired pixtral-12b-2409 (B-3)', () => {
+  it('MistralAdapter vision default is the validated ministral-14b-latest, not the retired pixtral-12b-2409 (B-3)', () => {
     const adapter = new MistralAdapter({ apiKey: 'mistral-test-key-123456' });
-    expect(adapter.visionModel).toBe('mistral-medium-latest');
+    expect(adapter.visionModel).toBe('ministral-14b-latest');
     expect(adapter.visionModel).not.toBe('pixtral-12b-2409');
   });
 });

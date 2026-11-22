@@ -168,11 +168,12 @@ async function main() {
         apiKey: mistralKey,
         apiKeys: mistralKeys,
         model: process.env.MISTRAL_MODEL || 'codestral-latest',
-        // B-3: pixtral-12b-2409 is retired (absent from Mistral's /v1/models and
-        // silently substituted with the text-only ministral-14b-latest, which
-        // ignores image input). Validated replacement: mistral-medium-latest
-        // (present in the live model catalog; see audit notes in the PR).
-        visionModel: process.env.MISTRAL_VISION_MODEL || 'mistral-medium-latest',
+        // B-3: pixtral-12b-2409 is retired (absent from Mistral's /v1/models, so
+        // the API silently serves a different model than configured). Validated
+        // replacement by direct test call 2026-11-22: ministral-14b-latest
+        // processes real images (prompt_tokens 391 for a 512px JPEG) and is
+        // served on the current free-tier key pool. See audit notes in the PR.
+        visionModel: process.env.MISTRAL_VISION_MODEL || 'ministral-14b-latest',
       })
     );
   }
