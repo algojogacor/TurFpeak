@@ -623,7 +623,14 @@ export type AITaskType =
   | 'EXTRACT_MATCH'
   | 'EXTRACT_GOALKEEPER'
   | 'PARSE_CORRECTION'
-  | 'PARSE_ROSTER';
+  | 'PARSE_ROSTER'
+  // AI-native expansion (D-037..D-040, per task brief 2026-11-22):
+  | 'CHAT_OMAK_PEAK'      // !ai — read-only chat with Omak Peak persona
+  | 'PLAN_AGENT'          // organizer AI agent — interpret NL instruction -> typed action plan
+  | 'EXTRACT_QNA'         // !saveqna — extract Q&A pairs from group chat history
+  | 'FORMAT_HYPE'         // engagement — hype recap / standings commentary from real data
+  | 'GENERATE_PANTUN'     // engagement — pantun generator (no factual claims)
+  | 'REPHRASE_TRIVIA';    // engagement — rephrase verified trivia fact for variety
 
 export type AIRequestStatus =
   | 'SUCCESS'

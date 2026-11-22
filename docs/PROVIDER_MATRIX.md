@@ -1,31 +1,49 @@
 # Flash Peak TMS — AI Provider Capability Matrix & Telemetry Policy
 
-**Document Status:** Production Reference  
-**Last Verified:** November 2026  
+**Document Status:** Production Reference
+**Last Verified:** 22 Nov 2026 (refreshed against the code on branch `feat/ai-native-expansion-v1`; the previous revision still described the retired 3-provider era)
 **Applicable Regulations:** D-010, O-010, FR-AI-001–003, FR-FAIL-001–002, PROMPT_CATALOG.md §10
 
 ---
 
 ## 1. Provider Capabilities Overview
 
-Flash Peak TMS utilizes a 3-provider load-balanced and fault-tolerant AI rotation architecture. All providers are utilized on compliant free-tier terms with strict rate limiting and circuit breakers to avoid evading quota limits.
+The `ProviderRouter` rotates across every adapter that has a configured API key at startup (`src/cli/start.ts`), with circuit breakers, task-based priority ordering, and manual fallback when all providers fail. Seven adapters exist in code; **six are active in production** (each activated by its env key). Ollama Cloud is retained in code but currently inactive — no `OLLAMA_CLOUD_BASE_URL` is set on the VM — it is a dormant fallback path, not a removed provider.
 
-| Provider | Production Model Identifier | Vision Input | Structured JSON Output | Verified Latency (p50) | Free-Tier Limits | Quota Handling & Fallback Priority |
-| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Google Gemini** | `gemini-1.5-flash` | ✅ Yes | ✅ Native JSON Schema (`responseSchema`) | 1,200 ms | 15 RPM / 1M TPM / 1,500 RPD | **Primary (Rank 1)** for multimodal match classification & complex table extraction |
-| **Groq Cloud** | `llama-3.2-11b-vision-preview` | ✅ Yes | ✅ JSON Mode (`response_format: { type: "json_object" }`) | 450 ms | 30 RPM / 7,000 TPM / 14,400 RPD | **Fast Secondary (Rank 2)** for ultra-fast OCR and natural language correction parsing |
-| **Ollama Cloud** | `llama3.2-vision:latest` | ✅ Yes | ✅ Format JSON (`format: "json"`) | 2,100 ms | Provider-specific cloud tier | **Resilient Tertiary (Rank 3)** fallback when cloud rate limits are reached |
+All adapters declare vision capability (`capabilities.vision = true`); per-request model selection uses the adapter's vision model for image requests and its text model otherwise.
+
+| Provider (enum `AIProviderName`) | Default text model (env override) | Default vision model (env override) | Multi-key rotation | Activation env | Status |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| `GROQ` | `qwen/qwen3.8-27b` (`GROQ_MODEL`) | `qwen/qwen3.8-27b` (`GROQ_VISION_MODEL`) | ✅ `GROQ_API_KEYS` (comma-separated) + `GROQ_API_KEY` | `GROQ_API_KEY` | **Active (prod)** |
+| `DEEPSEEK` | `deepseek-flash` (`DEEPSEEK_MODEL`) | `deepseek-flash` (`DEEPSEEK_VISION_MODEL`) | ✅ `DEEPSEEK_API_KEYS` + `DEEPSEEK_API_KEY` | `DEEPSEEK_API_KEY` | **Active (prod)** |
+| `GEMINI` | `gemini-3-flash-preview` (`GEMINI_MODEL`) | `gemini-3-flash-preview` (`GEMINI_VISION_MODEL`) | single key | `GEMINI_API_KEY` | **Active (prod)** |
+| `NVIDIA_NIM` | `nvidia/nemotron-3.5-lightning-30b-a3b` (`NVIDIA_TEXT_MODEL` / `NVIDIA_MODEL`) | `nvidia/nemotron-3.5-super-vl-120b-a12b` (`NVIDIA_VISION_MODEL`) | ✅ `NVIDIA_API_KEYS` + `NVIDIA_API_KEY` | `NVIDIA_API_KEY` | **Active (prod)** |
+| `COHERE` | `command-a-reasoning-08-2025` (`COHERE_TEXT_MODEL` / `COHERE_MODEL`) | `c4ai-aya-vision-32b` (`COHERE_VISION_MODEL`) | ✅ `COHERE_API_KEYS` + `COHERE_API_KEY` | `COHERE_API_KEY` | **Active (prod)** |
+| `MISTRAL` | `codestral-latest` (`MISTRAL_TEXT_MODEL` / `MISTRAL_MODEL`) | `pixtral-12b-2409` (`MISTRAL_VISION_MODEL`) | ✅ `MISTRAL_API_KEYS` + `MISTRAL_API_KEY` | `MISTRAL_API_KEY` | **Active (prod)** |
+| `OLLAMA_CLOUD` | `llama3.2-vision` (`OLLAMA_MODEL`) | (same) | single key | `OLLAMA_CLOUD_BASE_URL` (+ `OLLAMA_CLOUD_API_KEY`) | **Inactive — no env set** |
+
+Startup logs the active set explicitly: `[AI] Initialized Multi-Provider Router with N provider(s): …` — check `pm2 logs flashpeak-bot` at boot to confirm which providers are live in a given deployment.
+
+**Verified latency / quota figures:** none published for the current six-provider set. Per-request latency, token counts, and outcomes are recorded per call in `provider_usage` (see §6); publish p50/p95 numbers from that table only, never from estimates.
 
 ---
 
-## 2. Model Capabilities & Task Matrix
+## 2. Task Types & Router Priority
 
-| Task Type | Target Prompt ID | Input Artifacts | Gemini 1.5 Flash | Groq Llama 3.2 11B | Ollama 3.2 Vision |
-| :--- | :--- | :--- | :---: | :---: | :---: |
-| **CLASSIFY** | `image_classifier_v1` | Screenshot Binary | ✅ Grounded visual cues | ✅ Fast visual cues | ✅ Fallback visual cues |
-| **EXTRACT_MATCH** | `main_match_extractor_v1` | Scoreboard Image + Context | ✅ Preserves Unicode raw nicknames | ✅ Low latency | ✅ Reliable tabular OCR |
-| **EXTRACT_GOALKEEPER**| `gk_detail_extractor_v1` | Detail Screen Image | ✅ Detects cap/gloves/ball | ✅ Extracts summary metrics | ✅ Fallback |
-| **PARSE_CORRECTION** | `correction_parser_v1` | Indonesian/English Text | ✅ Full schema validation | ✅ Fast NL patch extraction | ✅ Heuristic reconciliation |
+Task types (enum `AITaskType`, mirrored by the `provider_usage.task_type` CHECK constraint):
+
+| Group | Task | Typical consumer |
+| :--- | :--- | :--- |
+| Vision evidence | `CLASSIFY`, `EXTRACT_MATCH`, `EXTRACT_GOALKEEPER` | Screenshot evidence pipeline |
+| Parsing | `PARSE_CORRECTION`, `PARSE_ROSTER` | NL correction parsing / roster extraction |
+| AI-native (D-037..D-040) | `CHAT_OMAK_PEAK`, `PLAN_AGENT`, `EXTRACT_QNA`, `FORMAT_HYPE`, `GENERATE_PANTUN`, `REPHRASE_TRIVIA` | `!ai`, `!agent`, `!saveqna`, engagement hooks, `!trivia` |
+
+With `prioritizeByTask: true` (production config), the router orders adapters per request (`src/ai/router.ts` `getOrderedAdapters`):
+
+- **Vision requests:** `DEEPSEEK → GROQ → GEMINI → NVIDIA_NIM → MISTRAL → COHERE → OLLAMA_CLOUD`
+- **Text requests:** `GROQ → DEEPSEEK → NVIDIA_NIM → COHERE → MISTRAL → GEMINI → OLLAMA_CLOUD`
+
+In each case only adapters registered at startup participate; unavailable (breaker-tripped) adapters are deferred to the end of the chain rather than skipped entirely.
 
 ---
 
@@ -53,7 +71,7 @@ The `ProviderRouter` handles provider failures using a strict error taxonomy:
 | **AIAuthenticationError** | `401 Unauthorized`, `403 Forbidden` | Trips immediately to `OPEN` | **0 Retries** — Stop immediately to protect credentials |
 | **AIQuotaExceededError** | `429 Too Many Requests` (Quota exhausted) | Trips immediately to `OPEN` for 60s cooldown | **0 Retries** — Rotate immediately to next healthy provider |
 | **AIRateLimitError** | `429 Too Many Requests` (RPM burst) | Records 1 failure, cooldown applied | Exponential backoff (1 retry max) |
-| **AITimeoutError** | Request exceeds 30,000 ms | Records 1 failure | 1 retry with exponential jitter |
+| **AITimeoutError** | Request exceeds the adapter's timeout (default 15 s) | Records 1 failure | 1 retry with exponential jitter |
 | **AIMalformedResponseError** | Unparseable JSON or Zod schema violation | Records 1 failure | Fallback to next provider in chain |
 | **AISafetyError** | Model content filter tripped | Trips to `OPEN` | Fail over immediately |
 | **AIProviderUnavailableError** | `500`, `502`, `503`, `504` | 3 consecutive failures trips to `OPEN` | Rotate to next provider |
@@ -82,11 +100,11 @@ If all configured providers in the router fail simultaneously (or trip their res
 
 ## 6. Telemetry & Audit Persistence
 
-Every AI inference attempt records structured telemetry to the `provider_usage` table in Turso:
+Every AI inference attempt records structured telemetry to the `provider_usage` table in Turso (migration 004 rebuilt the table to extend both CHECK constraints; existing rows were preserved):
 - `id`: Stable UUID
-- `provider`: `'GEMINI' | 'GROQ' | 'OLLAMA_CLOUD'`
-- `model`: Exact model string (e.g. `gemini-1.5-flash`)
-- `task_type`: `'CLASSIFY' | 'EXTRACT_MATCH' | 'EXTRACT_GOALKEEPER' | 'PARSE_CORRECTION'`
+- `provider`: `'GROQ' | 'DEEPSEEK' | 'GEMINI' | 'NVIDIA_NIM' | 'COHERE' | 'MISTRAL' | 'OLLAMA_CLOUD'`
+- `model`: Exact model string used for the call (text or vision variant)
+- `task_type`: `'CLASSIFY' | 'EXTRACT_MATCH' | 'EXTRACT_GOALKEEPER' | 'PARSE_CORRECTION' | 'PARSE_ROSTER' | 'CHAT_OMAK_PEAK' | 'PLAN_AGENT' | 'EXTRACT_QNA' | 'FORMAT_HYPE' | 'GENERATE_PANTUN' | 'REPHRASE_TRIVIA'`
 - `request_status`: `'SUCCESS' | 'ERROR' | 'RATE_LIMITED' | 'TIMEOUT'`
 - `input_units`: Input tokens count
 - `output_units`: Output tokens count

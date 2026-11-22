@@ -281,6 +281,45 @@ Prefer a deterministic query/materialized projection rebuildable from locked gam
 - `error_code` nullable
 - `created_at`
 
+### provider_usage
+- `id` TEXT PK
+- `provider`, `model`
+- `task_type`
+- `request_status`
+- `input_units`, `output_units` nullable
+- `latency_ms`
+- `error_code` nullable
+- `created_at`
+- `task_type` CHECK expanded in migration 004 to include: `CHAT_OMAK_PEAK`, `PLAN_AGENT`, `EXTRACT_QNA`, `FORMAT_HYPE`, `GENERATE_PANTUN`, `REPHRASE_TRIVIA` (in addition to the original `CLASSIFY`, `EXTRACT_MATCH`, `EXTRACT_GOALKEEPER`, `PARSE_CORRECTION`, `PARSE_ROSTER`). The expansion was done via a table rebuild (rename-copy-drop) inside migration 004.
+
+### ai_action_plans (migration 004, D-038)
+- `id` TEXT PK
+- `plan_code` TEXT UNIQUE NOT NULL — short human-readable code (e.g. `AGENT-7F3K`) used in `!agentconfirm <code>`
+- `tournament_id` FK nullable
+- `organizer_address` TEXT NOT NULL — sender_raw_address of the stager
+- `organizer_delegate_id` FK nullable
+- `instruction_text` TEXT NOT NULL — original NL instruction
+- `plan_json` TEXT NOT NULL — `{ actions: [{ action_id, params, rationale, preview_summary }] }`
+- `status` TEXT NOT NULL CHECK IN (`PENDING`, `EXECUTING`, `EXECUTED`, `EXPIRED`, `CANCELLED`, `FAILED`)
+- `expires_at` TEXT NOT NULL — ~10 min after created_at
+- `executed_at` TEXT nullable
+- `execution_result_json` TEXT nullable — `{ actions: [{ action_id, ok, before, after, error? }] }`
+- `failure_reason` TEXT nullable
+- `created_at`, `updated_at`
+- Idempotency invariant: the atomic claim `UPDATE status='EXECUTING' WHERE plan_code=? AND status='PENDING'` guarantees a double-confirm can never execute twice; the second confirm is explicitly rejected with the prior outcome + timestamp.
+
+### qna_entries (migration 004, D-039)
+- `id` TEXT PK
+- `question` TEXT NOT NULL
+- `answer` TEXT NOT NULL
+- `category` TEXT nullable — free-form enum: `jadwal`, `aturan`, `teknis`, `wo`, `roster`, `hasil`, `umum`
+- `source_message_ids_json` TEXT — JSON array of `inbound_messages.id` for traceability
+- `created_by_delegate_id` FK nullable
+- `created_by_organizer` INTEGER NOT NULL DEFAULT 0
+- `is_active` INTEGER NOT NULL DEFAULT 1
+- `created_at`, `updated_at`
+- `UNIQUE(question, answer)` — final dedup guard alongside AI-side duplicate marking
+
 ## 3. Constraints and invariants
 
 - Five starters exactly, including one goalkeeper and four outfield players.

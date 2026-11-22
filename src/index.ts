@@ -73,6 +73,12 @@ import {
   type AwardsCalculationOptions,
 } from './stats/awards.js';
 import { registerTournamentCommands } from './application/tournament-commands.js';
+import { registerAiNativeCommands } from './application/ai-native-commands.js';
+import type { EngagementService } from './application/engagement.js';
+import type { AgentPlannerService } from './application/agent-planner.js';
+import type { OmakPeakService } from './application/omak-peak.js';
+import type { QnaService } from './application/qna.js';
+import type { TriviaService } from './application/trivia.js';
 import { MatchdayService } from './application/matchday-service.js';
 import { resolveFixtureForMessage } from './application/fixture-resolver.js';
 import { handleReportCorrection } from './application/report-correction-coordinator.js';
@@ -140,6 +146,14 @@ export class FlashPeakApp {
   public readonly manualReportSession: ManualReportSessionManager;
   public readonly woClaimSession: WoClaimSessionManager;
   public readonly matchdayService: MatchdayService;
+  // AI-native services — assigned in registerAppCommands() (called from
+  // constructor); semantically set-once, but not declared `readonly` because
+  // TS forbids readonly assignment outside the constructor body itself.
+  public omakPeak?: OmakPeakService;
+  public agent?: AgentPlannerService;
+  public qna?: QnaService;
+  public engagement?: EngagementService;
+  public trivia?: TriviaService;
   public centralGroupJid?: string;
   public sender?: WhatsAppSender;
 
@@ -256,6 +270,22 @@ export class FlashPeakApp {
       submitApproval: this.submitApproval.bind(this),
       findVersionByMessageKey: this.findVersionByMessageKey.bind(this),
     });
+
+    // AI-native commands (!ai/Omak Peak, !agent/!agentconfirm/!agentcancel,
+    // !qna/!saveqna, !trivia/!quiz, !pantun). Kept in a dedicated module so
+    // tournament-commands.ts does not grow further. The returned services
+    // (engagement, agent) are wired into lifecycle hooks below.
+    const aiNative = registerAiNativeCommands(this.commandRouter, {
+      db: this.db,
+      providerRouter: this.providerRouter,
+      sender: this.sender,
+      centralGroupJid: this.centralGroupJid,
+    });
+    this.omakPeak = aiNative.omakPeak;
+    this.agent = aiNative.agent;
+    this.qna = aiNative.qna;
+    this.engagement = aiNative.engagement;
+    this.trivia = aiNative.trivia;
   }
 
   /**
@@ -280,6 +310,46 @@ export class FlashPeakApp {
     const centralGroup = this.centralGroupJid || this.commandRouter.getCentralGroupJid();
     if (chatIsGroup && centralGroup && message.chat_id !== centralGroup) {
       return { handled: false, type: 'UNKNOWN' };
+    }
+
+    // AI-NATIVE-001 (22 Nov 2026): broad capture of TEXT messages in the central
+    // tournament group ONLY into inbound_messages, with no session attachment.
+    // Purpose: enable !saveqna (needs last-N central-group messages to extract
+    // Q&A pairs from chat history) and provide a durable WA log for future audit
+    // (task #3 of the AI-native expansion brief). DMs (organizer or participant)
+    // are deliberately NOT captured: any DM to the bot may be private chat
+    // (e.g. !ai questions), and no current feature reads DM history — !saveqna
+    // queries inbound_messages by the central group's chat_id, so DM capture
+    // would add no consumer while widening capture into private conversations.
+    // Idempotent via the existing provider_message_key UNIQUE constraint
+    // (captureInboundMessage returns isDuplicate=true on the second call).
+    // IMAGE/VIDEO/AUDIO/DOCUMENT messages are NOT captured here — they
+    // continue to flow through the evidence path below, which captures them
+    // with the correct report_session_id. Text commands (!ai, !standings, ...)
+    // are captured too: they are real group messages and !saveqna benefits
+    // from seeing the full conversation context.
+    if (
+      centralGroup &&
+      message.chat_id === centralGroup &&
+      message.message_type === 'TEXT'
+    ) {
+      try {
+        await captureInboundMessage(this.db, {
+          provider_message_key: message.provider_message_key,
+          chat_id: message.chat_id,
+          sender_raw_address: message.sender_raw_address,
+          delegate_id: null,
+          message_timestamp: message.message_timestamp,
+          message_type: message.message_type,
+          text_body: message.text_body,
+          caption: message.caption,
+          reply_to_key: message.reply_to_key,
+          report_session_id: null,
+        });
+      } catch (capErr) {
+        // Capture is best-effort for logging; never let it block command handling.
+        this.logger.warn({ err: capErr }, 'Broad text capture failed (non-blocking)');
+      }
     }
 
     // 0. Interactive knockout per-game evidence (FIX2-KO-002):
@@ -1009,6 +1079,50 @@ export class FlashPeakApp {
         } else {
           lines.push('💡 _Panitia memicu ronde berikutnya dengan *!startknockout* setelah semua series ronde ini selesai._');
         }
+
+        // AI-NATIVE (D-040): engagement hype recap + champion celebration.
+        // Fires AFTER the official result message is built. The recap is a
+        // SEPARATE follow-up message (sent via sender) so the formal result
+        // stays unambiguous. Hype uses ONLY real facts (series score, margin,
+        // round) — AI formats presentation, never invents. Champion celebration
+        // fires only on Grand Final completion. Both silently skip if AI
+        // unavailable (non-critical).
+        if (this.engagement && this.sender) {
+          const hypeFacts = {
+            stage: 'KNOCKOUT' as const,
+            team_a_name: ctxInfo.teamAName,
+            team_b_name: ctxInfo.teamBName,
+            team_a_score: outcome.seriesScore.team_a,
+            team_b_score: outcome.seriesScore.team_b,
+            context_summary: `${ctxInfo.roundCode || 'KO'} ${outcome.seriesFormat}, pemenang ${winnerName}`,
+            form_notes: [],
+          };
+          // Detached — never blocks the reply.
+          Promise.resolve().then(async () => {
+            try {
+              if (ctxInfo.roundCode === 'FINAL' && outcome.winnerTeamId) {
+                // Champion celebration instead of generic hype.
+                const tRes = await this.db.execute({ sql: 'SELECT name FROM tournaments WHERE id = ?', args: [ctxInfo.tournamentId] });
+                const tName = tRes.rows.length > 0 ? String((tRes.rows[0] as unknown as Record<string, unknown>)[0] ?? (tRes.rows[0] as unknown as Record<string, unknown>).name) : 'Turnamen Flash Peak';
+                const celeb = await this.engagement!.buildChampionCelebration({
+                  tournament_name: tName,
+                  champion_team_name: winnerName,
+                  champion_path_summary: `Series final ${outcome.seriesScore.team_a}-${outcome.seriesScore.team_b} (${outcome.seriesFormat})`,
+                });
+                if (celeb && this.sender) {
+                  await this.sender.sendText(message.chat_id, celeb);
+                }
+              } else {
+                const hype = await this.engagement!.buildHypeRecap(hypeFacts);
+                if (hype && this.sender) {
+                  await this.sender.sendText(message.chat_id, hype);
+                }
+              }
+            } catch {
+              // best-effort; never let engagement break the result flow
+            }
+          });
+        }
       } else if (outcome.status === 'SERIES_ALREADY_COMPLETE') {
         lines.push(outcome.message);
       } else if (outcome.status === 'DUPLICATE') {
@@ -1163,6 +1277,19 @@ export class FlashPeakApp {
       .catch((err) => {
         console.error('[FlashPeakApp] Error recovering orphaned leases at startup:', err);
       });
+
+    // AI-NATIVE (D-038): recover organizer AI agent plans stuck in EXECUTING
+    // from a crash/restart. Marks them FAILED so the organizer is informed on
+    // next !agentconfirm and no plan is left in an ambiguous state.
+    if (this.agent) {
+      this.agent.recoverInterruptedPlans()
+        .then((n) => {
+          if (n > 0) this.logger.info({ recovered: n }, 'Recovered interrupted AI agent plans at startup');
+        })
+        .catch((err) => {
+          console.error('[FlashPeakApp] Error recovering interrupted AI agent plans:', err);
+        });
+    }
 
     this.pollTimer = setInterval(async () => {
       try {
