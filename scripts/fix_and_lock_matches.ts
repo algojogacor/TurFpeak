@@ -105,10 +105,23 @@ async function main() {
 
     if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
       console.log(`  [DEBUG JESTRE RAW EXTRACT]:`, JSON.stringify(raw, null, 2));
-      const allMedia = await db.execute(`SELECT id, storage_key, created_at FROM media_assets ORDER BY created_at DESC LIMIT 10`);
-      console.log(`  [RECENT MEDIA ASSETS]:`, allMedia.rows);
-      const allRepMed = await db.execute(`SELECT report_version_id, media_asset_id FROM report_media`);
-      console.log(`  [ALL REPORT MEDIA]:`, allRepMed.rows);
+      const sess = await db.execute({
+        sql: `SELECT id, fixture_id, delegate_id, created_at FROM report_sessions WHERE fixture_id = ?`,
+        args: [item.id],
+      });
+      console.log(`  [SESSIONS]:`, sess.rows);
+      for (const s of sess.rows) {
+        const msgs = await db.execute({
+          sql: `SELECT id, text, created_at FROM inbound_messages WHERE report_session_id = ?`,
+          args: [s.id],
+        });
+        console.log(`    [MSGS for ${s.id}]:`, msgs.rows);
+      }
+      const allVers = await db.execute({
+        sql: `SELECT id, report_session_id, version_number, status, provenance, created_at FROM report_versions WHERE fixture_id = ?`,
+        args: [item.id],
+      });
+      console.log(`  [ALL VERSIONS]:`, allVers.rows);
     }
     console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
     console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
