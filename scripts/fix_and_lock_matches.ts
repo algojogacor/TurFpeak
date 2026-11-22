@@ -43,9 +43,12 @@ async function main() {
     const teamBName = String(fRow[8]);
     const gameId = String(fRow[9]);
 
-    console.log(`  Team A: ${teamAName} (${teamAId})`);
-    console.log(`  Team B: ${teamBName} (${teamBId})`);
-    console.log(`  Game ID: ${gameId}`);
+    console.log(`  Raw Left Score: ${rawLeftScore}, Raw Right Score: ${rawRightScore}`);
+    console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
+    console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
+    console.log(`  Roster A (${teamAName}):`, rosterA.map(p => `${p.nickname_raw} (${p.position})`));
+    console.log(`  Roster B (${teamBName}):`, rosterB.map(p => `${p.nickname_raw} (${p.position})`));
+    console.log(`  Match count -> Left on A: ${leftMatchesA}, Left on B: ${leftMatchesB} | Right on A: ${rightMatchesA}, Right on B: ${rightMatchesB}`);
 
     // Query active roster for both teams
     const playersRes = await db.execute({
@@ -146,12 +149,17 @@ async function main() {
 
       if (cleaned.length >= 5) return cleaned;
 
-      const gk = roster.find((p) => p.position === 'GOALKEEPER') ||
-        roster.find((p) => !cleaned.some((cp) => cp.nickname_raw === p.nickname_raw));
+      const isAlreadyInLineup = (p: Player) =>
+        cleaned.some((cp) => cleanSearchKey(cp.nickname_raw) === cleanSearchKey(p.nickname_raw) || matchPlayerToRoster(cp, [p]));
 
-      if (gk && !cleaned.some((cp) => cp.nickname_raw === gk.nickname_raw)) {
+      // Pick a player from roster that is NOT yet in the lineup
+      const availableGk = roster.find((p) => p.position === 'GOALKEEPER' && !isAlreadyInLineup(p));
+      const fallbackPlayer = roster.find((p) => !isAlreadyInLineup(p));
+      const chosen = availableGk || fallbackPlayer;
+
+      if (chosen) {
         cleaned.push({
-          nickname_raw: gk.nickname_raw,
+          nickname_raw: chosen.nickname_raw,
           rating: 10.0,
           goals: 0,
           assists: 0,
@@ -204,11 +212,11 @@ async function main() {
   console.log(`\n======================================================`);
   console.log(`UPDATED GROUP STANDINGS:`);
   const standingsRes = await db.execute(`
-    SELECT g.group_name, t.team_name, s.played, s.wins, s.draws, s.losses, s.goals_for, s.goals_against, s.goal_difference, s.points
+    SELECT g.group_code, t.team_name, s.played, s.wins, s.draws, s.losses, s.goals_for, s.goals_against, s.goal_difference, s.points
     FROM standings s
     JOIN teams t ON s.team_id = t.id
     JOIN groups g ON s.group_id = g.id
-    ORDER BY g.group_name ASC, s.points DESC, s.goal_difference DESC, s.goals_for DESC
+    ORDER BY g.group_code ASC, s.points DESC, s.goal_difference DESC, s.goals_for DESC
   `);
 
   for (const r of standingsRes.rows) {
