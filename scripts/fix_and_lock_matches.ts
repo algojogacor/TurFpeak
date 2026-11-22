@@ -188,12 +188,11 @@ async function main() {
     console.log(`  ✅ Validation PASSED! Validated score: ${validation.validatedData?.team_a_score} - ${validation.validatedData?.team_b_score}`);
 
     // Update report version to LOCKED with validated_data_json
-    const now = new Date().toISOString();
     await db.execute({
       sql: `UPDATE report_versions
-            SET status = 'LOCKED', validated_data_json = ?, updated_at = ?
+            SET status = 'LOCKED', validated_data_json = ?
             WHERE id = ?`,
-      args: [JSON.stringify(validation.validatedData), now, reportVersionId],
+      args: [JSON.stringify(validation.validatedData), reportVersionId],
     });
 
     // Execute official onReportLocked
