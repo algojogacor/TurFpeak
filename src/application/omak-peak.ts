@@ -168,6 +168,18 @@ export interface OmakPeakDeps {
 
 export const OMAK_PEAK_INTRO = `👋 *Omak Peak here.*\n\nAku asisten otomatis turnamen Flash Peak (Gojiha Tournament) di grup ini. Bisa ditanya apa aja — jadwal, hasil, klasemen, aturan, atau sekadar ngobrol soal Flash Peak. Aku read-only: nggak bisa ubah apa pun di sistem, bukan itu peranku. Kalau lo butuh aksi (ubah hasil, reopen, dll), ke Panitia Arya langsung.\n\nCaranya: ketik *!ai <pertanyaan>*. Contoh:\n• *!ai siapa lawan tim aku besok?*\n• *!ai gimana aturan WO?*\n• *!ai skill Homer apa?*\n\n_2x per menit per user, ya — biar adil buat semua._`;
 
+/**
+ * Safely bounds chat responses to prevent runaway hallucination or spam,
+ * cleanly truncating at the last paragraph/sentence boundary if exceeding maxLen.
+ */
+export function smartTruncate(text: string, maxLen = 5000): string {
+  if (text.length <= maxLen) return text;
+  const sub = text.slice(0, maxLen);
+  const lastBreak = Math.max(sub.lastIndexOf('\n'), sub.lastIndexOf('. '));
+  const cutoff = lastBreak > maxLen * 0.7 ? lastBreak + 1 : maxLen;
+  return sub.slice(0, cutoff).trimEnd() + '\n\n_(Pesan terpotong pada batas maksimal 5.000 karakter)_';
+}
+
 export class OmakPeakService {
   private readonly rateLimiter: RollingRateLimiter;
   private readonly memory: ConversationMemory;
@@ -265,8 +277,9 @@ export class OmakPeakService {
           rateLimited: false,
         };
       }
-      // Kirim jawaban lengkap tanpa batasan buatan agar pesan analisa panjang tidak terpotong.
-      const finalText = text;
+      // Gunakan smartTruncate dengan batas pengaman 5.000 karakter (setara ~1.500-1.800 token)
+      // agar analisa panjang tetap tuntas dan utuh, namun mencegah runaway loop/spam.
+      const finalText = smartTruncate(text, 5000);
       // Record into rolling memory AFTER a successful response. The current
       // turn is not in the snapshot above, so the model never sees its own
       // in-progress answer (avoids self-referential noise).

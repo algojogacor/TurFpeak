@@ -1,5 +1,25 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Implement 5,000-Char Smart Safety Guard on Omak Peak Chat Responses
+
+### Konteks Sesi
+- User menyetujui penerapan batas pengaman (safety guard) untuk chat Omak Peak: batas 5.000 karakter (setara ~1.500 - 1.800 token) untuk mencegah runaway generation/spam loop sambil memastikan jawaban analisis panjang tetap utuh dan tuntas.
+- Implementasi `smartTruncate`:
+  - Jika teks <= 5.000 karakter: dikirim 100% utuh tanpa modifikasi apa pun.
+  - Jika teks > 5.000 karakter: dipotong secara cerdas pada batas kalimat (`. `) atau baris baru (`\n`) terdekat (bukan di tengah kata/huruf) dan diakhiri dengan catatan kaki rapi: `\n\n_(Pesan terpotong pada batas maksimal 5.000 karakter)_`.
+
+### Perubahan Kode (Surgical)
+1. **`src/application/omak-peak.ts`**:
+   - Menambahkan fungsi `smartTruncate(text, maxLen = 5000)`.
+   - Menggunakan `smartTruncate(text, 5000)` pada `handleAiCommand`.
+2. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan unit test `smartTruncate: leaves text <= 5000 chars untouched, cleanly cuts > 5000 at sentence break`.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run tests/unit/ai_native.test.ts`: 52/52 PASS.
+
+
 ## [2026-11-23] Sesi: Remove Artificial Character Truncation on Omak Peak Chat Responses
 
 ### Konteks Sesi

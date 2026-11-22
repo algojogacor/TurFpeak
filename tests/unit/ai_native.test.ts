@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { runMigrations } from '../../src/db/migrate.js';
-import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, ConversationMemory } from '../../src/application/omak-peak.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, ConversationMemory, smartTruncate } from '../../src/application/omak-peak.js';
 import { buildOmakPeakPrompt } from '../../src/ai/prompts/omak-peak.js';
 import {
   AgentActionCatalog,
@@ -213,6 +213,19 @@ describe('OmakPeakService (D-037)', () => {
     const res = await svc.handleAiCommand('user-long', 'berapa chance lolos?', 'grp-test@g.us');
     expect(res.replyText).toBe(longText.trim());
     expect(res.replyText.endsWith('…')).toBe(false);
+  });
+
+  it('smartTruncate: leaves text <= 5000 chars untouched, cleanly cuts > 5000 at sentence break', () => {
+    const normalText = 'Halo ini teks normal.'.repeat(20);
+    expect(smartTruncate(normalText, 5000)).toBe(normalText);
+
+    const paragraph = 'Ini kalimat analisa panjang untuk turnamen. ';
+    const hugeText = paragraph.repeat(150); // ~6600 chars
+    const truncated = smartTruncate(hugeText, 5000);
+    expect(truncated.length).toBeLessThan(5100);
+    expect(truncated).toContain('_(Pesan terpotong pada batas maksimal 5.000 karakter)_');
+    // Ensure it cuts cleanly at period/sentence boundary, not inside a word
+    expect(truncated).toContain('.\n\n_(');
   });
 
   it('ConversationMemory: records, returns oldest-first within TTL, prunes expired', () => {
