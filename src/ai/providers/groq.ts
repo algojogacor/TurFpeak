@@ -148,12 +148,19 @@ export class GroqAdapter implements ProviderAdapter {
       ? this.visionModel
       : (this.textModel || this.model);
 
-    const payload = {
+    const payload: {
+      model: string;
+      messages: typeof messages;
+      response_format?: { type: 'json_object' };
+      temperature: number;
+    } = {
       model: modelToUse,
       messages,
-      response_format: { type: 'json_object' },
       temperature: request.temperature ?? 0.1,
     };
+    if (request.structured_output) {
+      payload.response_format = { type: 'json_object' };
+    }
 
     const startTime = Date.now();
 
@@ -206,10 +213,12 @@ export class GroqAdapter implements ProviderAdapter {
       }
 
       let parsedJson: T | undefined;
-      try {
-        parsedJson = JSON.parse(rawText) as T;
-      } catch {
-        throw new AIMalformedResponseError(this.name, `Groq JSON parsing failed: ${rawText.slice(0, 100)}`);
+      if (request.structured_output) {
+        try {
+          parsedJson = JSON.parse(rawText) as T;
+        } catch {
+          throw new AIMalformedResponseError(this.name, `Groq JSON parsing failed: ${rawText.slice(0, 100)}`);
+        }
       }
 
       return {

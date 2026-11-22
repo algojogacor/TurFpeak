@@ -192,6 +192,7 @@ describe('Fase 4: AI Pipeline & Vision', () => {
 
       const response = await adapter.execute<{ score: number; valid: boolean }>({
         task: 'CLASSIFY',
+        structured_output: true,
         system_prompt: 'You are a visual classifier.',
         prompt: 'Classify this screenshot',
         images: [{ mime_type: 'image/jpeg', base64: 'dGVzdGJhc2U2NA==' }],
@@ -283,6 +284,7 @@ describe('Fase 4: AI Pipeline & Vision', () => {
 
       const res = await adapter.execute<{ verified: boolean; count: number }>({
         task: 'EXTRACT_MATCH',
+        structured_output: true,
         system_prompt: 'System prompt instructions',
         prompt: 'User prompt',
         images: [{ mime_type: 'image/png', base64: 'aW1hZ2VkYXRh' }],
@@ -398,6 +400,7 @@ describe('Fase 4: AI Pipeline & Vision', () => {
 
       const res = await adapter.execute<{ status: string; model: string }>({
         task: 'CLASSIFY',
+        structured_output: true,
         system_prompt: 'System prompt',
         prompt: 'User prompt',
       });

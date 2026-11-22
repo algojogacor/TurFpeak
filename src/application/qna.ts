@@ -207,6 +207,7 @@ export class QnaService {
     try {
       const response = await this.deps.providerRouter.execute({
         task: 'EXTRACT_QNA',
+        structured_output: true,
         system_prompt: QNA_EXTRACTOR_SYSTEM_PROMPT,
         prompt: userPrompt,
         temperature: 0.1,

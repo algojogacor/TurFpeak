@@ -278,8 +278,8 @@ export class FlashPeakApp {
     const aiNative = registerAiNativeCommands(this.commandRouter, {
       db: this.db,
       providerRouter: this.providerRouter,
-      sender: this.sender,
-      centralGroupJid: this.centralGroupJid,
+      get sender() { return self.sender; },
+      get centralGroupJid() { return self.centralGroupJid; },
     });
     this.omakPeak = aiNative.omakPeak;
     this.agent = aiNative.agent;

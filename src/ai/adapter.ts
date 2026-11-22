@@ -193,6 +193,7 @@ export interface AIRequest {
   images?: AIImageInput[];
   temperature?: number;
   timeout_ms?: number; // default: 15,000ms
+  structured_output?: boolean; // default false (free-form text); true → force JSON output mode + parse
   correlation_id?: string;
 }
 

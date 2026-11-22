@@ -52,6 +52,7 @@ export class MatchSummaryExtractor {
 
     const response = await this.router.execute<unknown>({
       task: 'EXTRACT_MATCH',
+      structured_output: true,
       system_prompt: MAIN_MATCH_PROMPT.system_prompt,
       prompt: userPrompt,
       images: [

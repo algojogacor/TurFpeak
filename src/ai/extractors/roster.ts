@@ -44,6 +44,7 @@ export class RosterExtractor {
 
     const response = await this.router.execute<unknown>({
       task: 'PARSE_ROSTER',
+      structured_output: true,
       system_prompt: ROSTER_EXTRACTION_PROMPT.system_prompt,
       prompt: userPrompt,
       correlation_id: options.correlation_id,

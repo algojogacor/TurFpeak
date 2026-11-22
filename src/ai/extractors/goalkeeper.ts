@@ -54,6 +54,7 @@ export class GoalkeeperDetailExtractor {
 
     const response = await this.router.execute<unknown>({
       task: 'EXTRACT_GOALKEEPER',
+      structured_output: true,
       system_prompt: GOALKEEPER_DETAIL_PROMPT.system_prompt,
       prompt: userPrompt,
       images: [

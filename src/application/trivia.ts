@@ -113,7 +113,7 @@ export class TriviaService {
     const q = quiz[Math.floor(Math.random() * quiz.length)];
     return {
       success: true,
-      responseText: 'ok', // not displayed; the command handler sends a custom message
+      responseText: '', // not displayed; the command handler sends a custom message
       question: q.question,
       answer: q.answer,
     };

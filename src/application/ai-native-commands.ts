@@ -208,11 +208,14 @@ export function registerAiNativeCommands(
     allowedInGroup: true,
     handler: async (ctx: CommandContext) => {
       const res = await trivia.randomQuiz();
-      if (!res.success || !res.question || !res.answer || !deps.sender || !deps.centralGroupJid) {
+      if (!res.success || !res.question || !res.answer) {
         return { success: res.success, responseText: res.responseText };
       }
-      // Send the question immediately; schedule the answer reveal after 15s.
       const targetChat = ctx.message.chat_id || deps.centralGroupJid;
+      if (!deps.sender || !targetChat) {
+        return { success: false, responseText: '⚠️ Bot belum siap kirim quiz, coba lagi sebentar.' };
+      }
+      // Send the question immediately; schedule the answer reveal after 15s.
       try {
         await deps.sender.sendText(
           targetChat,

@@ -151,7 +151,7 @@ export class NvidiaAdapter implements ProviderAdapter {
 
     if (isVision) {
       payload.max_tokens = 1000;
-    } else {
+    } else if (request.structured_output) {
       payload.response_format = { type: 'json_object' };
     }
 
@@ -209,26 +209,28 @@ export class NvidiaAdapter implements ProviderAdapter {
       }
 
       let parsedJson: T | undefined;
-      try {
-        const cleaned = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-        parsedJson = JSON.parse(cleaned) as T;
-      } catch {
-        // Try regex extraction of JSON object if wrapped in thinking/reasoning
-        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          try {
-            parsedJson = JSON.parse(jsonMatch[0]) as T;
-          } catch {
+      if (request.structured_output) {
+        try {
+          const cleaned = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+          parsedJson = JSON.parse(cleaned) as T;
+        } catch {
+          // Try regex extraction of JSON object if wrapped in thinking/reasoning
+          const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            try {
+              parsedJson = JSON.parse(jsonMatch[0]) as T;
+            } catch {
+              throw new AIMalformedResponseError(
+                this.name,
+                `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
+              );
+            }
+          } else {
             throw new AIMalformedResponseError(
               this.name,
               `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
             );
           }
-        } else {
-          throw new AIMalformedResponseError(
-            this.name,
-            `Failed to parse JSON response from NVIDIA NIM: ${rawContent.slice(0, 100)}`
-          );
         }
       }
 

@@ -149,8 +149,10 @@ export class CohereAdapter implements ProviderAdapter {
       model: modelToUse,
       messages,
       temperature: request.temperature ?? 0.1,
-      response_format: { type: 'json_object' },
     };
+    if (request.structured_output) {
+      payload.response_format = { type: 'json_object' };
+    }
 
     const startTime = Date.now();
 
@@ -217,20 +219,22 @@ export class CohereAdapter implements ProviderAdapter {
       const content = textBlock?.text || contentBlocks[0].text || '';
       const sanitizedContent = sanitizeSensitiveString(content, this.apiKeys);
 
-      let parsedPayload: T;
-      try {
-        let cleaned = sanitizedContent.trim();
-        if (cleaned.startsWith('```json')) {
-          cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-        } else if (cleaned.startsWith('```')) {
-          cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      let parsedPayload: T | undefined;
+      if (request.structured_output) {
+        try {
+          let cleaned = sanitizedContent.trim();
+          if (cleaned.startsWith('```json')) {
+            cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+          } else if (cleaned.startsWith('```')) {
+            cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+          }
+          parsedPayload = JSON.parse(cleaned) as T;
+        } catch (parseErr) {
+          throw new AIMalformedResponseError(
+            this.name,
+            `Failed to parse Cohere JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Raw content: ${sanitizedContent.slice(0, 200)}`
+          );
         }
-        parsedPayload = JSON.parse(cleaned) as T;
-      } catch (parseErr) {
-        throw new AIMalformedResponseError(
-          this.name,
-          `Failed to parse Cohere JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Raw content: ${sanitizedContent.slice(0, 200)}`
-        );
       }
 
       return {

@@ -31,6 +31,7 @@ describe('New Multi-Provider Adapters & Priority Routing Tests', () => {
 
     const res = await adapter.execute<{ score: string; winner: string }>({
       task: 'EXTRACT_MATCH',
+      structured_output: true,
       system_prompt: 'System',
       prompt: 'Extract match',
     });
@@ -86,6 +87,7 @@ describe('New Multi-Provider Adapters & Priority Routing Tests', () => {
 
     const res = await adapter.execute<{ team_name: string; goalkeeper: string }>({
       task: 'PARSE_ROSTER',
+      structured_output: true,
       system_prompt: '',
       prompt: 'test',
     });

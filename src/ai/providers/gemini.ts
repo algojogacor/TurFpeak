@@ -95,16 +95,18 @@ export class GeminiAdapter implements ProviderAdapter {
       contents: Array<{ role: string; parts: typeof parts }>;
       systemInstruction?: { parts: Array<{ text: string }> };
       generationConfig: {
-        responseMimeType: string;
+        responseMimeType?: string;
         temperature: number;
       };
     } = {
       contents: [{ role: 'user', parts }],
       generationConfig: {
-        responseMimeType: 'application/json',
         temperature: request.temperature ?? 0.1,
       },
     };
+    if (request.structured_output) {
+      payload.generationConfig.responseMimeType = 'application/json';
+    }
 
     if (request.system_prompt) {
       payload.systemInstruction = {
@@ -179,10 +181,12 @@ export class GeminiAdapter implements ProviderAdapter {
       }
 
       let parsedJson: T | undefined;
-      try {
-        parsedJson = JSON.parse(rawText) as T;
-      } catch {
-        throw new AIMalformedResponseError(this.name, `Gemini JSON parsing failed: ${rawText.slice(0, 100)}`);
+      if (request.structured_output) {
+        try {
+          parsedJson = JSON.parse(rawText) as T;
+        } catch {
+          throw new AIMalformedResponseError(this.name, `Gemini JSON parsing failed: ${rawText.slice(0, 100)}`);
+        }
       }
 
       return {

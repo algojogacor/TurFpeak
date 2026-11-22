@@ -52,6 +52,7 @@ export class ImageClassifier {
 
     const response = await this.router.execute<unknown>({
       task: 'CLASSIFY',
+      structured_output: true,
       system_prompt: IMAGE_CLASSIFIER_PROMPT.system_prompt,
       prompt: userPrompt,
       images: [

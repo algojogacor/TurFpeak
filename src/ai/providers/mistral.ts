@@ -151,8 +151,10 @@ export class MistralAdapter implements ProviderAdapter {
       model: modelToUse,
       messages,
       temperature: request.temperature ?? 0.1,
-      response_format: { type: 'json_object' },
     };
+    if (request.structured_output) {
+      payload.response_format = { type: 'json_object' };
+    }
 
     if (isVision) {
       payload.max_tokens = 1500;
@@ -220,20 +222,22 @@ export class MistralAdapter implements ProviderAdapter {
       const content = choice.message.content;
       const sanitizedContent = sanitizeSensitiveString(content, this.apiKeys);
 
-      let parsedPayload: T;
-      try {
-        let cleaned = sanitizedContent.trim();
-        if (cleaned.startsWith('```json')) {
-          cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-        } else if (cleaned.startsWith('```')) {
-          cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      let parsedPayload: T | undefined;
+      if (request.structured_output) {
+        try {
+          let cleaned = sanitizedContent.trim();
+          if (cleaned.startsWith('```json')) {
+            cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+          } else if (cleaned.startsWith('```')) {
+            cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+          }
+          parsedPayload = JSON.parse(cleaned) as T;
+        } catch (parseErr) {
+          throw new AIMalformedResponseError(
+            this.name,
+            `Failed to parse Mistral JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Raw content: ${sanitizedContent.slice(0, 200)}`
+          );
         }
-        parsedPayload = JSON.parse(cleaned) as T;
-      } catch (parseErr) {
-        throw new AIMalformedResponseError(
-          this.name,
-          `Failed to parse Mistral JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Raw content: ${sanitizedContent.slice(0, 200)}`
-        );
       }
 
       return {

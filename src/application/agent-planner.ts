@@ -759,6 +759,7 @@ async function callPlannerAI(
     `Return JSON only.`;
   const response = await router.execute({
     task: 'PLAN_AGENT',
+    structured_output: true,
     system_prompt: PLANNER_SYSTEM_PROMPT,
     prompt: userPrompt,
     temperature: 0.2,

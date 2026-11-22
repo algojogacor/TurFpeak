@@ -235,6 +235,7 @@ export class CorrectionParser {
 
         const response = await router.execute<unknown>({
           task: 'PARSE_CORRECTION',
+          structured_output: true,
           system_prompt: CORRECTION_PARSER_PROMPT.system_prompt,
           prompt: userPrompt,
           correlation_id: params.correlation_id,
