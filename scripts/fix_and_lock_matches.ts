@@ -104,16 +104,27 @@ async function main() {
     }
 
     if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
-      console.log(`  [DEBUG JESTRE RAW EXTRACT]:`, JSON.stringify(raw, null, 2));
-      const mediaRes = await db.execute({
-        sql: `SELECT ma.storage_key, ma.created_at, im.caption, im.text_body
-              FROM report_sessions rs
-              JOIN inbound_messages im ON im.report_session_id = rs.id
-              JOIN media_assets ma ON ma.source_message_id = im.id
-              WHERE rs.fixture_id = ?`,
-        args: [item.id],
-      });
-      console.log(`  [MEDIA FOR JESTRE]:`, mediaRes.rows);
+      const allDels = await db.execute(`
+        SELECT d.id, d.name, d.phone_number, t.team_name, g.group_code
+        FROM delegates d
+        JOIN teams t ON d.team_id = t.id
+        LEFT JOIN group_members gm ON gm.team_id = t.id
+        LEFT JOIN groups g ON gm.group_id = g.id
+        WHERE t.team_name LIKE '%7Sins%' OR t.team_name LIKE '%Helix%'
+      `);
+      console.log(`  [DELEGATES 7SINS & HELIX]:`, allDels.rows);
+
+      const allFixtures = await db.execute(`
+        SELECT f.id, f.round_number, f.stage, g.group_code, t1.team_name, t2.team_name, f.status
+        FROM fixtures f
+        JOIN teams t1 ON f.team_a_id = t1.id
+        JOIN teams t2 ON f.team_b_id = t2.id
+        LEFT JOIN groups g ON f.group_id = g.id
+        WHERE t1.team_name LIKE '%Helix%' OR t2.team_name LIKE '%Helix%'
+           OR t1.team_name LIKE '%7Sins%' OR t2.team_name LIKE '%7Sins%'
+        ORDER BY f.round_number ASC
+      `);
+      console.log(`  [FIXTURES HELIX & 7SINS]:`, allFixtures.rows);
     }
     console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
     console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
