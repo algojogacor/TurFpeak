@@ -147,10 +147,10 @@ describe('Evidence media download guards (B-2)', () => {
   });
 
   /** Creates a session with N evidence photo assets (msg-b2-01, msg-b2-02, ...). */
-  async function createSessionWithAssets(assetKeys: string[]): Promise<string> {
+  async function createSessionWithAssets(assetKeys: string[], submittingTeam?: string): Promise<string> {
     const sessionRes = await findOrCreateReportSession(db, {
       fixture_id: fixtureId,
-      submitting_team_id: teamAId,
+      submitting_team_id: submittingTeam || teamAId,
     });
     const sessionId = sessionRes.session.id;
     const now = new Date().toISOString();
@@ -277,5 +277,31 @@ describe('Evidence media download guards (B-2)', () => {
     expect(classifiedPayload.base64).not.toContain('MOCK_BASE64_DATA');
     // The summary surfaces the skipped asset instead of hiding it.
     expect(res.whatsappSummary).toContain('dilewati');
+  });
+
+  it('does not invert scores or rosters when Team B submits screenshot where Team A is on the left', async () => {
+    // Session submitted by Team B
+    await createSessionWithAssets(['msg-teamb-sub'], teamBId);
+    const batch = await claimDebounceBatch(db, 'test-worker', 30_000);
+    expect(batch).toBeTruthy();
+
+    const deps = buildDeps({
+      mediaClient: createStubMediaClient({ allowRemoteId: (id) => id === 'msg-teamb-sub' }),
+    });
+
+    const res = await processClaimedBatch(deps, batch!);
+
+    expect(res.status).toBe('DRAFT_CREATED');
+    expect(res.draftVersion).toBeTruthy();
+    // Verify draft validated data has Team A score = 2 and Team B score = 1
+    const draft = await db.execute({
+      sql: 'SELECT validated_data_json FROM report_versions WHERE id = ?',
+      args: [res.draftVersion!.id],
+    });
+    const validatedData = JSON.parse(String(draft.rows[0][0]));
+    expect(validatedData.team_a_score).toBe(2);
+    expect(validatedData.team_b_score).toBe(1);
+    expect(validatedData.team_a_players[0].nickname_raw).toBe('RAKeeper');
+    expect(validatedData.team_b_players[0].nickname_raw).toBe('RBKeeper');
   });
 });

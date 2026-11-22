@@ -1,5 +1,51 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: Fix Evidence Side Inversion Bug & Participant Dispute Resolution
+
+### Konteks Sesi
+- Peserta melaporkan anomali hasil ekstraksi pertandingan di WhatsApp:
+  - "Lah salah nama itu"
+  - "salah yang menang elite 8"
+  - "Kok ke balik skor jya"
+- Terjadi sengketa pertandingan antara Helix Moonbreaker vs 7Sins (7SB) mengenai jadwal match dan klaim walkover (WO).
+
+### Investigasi & Root Cause
+1. **Side & Score Inversion Bug (`src/application/evidence-batch-processor.ts`)**:
+   - Kode lama mengasumsikan tim yang mengirim bukti selalu berada di sisi kiri (Team A):
+     `const isSubmittingTeamB = Boolean(submittingTeamId && submittingTeamId === teamBId);`
+     Jika `isSubmittingTeamB === true`, skor dan daftar pemain ditukar secara naif!
+   - Di Flash Peak, sisi kiri (kandang/host) dan sisi kanan (tandang) pada screenshot skor akhir bersifat global dan sama untuk semua pemain, tidak bergantung pada siapa yang mengambil/mengirim screenshot.
+   - Ketika delegasi Team B (misal AVOID Impact atau Kazekage) mengirim screenshot skor akhir di mana Team A ada di kiri dan Team B di kanan, kode menukar skor dan pemain. Akibatnya:
+     - Skor terbalik (pemenang tertukar).
+     - Pemain Team A dimasukkan ke Team B dan sebaliknya.
+     - Validasi roster gagal (`is not a registered active player on Team A`) sehingga draft status jatuh ke `NEEDS_CORRECTION`.
+2. **Goalkeeper Target Team**:
+   - `targetGkTeamId` lama memilih `submittingTeamId` lebih dulu daripada pemenang match. Jika tim kalah yang mengirim bukti, bot mencari kiper pemenang di roster tim yang kalah sehingga gagal menemukan kiper.
+3. **Sengketa Helix vs 7SB**:
+   - Berdasarkan jadwal resmi turnamen di database (`fixtures`), match `Helix Moonbreaker` vs `7Sins•BlueLock Venom` dijadwalkan di **ROUND_2 (Matchday 2 / Besok)**, BUKAN Matchday 1 (hari ini).
+   - Hari ini di Matchday 1: Helix seharusnya bertanding melawan Agility Starlight, sedangkan 7Sins melawan Mizukage.
+   - Sengketa terjadi karena kesalahpahaman delegasi. Bukan WO karena jadwal matchday-nya memang belum tiba.
+
+### Perubahan Kode (Surgical)
+1. **`src/application/evidence-batch-processor.ts`**:
+   - Menghapus swap berbasis `isSubmittingTeamB`.
+   - Mengambil data roster aktif lengkap (`Player[]`) untuk `teamA` dan `teamB`.
+   - Menggunakan `matchPlayerToRoster` untuk mencocokkan pemain sisi kiri (`team_a_players`) dan sisi kanan (`team_b_players`) dari screenshot terhadap `rosterA` dan `rosterB`.
+   - Menentukan orientasi secara deterministik:
+     - Jika pemain kiri lebih cocok ke Roster B dan pemain kanan lebih cocok ke Roster A (`invertedScore > normalScore`), tukar sisi.
+     - Jika tie/unmatched, gunakan fallback `fixture.left_side_team_id`.
+     - Selain itu, pertahankan orientasi default tanpa menukar berdasarkan pengirim pesan.
+   - Memperbaiki `targetGkTeamId` agar memprioritaskan tim pemenang (`winningTeamId || submittingTeamId || teamAId`) sesuai aturan §7.3.
+2. **`tests/integration/evidence_media_guards.test.ts`**:
+   - Menambahkan unit/regression test: `does not invert scores or rosters when Team B submits screenshot where Team A is on the left`.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run tests/integration/evidence_media_guards.test.ts`: 4/4 PASS.
+- `npx vitest run`: 319/319 PASS (23 test files).
+
+---
+
 ## [2026-11-22] Sesi: AI-Native Feature Expansion + Hardening + Long-Term Maintainability (Task: flash-peak-tms-ai-native-expansion-v1, Branch: feat/ai-native-expansion-v1)
 
 ### Konteks Sesi

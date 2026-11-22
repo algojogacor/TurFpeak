@@ -26,7 +26,8 @@ import type { ImageClassifier } from '../ai/classifier.js';
 import type { MatchSummaryExtractor } from '../ai/extractors/match.js';
 import type { GoalkeeperDetailExtractor } from '../ai/extractors/goalkeeper.js';
 import { resolveGoalkeeperIdentity, type RosterPlayerCandidate } from '../ai/extractors/gk-identity.js';
-import { validateMatchReport, cleanSearchKey } from '../reports/validation.js';
+import { validateMatchReport, cleanSearchKey, matchPlayerToRoster } from '../reports/validation.js';
+import type { Player } from '../shared/types/index.js';
 import { createReportDraft } from '../reports/versioning.js';
 import {
   formatMatchReportSummary,
@@ -218,7 +219,7 @@ export async function processClaimedBatch(
     }
 
     const fixtureRes = await db.execute({
-      sql: `SELECT f.id, f.team_a_id, f.team_b_id, g.id AS game_id, ta.team_name, tb.team_name
+      sql: `SELECT f.id, f.team_a_id, f.team_b_id, f.left_side_team_id, g.id AS game_id, ta.team_name, tb.team_name
             FROM fixtures f
             LEFT JOIN games g ON g.fixture_id = f.id
             LEFT JOIN teams ta ON f.team_a_id = ta.id
@@ -234,20 +235,41 @@ export async function processClaimedBatch(
     const fRow = fixtureRes.rows[0];
     const teamAId = String(fRow[1]);
     const teamBId = String(fRow[2]);
-    const gameId = fRow[3] ? String(fRow[3]) : randomUUID();
-    const teamAName = String(fRow[4] || 'Tim A');
-    const teamBName = String(fRow[5] || 'Tim B');
+    const leftSideTeamId = fRow[3] ? String(fRow[3]) : teamAId;
+    const gameId = fRow[4] ? String(fRow[4]) : randomUUID();
+    const teamAName = String(fRow[5] || 'Tim A');
+    const teamBName = String(fRow[6] || 'Tim B');
 
     // Query active roster for both teams to supply grounded trusted_context (FIX-CTX-001)
     const playersRes = await db.execute({
-      sql: `SELECT team_id, nickname_raw FROM players WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
+      sql: `SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status
+            FROM players
+            WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
       args: [teamAId, teamBId],
     });
 
-    const expectedRoster: Array<{ nickname: string; team_id?: string }> = playersRes.rows.map((row) => ({
-      nickname: String((row as any).nickname_raw ?? row[1]),
-      team_id: String((row as any).team_id ?? row[0]),
+    const expectedRoster: Array<{ nickname: string; team_id?: string }> = playersRes.rows.map((row: any) => ({
+      nickname: String(row.nickname_raw ?? row[3]),
+      team_id: String(row.team_id ?? row[2]),
     }));
+
+    const registeredPlayers: Player[] = playersRes.rows.map((row: any) => ({
+      id: String(row.id ?? row[0]),
+      tournament_id: String(row.tournament_id ?? row[1]),
+      team_id: String(row.team_id ?? row[2]),
+      nickname_raw: String(row.nickname_raw ?? row[3]),
+      nickname_nfc: String(row.nickname_nfc ?? row[4]),
+      nickname_search_key: String(row.nickname_search_key ?? row[5]),
+      position: String(row.position ?? row[6]) as Player['position'],
+      roster_slot: Number(row.roster_slot ?? row[7]),
+      roster_type: String(row.roster_type ?? row[8]) as Player['roster_type'],
+      status: String(row.status ?? row[9]) as Player['status'],
+      created_at: '',
+      updated_at: '',
+    }));
+
+    const rosterA = registeredPlayers.filter((p) => p.team_id === teamAId);
+    const rosterB = registeredPlayers.filter((p) => p.team_id === teamBId);
 
     const matchExtraction = await matchExtractor.extract(
       {
@@ -307,19 +329,44 @@ export async function processClaimedBatch(
       }
     }
 
-    const isSubmittingTeamB = Boolean(submittingTeamId && submittingTeamId === teamBId);
+    const leftExtractedPlayers = matchExtraction.summary_data.team_a_players || [];
+    const rightExtractedPlayers = matchExtraction.summary_data.team_b_players || [];
+    const rawLeftScore = matchExtraction.summary_data.team_a_score ?? 0;
+    const rawRightScore = matchExtraction.summary_data.team_b_score ?? 0;
 
-    const rawTeamAScore = matchExtraction.summary_data.team_a_score ?? 0;
-    const rawTeamBScore = matchExtraction.summary_data.team_b_score ?? 0;
-    const teamAScore = isSubmittingTeamB ? rawTeamBScore : rawTeamAScore;
-    const teamBScore = isSubmittingTeamB ? rawTeamAScore : rawTeamBScore;
+    let leftMatchesA = 0;
+    let leftMatchesB = 0;
+    for (const p of leftExtractedPlayers) {
+      if (matchPlayerToRoster(p, rosterA)) leftMatchesA++;
+      if (matchPlayerToRoster(p, rosterB)) leftMatchesB++;
+    }
 
-    const rawPlayersForA = isSubmittingTeamB
-      ? matchExtraction.summary_data.team_b_players
-      : matchExtraction.summary_data.team_a_players;
-    const rawPlayersForB = isSubmittingTeamB
-      ? matchExtraction.summary_data.team_a_players
-      : matchExtraction.summary_data.team_b_players;
+    let rightMatchesA = 0;
+    let rightMatchesB = 0;
+    for (const p of rightExtractedPlayers) {
+      if (matchPlayerToRoster(p, rosterA)) rightMatchesA++;
+      if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
+    }
+
+    // Determine if screenshot sides are inverted (Left is Team B and Right is Team A)
+    let isSidesSwapped = false;
+    const normalScore = leftMatchesA + rightMatchesB;
+    const invertedScore = leftMatchesB + rightMatchesA;
+
+    if (invertedScore > normalScore) {
+      isSidesSwapped = true;
+    } else if (normalScore === 0 && invertedScore === 0) {
+      // Fallback: use fixture left_side_team_id if no players matched
+      if (leftSideTeamId === teamBId) {
+        isSidesSwapped = true;
+      }
+    }
+
+    const teamAScore = isSidesSwapped ? rawRightScore : rawLeftScore;
+    const teamBScore = isSidesSwapped ? rawLeftScore : rawRightScore;
+
+    const rawPlayersForA = isSidesSwapped ? rightExtractedPlayers : leftExtractedPlayers;
+    const rawPlayersForB = isSidesSwapped ? leftExtractedPlayers : rightExtractedPlayers;
 
     // --- Goalkeeper Extraction, Caption Matching & Quota Validation (FIX-GK-001, FIX-GK-002) ---
     // 1. Determine series format and expected GK screenshots (FR-GK-007)
@@ -366,7 +413,8 @@ export async function processClaimedBatch(
     }
 
     // 2. Extract goalkeeper detail screenshots & match identity via caption fuzzy match (FR-GK-005, D-030)
-    const targetGkTeamId = submittingTeamId || (teamAScore > teamBScore ? teamAId : (teamBScore > teamAScore ? teamBId : teamAId));
+    const winningTeamId = teamAScore > teamBScore ? teamAId : (teamBScore > teamAScore ? teamBId : null);
+    const targetGkTeamId = winningTeamId || submittingTeamId || teamAId;
     const rosterRes = await db.execute({
       sql: `SELECT id, nickname_raw, position, team_id FROM players WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
       args: [teamAId, teamBId],
