@@ -320,7 +320,8 @@ export function formatDrawCompletedSummary(
  */
 export function formatAwardsAnnouncement(
   tournamentTitle: string,
-  awards: TournamentAwardsSummary
+  awards: TournamentAwardsSummary,
+  options?: { suspendGoalkeeper?: boolean }
 ): string {
   const lines: string[] = [];
   lines.push(`🏆 *PENGHARGAAN INDIVIDU — ${tournamentTitle.toUpperCase()}* 🏆`);
@@ -341,17 +342,24 @@ export function formatAwardsAnnouncement(
   lines.push('');
 
   // 4. Best Winning Goalkeeper (Team Award representing GK saves)
-  lines.push(
-    formatAwardSection(
-      '🧤 *BEST WINNING GOALKEEPER* (Pertahanan / Kiper Tim Terbaik)',
-      awards.bestWinningGoalkeeper,
-      'Saves',
-      {
-        isTeamAward: true,
-        teamAwardNote: 'Penghargaan kiper dianugerahkan kepada Tim mewakili seluruh rotasi kiper',
-      }
-    )
-  );
+  // Catatan: Dinonaktifkan/ditangguhkan sementara selama turnamen atas instruksi panitia jika SUSPEND_GOALKEEPER aktif
+  const isGkSuspended = options?.suspendGoalkeeper ?? (process.env.SUSPEND_GOALKEEPER === 'true');
+  if (isGkSuspended) {
+    lines.push('🧤 *BEST WINNING GOALKEEPER* (Kiper Terbaik)');
+    lines.push('_(Status: Kategori penghargaan kiper ditangguhkan sementara oleh panitia turnamen)_');
+  } else {
+    lines.push(
+      formatAwardSection(
+        '🧤 *BEST WINNING GOALKEEPER* (Pertahanan / Kiper Tim Terbaik)',
+        awards.bestWinningGoalkeeper,
+        'Saves',
+        {
+          isTeamAward: true,
+          teamAwardNote: 'Penghargaan kiper dianugerahkan kepada Tim mewakili seluruh rotasi kiper',
+        }
+      )
+    );
+  }
 
   lines.push('');
   lines.push('──────────────────────────────');

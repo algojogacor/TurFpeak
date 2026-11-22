@@ -1,5 +1,57 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: Suspend Goalkeeper Screenshot Requirement & Award Category
+
+### Konteks Sesi
+- Sesuai arahan organizer, format in-game Flash Peak menampilkan data kartu statistik kiper secara terpisah (individual screen) dan bukan pada scoreboard utama, sehingga membingungkan alur pelaporan peserta.
+- Organizer memutuskan untuk **menangguhkan sementara** (suspend) kategori penghargaan Best Goalkeeper dan kewajiban screenshot detail kiper selama turnamen berjalan (kode tidak dihapus, disiapkan untuk disempurnakan pasca-turnamen).
+- Menyiapkan draf pengumuman resmi WhatsApp untuk panitia.
+
+### Perubahan Kode (Surgical)
+1. **`src/application/evidence-batch-processor.ts`**:
+   - Menambahkan pengecekan flag `process.env.SUSPEND_GOALKEEPER === 'true'`.
+   - Jika ditangguhkan, `expectedGkCount` diset ke 0, sehingga peserta **tidak lagi diwajibkan** menyertakan screenshot detail kiper (hanya cukup 1 foto skor utama), tidak ada warning kuota kiper kurang, dan babak Knockout tidak akan terblokir.
+   - Seluruh logika ekstraksi dan mapping kiper yang sudah ada tetap dipertahankan (tidak dihapus).
+2. **`src/whatsapp/formatters.ts`**:
+   - Pada `formatAwardsAnnouncement`, jika kiper ditangguhkan, kategori *Best Winning Goalkeeper* diberi label keterangan jelas: `_(Status: Kategori penghargaan kiper ditangguhkan sementara oleh panitia turnamen)_`.
+3. **`.env.example`**:
+   - Menambahkan dokumentasi flag `SUSPEND_GOALKEEPER=false`.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 320/320 PASS (23 test files).
+
+
+## [2026-11-22] Sesi: WhatsApp Log Audit & Round 1 Progress Verification (20:00 - 22:05 WIB)
+
+### Konteks Sesi
+- Melakukan audit menyeluruh terhadap pesan masuk WhatsApp di database SQLite VM (`inbound_messages`), log PM2 (`bot-out.log`), draf sesi laporan aktif (`report_sessions`), dan status fixture Round 1 dari pukul 20:00 WIB (13:00 UTC) hingga sekarang (~22:05 WIB / 15:05 UTC) untuk mendeteksi event yang terlewat, kendala peserta, dan status pertandingan.
+
+### Temuan Audit & Status Pertandingan
+1. **Pertandingan Round 1 Resmi Selesai (LOCKED & Standings Updated):**
+   - **Grup A:** Helix Moonbreaker 6 - 2 Agility Starlight (`LOCKED`)
+   - **Grup B:** The Apostles Dominion 9 - 0 Jestre (`LOCKED`)
+   - **Grup C:** Elite 8 7 - 3 AVOID Impact (`LOCKED`)
+   - **Grup D:** Kazekage 7 - 2 7Sins•BlueLock Inferno (`LOCKED`)
+   - Tabel `standings` di SQLite sudah otomatis terhitung akurat sesuai hasil match ini.
+
+2. **Pertandingan yang Tertunda / Terlewat:**
+   - **Grup C — Raikage vs AVOID Prime (`5ff511d2-6b3a-4279-a2f3-9fda7d975180`):**
+     - Delegasi Raikage mencoba klaim WO karena AVOID Prime tidak hadir 10 menit setelah room dibuka.
+     - Raikage mengirim SS chat lobi/diskusi, sehingga AI mengembalikan respon *Screenshot Tidak Dapat Dibaca*.
+     - Raikage kemudian mengetik `!klaimwo` tanpa argumen di grup, sehingga klaim belum tereksekusi. Fixture masih berstatus `SCHEDULED`.
+   - **Grup D — Team Zodiac vs Hokage (`38f2b9c9-4671-4019-9685-d1973d87c740`):**
+     - Peserta membagikan room code (`328398 12`) sekitar pukul 21:56 WIB dan sedang tanding, namun belum ada SS skor akhir yang dilaporkan ke bot. Masih `SCHEDULED`.
+   - **Grup A — 7Sins•BlueLock Venom vs Mizukage (`5093fee9-11fa-4544-a5b0-02830b1314fa`):**
+     - Belum ada aktivitas/laporan skor yang masuk. Masih `SCHEDULED`.
+   - **Grup B — Yakigami vs Astra Lumina Nova (`98c46679-c237-4357-b4d6-f8a22845e5e9`):**
+     - Belum ada aktivitas/laporan skor yang masuk. Masih `SCHEDULED`.
+
+3. **Status Bot & Layanan:**
+   - PM2 `flashpeak-bot` berjalan normal (PID 3238480, online).
+   - Fitur approval hanya pemenang + panitia dan template footer informatif sudah aktif.
+
+
 ## [2026-11-22] Sesi: Winner-Only Approval Simplification & Informative Report Draft Tutorial
 
 ### Konteks Sesi

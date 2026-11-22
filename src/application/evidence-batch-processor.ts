@@ -382,18 +382,23 @@ export async function processClaimedBatch(
     let seriesFormat: string | null = null;
     let isKnockoutSeries = false;
 
+    // Catatan: Verifikasi bukti screenshot kiper ditangguhkan sementara jika SUSPEND_GOALKEEPER aktif
+    const isGkSuspended = process.env.SUSPEND_GOALKEEPER === 'true';
+
     if (seriesRes.rows.length > 0) {
       const sRow = seriesRes.rows[0];
       const stage = String(sRow.stage || '');
       seriesFormat = sRow.format ? String(sRow.format) : null;
-      if (seriesFormat === 'BO3') {
-        expectedGkCount = 2; // BO3 winner won 2 games -> exactly 2 GK screenshots required
-        isKnockoutSeries = true;
-      } else if (seriesFormat === 'BO5') {
-        expectedGkCount = 3; // BO5 winner won 3 games -> exactly 3 GK screenshots required
-        isKnockoutSeries = true;
-      } else if (stage === 'GROUP') {
-        expectedGkCount = teamAScore === teamBScore ? 0 : 1;
+      if (!isGkSuspended) {
+        if (seriesFormat === 'BO3') {
+          expectedGkCount = 2; // BO3 winner won 2 games -> exactly 2 GK screenshots required
+          isKnockoutSeries = true;
+        } else if (seriesFormat === 'BO5') {
+          expectedGkCount = 3; // BO5 winner won 3 games -> exactly 3 GK screenshots required
+          isKnockoutSeries = true;
+        } else if (stage === 'GROUP') {
+          expectedGkCount = teamAScore === teamBScore ? 0 : 1;
+        }
       }
     }
 
