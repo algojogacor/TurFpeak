@@ -421,6 +421,255 @@ describe('AgentPlannerService idempotency & state machine (D-038)', () => {
 });
 
 // =============================================================================
+// AgentPlannerService — audit follow-up regressions for the two PR #9 blockers
+//
+// BUG-1 (stale basis): staleness of an EXECUTING plan was measured from
+//   created_at (staging time) instead of updated_at (time of the last status
+//   transition, i.e. when it entered EXECUTING) — inconsistent with the
+//   startup sweep. A plan confirmed minutes after staging was misclassified
+//   as "crashed mid-execution" by the double-confirm path.
+// BUG-1b (unguarded EXECUTED update): the final update to EXECUTED was not
+//   conditioned on status='EXECUTING', so it could overwrite a plan that a
+//   concurrent stale-marker had already marked FAILED.
+// BUG-2 (cancel TOCTOU): !agentcancel replied "Plan dibatalkan" without
+//   checking the guarded UPDATE's rowsAffected, giving a false confirmation
+//   when the plan was confirmed at the same moment from another device.
+// =============================================================================
+
+describe('AgentPlannerService audit-fix regressions (PR #9 blockers)', () => {
+  let db: Client;
+  let catalog: AgentActionCatalog;
+  let planner: AgentPlannerService;
+
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedTournamentFixture(db);
+    catalog = buildDefaultAgentActionCatalog(db);
+    planner = new AgentPlannerService({ db, actionCatalog: catalog });
+  });
+
+  /** Insert a plan row directly with fully controlled timestamps. */
+  async function insertPlanRow(opts: {
+    code: string;
+    status: string;
+    createdAt: Date;
+    updatedAt: Date;
+    expiresAt: Date;
+  }): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, 'org-1@s.whatsapp.net', 'audit fix regression', '{"actions":[]}', ?, ?, ?, ?)`,
+      args: [
+        'plan-' + opts.code.toLowerCase().replace(/[^a-z0-9]/g, ''),
+        opts.code,
+        opts.status,
+        opts.expiresAt.toISOString(),
+        opts.createdAt.toISOString(),
+        opts.updatedAt.toISOString(),
+      ],
+    });
+  }
+
+  /** Stage a real PENDING plan with one set_tournament_status action. */
+  async function stagePendingPlan(newStatus: string): Promise<string> {
+    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const planCode = 'AGENT-' + suffix;
+    const now = new Date();
+    const expires = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+    const planJson = {
+      actions: [{
+        action_id: 'set_tournament_status',
+        params: setTournamentStatusParams.parse({
+          tournament_id: 'tourn-1',
+          new_status: newStatus,
+          reason: 'audit fix regression',
+        }),
+        rationale: 'test',
+        preview_summary: 'ubah status test',
+      }],
+    };
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans
+              (id, plan_code, tournament_id, organizer_address, organizer_delegate_id,
+               instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, 'tourn-1', 'org-1@s.whatsapp.net', NULL, ?, ?, 'PENDING', ?, ?, ?)`,
+      args: ['plan-' + suffix.toLowerCase(), planCode, 'audit fix regression', JSON.stringify(planJson), expires, now.toISOString(), now.toISOString()],
+    });
+    return planCode;
+  }
+
+  /**
+   * Wrap the real client: when a statement whose SQL contains `marker` is
+   * executed through the planner, `sideEffect` runs BEFORE (mode='before') or
+   * AFTER (mode='after') the real statement — simulating a concurrent writer
+   * racing the planner (another device, or the stale-recovery sweep).
+   */
+  function racingClient(marker: string, mode: 'before' | 'after', sideEffect: () => Promise<void>): Client {
+    const wrapped = {
+      execute: async (req: unknown): Promise<unknown> => {
+        const sql = typeof req === 'string' ? req : String((req as { sql?: string }).sql ?? '');
+        if (sql.includes(marker)) {
+          if (mode === 'before') await sideEffect();
+          const res = await db.execute(req as Parameters<Client['execute']>[0]);
+          if (mode === 'after') await sideEffect();
+          return res;
+        }
+        return db.execute(req as Parameters<Client['execute']>[0]);
+      },
+      transaction: (m: 'write' | 'read') => db.transaction(m),
+    };
+    return wrapped as unknown as Client;
+  }
+
+  // --- Bug 1: staleness basis must be updated_at (consistent with the sweep) ---
+
+  it('BUG-1: EXECUTING plan confirmed 8 min after staging is NOT misclassified as stale', async () => {
+    // created_at 8 min ago (> EXECUTING_STALE_MS of 5 min — the OLD created_at
+    // basis would call this stale), updated_at 2 s ago (the EXECUTING
+    // transition just happened). Correct behaviour: NOT stale.
+    const now = new Date();
+    await insertPlanRow({
+      code: 'AGENT-FXA',
+      status: 'EXECUTING',
+      createdAt: new Date(now.getTime() - 8 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 2 * 1000),
+      expiresAt: new Date(now.getTime() + 2 * 60 * 1000),
+    });
+    const res = await planner.confirmAndExecute('AGENT-FXA', 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('sedang EXECUTING');
+    expect(res.responseText).not.toContain('Interrupted');
+    expect(res.responseText).not.toContain('ditinggalkan di status EXECUTING');
+    // The plan must NOT have been marked FAILED.
+    const row = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: ['AGENT-FXA'] });
+    expect(String((row.rows[0] as any).status)).toBe('EXECUTING');
+    expect((row.rows[0] as any).failure_reason).toBeNull();
+  });
+
+  it('BUG-1 (counterpart): EXECUTING plan whose last transition is > 5 min old IS still recovered as FAILED', async () => {
+    // created_at AND updated_at both 10 min ago — genuinely crashed
+    // mid-execution. The stale-recovery path must keep working on the new basis.
+    const now = new Date();
+    await insertPlanRow({
+      code: 'AGENT-FXB',
+      status: 'EXECUTING',
+      createdAt: new Date(now.getTime() - 10 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 10 * 60 * 1000),
+      expiresAt: new Date(now.getTime() + 5 * 60 * 1000),
+    });
+    const res = await planner.confirmAndExecute('AGENT-FXB', 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('ditinggalkan di status EXECUTING');
+    const row = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: ['AGENT-FXB'] });
+    expect(String((row.rows[0] as any).status)).toBe('FAILED');
+    expect(String((row.rows[0] as any).failure_reason)).toContain('Interrupted');
+  });
+
+  // --- Bug 1b: the final EXECUTED update must be guarded on status='EXECUTING' ---
+
+  it('BUG-1b: guarded EXECUTED update cannot overwrite a plan concurrently marked FAILED mid-execution', async () => {
+    // Stage a real PENDING plan, then simulate a stale-recovery sweep marking
+    // the plan FAILED right after the atomic claim lands (i.e. while the
+    // transactional execution is still running).
+    const code = await stagePendingPlan('DRAW_READY');
+    const sweepReason = 'Interrupted: EXECUTING stale (simulated concurrent sweep)';
+    let sweepDone = false;
+    const racingDb = racingClient("SET status='EXECUTING'", 'after', async () => {
+      if (sweepDone) return;
+      sweepDone = true;
+      await db.execute({
+        sql: "UPDATE ai_action_plans SET status='FAILED', failure_reason=?, updated_at=? WHERE plan_code=? AND status='EXECUTING'",
+        args: [sweepReason, new Date().toISOString(), code],
+      });
+    });
+    const racingPlanner = new AgentPlannerService({ db: racingDb, actionCatalog: catalog });
+
+    const res = await racingPlanner.confirmAndExecute(code, 'org-1@s.whatsapp.net');
+
+    // The actions themselves DID execute and commit (honest success)...
+    expect(res.success).toBe(true);
+    expect(res.responseText).toContain('PLAN DIEKSEKUSI');
+    // ...with an honest caveat about the concurrent status change:
+    expect(res.responseText).toContain('TIDAK diubah ke EXECUTED');
+    // The tournament data change really committed:
+    const t = await db.execute({ sql: 'SELECT status FROM tournaments WHERE id = ?', args: ['tourn-1'] });
+    expect(String((t.rows[0] as any).status)).toBe('DRAW_READY');
+
+    // The core assertion: the concurrent FAILED status is NOT overwritten.
+    const row = await db.execute({ sql: 'SELECT status, failure_reason, execution_result_json FROM ai_action_plans WHERE plan_code = ?', args: [code] });
+    expect(String((row.rows[0] as any).status)).toBe('FAILED');
+    expect(String((row.rows[0] as any).failure_reason)).toContain('Interrupted');
+    expect((row.rows[0] as any).execution_result_json).toBeNull();
+
+    // The audit trail still records the (real) successful execution honestly.
+    const audit = await db.execute({ sql: 'SELECT event_type FROM audit_events WHERE entity_type = ?', args: ['AI_ACTION_PLAN'] });
+    expect(audit.rows.length).toBe(1);
+    expect(String((audit.rows[0] as any).event_type)).toBe('AI_AGENT_PLAN_EXECUTED');
+  });
+
+  // --- Bug 2: !agentcancel must check rowsAffected (TOCTOU) ---
+
+  it('BUG-2: cancel raced by a concurrent confirm gets an honest "already executing" reply, NOT a false "cancelled"', async () => {
+    // The plan is PENDING when cancelPlan reads it, but between that read and
+    // the guarded UPDATE another device confirms it (PENDING -> EXECUTING).
+    // The UPDATE then affects 0 rows; the old code still replied
+    // "🗑️ Plan dibatalkan." — the organizer was lied to.
+    const code = await stagePendingPlan('DRAW_READY');
+    let raced = false;
+    const racingDb = racingClient("SET status='CANCELLED'", 'before', async () => {
+      if (raced) return;
+      raced = true;
+      await db.execute({
+        sql: "UPDATE ai_action_plans SET status='EXECUTING', updated_at=? WHERE plan_code=? AND status='PENDING'",
+        args: [new Date().toISOString(), code],
+      });
+    });
+    const racingPlanner = new AgentPlannerService({ db: racingDb, actionCatalog: catalog });
+
+    const res = await racingPlanner.cancelPlan(code, 'org-1@s.whatsapp.net');
+
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('sudah mulai dieksekusi');
+    expect(res.responseText).toContain('TIDAK jadi dibatalkan');
+    expect(res.responseText).not.toContain('🗑️');
+    // The plan is NOT cancelled in the DB:
+    const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [code] });
+    expect(String((row.rows[0] as any).status)).toBe('EXECUTING');
+  });
+
+  it('BUG-2 (variant): cancel raced to EXECUTED reports "already executed", plan stays EXECUTED', async () => {
+    const code = await stagePendingPlan('DRAW_READY');
+    let raced = false;
+    const racingDb = racingClient("SET status='CANCELLED'", 'before', async () => {
+      if (raced) return;
+      raced = true;
+      await db.execute({
+        sql: "UPDATE ai_action_plans SET status='EXECUTED', executed_at=?, updated_at=? WHERE plan_code=? AND status='PENDING'",
+        args: [new Date().toISOString(), new Date().toISOString(), code],
+      });
+    });
+    const racingPlanner = new AgentPlannerService({ db: racingDb, actionCatalog: catalog });
+
+    const res = await racingPlanner.cancelPlan(code, 'org-1@s.whatsapp.net');
+
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('sudah selesai dieksekusi');
+    expect(res.responseText).not.toContain('🗑️');
+    const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [code] });
+    expect(String((row.rows[0] as any).status)).toBe('EXECUTED');
+  });
+
+  it('BUG-2 (control): normal cancel of a genuinely PENDING plan still succeeds', async () => {
+    const code = await stagePendingPlan('DRAW_READY');
+    const res = await planner.cancelPlan(code, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(true);
+    expect(res.responseText).toContain('dibatalkan');
+    const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [code] });
+    expect(String((row.rows[0] as any).status)).toBe('CANCELLED');
+  });
+});
+
+// =============================================================================
 // QnaService
 // =============================================================================
 

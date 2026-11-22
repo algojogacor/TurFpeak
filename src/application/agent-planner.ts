@@ -54,6 +54,7 @@ interface StagedPlanRow {
   execution_result_json: string | null;
   failure_reason: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 async function loadPlanByCode(db: Client, planCode: string): Promise<StagedPlanRow | null> {
@@ -76,6 +77,7 @@ async function loadPlanByCode(db: Client, planCode: string): Promise<StagedPlanR
     execution_result_json: r.execution_result_json ? String(r.execution_result_json) : null,
     failure_reason: r.failure_reason ? String(r.failure_reason) : null,
     created_at: String(r.created_at),
+    updated_at: String(r.updated_at),
   };
 }
 
@@ -314,8 +316,14 @@ export class AgentPlannerService {
       };
     }
     if (plan.status === 'EXECUTING') {
-      // Possibly crashed mid-execution. Check staleness.
-      const ageMs = now.getTime() - new Date(plan.created_at).getTime();
+      // Possibly crashed mid-execution. Check staleness — measured from
+      // updated_at (the time of the LAST status transition, i.e. when the plan
+      // entered EXECUTING), the exact same basis as the startup sweep
+      // (recoverInterruptedPlans, which compares updated_at against the
+      // cutoff). Using created_at here would misclassify a plan confirmed
+      // minutes after staging as "crashed mid-execution" even though its
+      // EXECUTING transition is only seconds old.
+      const ageMs = now.getTime() - new Date(plan.updated_at).getTime();
       if (ageMs > EXECUTING_STALE_MS) {
         // Mark as FAILED (interrupted) and inform.
         await this.deps.db.execute({
@@ -439,7 +447,9 @@ export class AgentPlannerService {
       };
     }
 
-    // Success: update plan to EXECUTED.
+    // Success: update plan to EXECUTED — guarded on status='EXECUTING' so a
+    // concurrently terminal plan (e.g. marked FAILED by the stale-interrupt
+    // sweep while this execution was finishing) is never overwritten.
     const execSummary = execResults.map((r) => ({
       action_id: r.action_id,
       ok: r.ok,
@@ -447,10 +457,23 @@ export class AgentPlannerService {
       after: r.after,
     }));
     const executedAt = new Date().toISOString();
-    await this.deps.db.execute({
-      sql: "UPDATE ai_action_plans SET status='EXECUTED', executed_at=?, execution_result_json=?, updated_at=? WHERE plan_code=?",
+    const executedRes = await this.deps.db.execute({
+      sql: "UPDATE ai_action_plans SET status='EXECUTED', executed_at=?, execution_result_json=?, updated_at=? WHERE plan_code=? AND status='EXECUTING'",
       args: [executedAt, JSON.stringify(execSummary), executedAt, code],
     });
+    const executedRows = (executedRes as any).rowsAffected ?? (executedRes as any).changes ?? 0;
+    let concurrentStatusNote = '';
+    if (executedRows === 0) {
+      // Rare race: another process moved the plan out of EXECUTING while this
+      // execution was running. The data changes themselves DID commit —
+      // report that honestly instead of silently implying the plan is
+      // EXECUTED while the row says otherwise.
+      const fresh = await loadPlanByCode(this.deps.db, code);
+      concurrentStatusNote =
+        `⚠️ Catatan: tepat saat eksekusi selesai, plan ini sudah ditandai *${fresh?.status || '?'}* oleh proses lain ` +
+        `(mis. stale-recovery) — status plan TIDAK diubah ke EXECUTED supaya tidak menimpa status final itu. ` +
+        `Perubahan datanya sendiri sudah terjadi dan tercatat di audit trail — verifikasi bila perlu.`;
+    }
 
     // Audit trail.
     await this.recordAuditEvent({
@@ -494,6 +517,9 @@ export class AgentPlannerService {
     if (announceMsgs.length > 0) {
       lines.push(`📢 ${announceMsgs.length} pengumuman dikirim ke grup.`);
     }
+    if (concurrentStatusNote) {
+      lines.push('', concurrentStatusNote);
+    }
     return { success: true, responseText: lines.join('\n') };
   }
 
@@ -515,10 +541,42 @@ export class AgentPlannerService {
         responseText: `ℹ️ Plan *${code}* status *${plan.status}* — tidak bisa dibatalkan (hanya PENDING yang bisa dicancel).`,
       };
     }
-    await this.deps.db.execute({
+    const cancelRes = await this.deps.db.execute({
       sql: "UPDATE ai_action_plans SET status='CANCELLED', updated_at=? WHERE plan_code=? AND status='PENDING'",
       args: [new Date().toISOString(), code],
     });
+    // TOCTOU guard: the plan may have left PENDING between loadPlanByCode and
+    // this UPDATE (e.g. the organizer confirmed it from another device at the
+    // same moment). The status='PENDING' guard in the WHERE clause kept the
+    // data safe — but if rowsAffected = 0 the cancel did NOT happen, so we
+    // must NOT reply "Plan dibatalkan". Re-read and report the actual state.
+    const cancelledRows = (cancelRes as any).rowsAffected ?? (cancelRes as any).changes ?? 0;
+    if (cancelledRows === 0) {
+      const fresh = await loadPlanByCode(this.deps.db, code);
+      const st = fresh?.status ?? '?';
+      if (st === 'EXECUTING') {
+        return {
+          success: false,
+          responseText:
+            `⚠️ Plan *${code}* sudah mulai dieksekusi (status EXECUTING) tepat saat kamu meminta pembatalan — ` +
+            `tidak bisa dibatalkan lagi dan TIDAK jadi dibatalkan. Tunggu hasil eksekusinya.`,
+        };
+      }
+      if (st === 'EXECUTED') {
+        return {
+          success: false,
+          responseText:
+            `ℹ️ Plan *${code}* sudah selesai dieksekusi (status EXECUTED) tepat saat kamu meminta pembatalan — ` +
+            `terlambat untuk dibatalkan. Cek hasil eksekusinya di atas.`,
+        };
+      }
+      return {
+        success: false,
+        responseText:
+          `ℹ️ Plan *${code}* statusnya berubah ke *${st}* tepat saat pembatalan diproses — tidak jadi dibatalkan ` +
+          `(hanya plan PENDING yang bisa dibatalkan).`,
+      };
+    }
     return { success: true, responseText: `🗑️ Plan *${code}* dibatalkan.` };
   }
 
