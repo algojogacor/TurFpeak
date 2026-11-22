@@ -151,6 +151,44 @@ async function verifyApproverAuthority(
 }
 
 /**
+ * Determines required approvers based on match outcome.
+ * Only the winning team and organizer are required to approve.
+ * If match ended in a draw, both teams and organizer must approve.
+ */
+export function getRequiredApprovers(version: ReportVersion): ApproverType[] {
+  let scoreA: number | null = null;
+  let scoreB: number | null = null;
+
+  try {
+    const jsonStr = version.validated_data_json || version.extraction_json;
+    if (jsonStr) {
+      const parsed = JSON.parse(jsonStr);
+      const data = parsed.validatedData || parsed.raw_extraction || parsed.summary_data || parsed;
+      if (data.team_a_score !== undefined && data.team_b_score !== undefined && data.team_a_score !== null && data.team_b_score !== null) {
+        scoreA = Number(data.team_a_score);
+        scoreB = Number(data.team_b_score);
+      }
+    }
+  } catch {
+    // fallback below
+  }
+
+  if (scoreA !== null && scoreB !== null && !isNaN(scoreA) && !isNaN(scoreB)) {
+    if (scoreA > scoreB) {
+      return ['TEAM_A', 'ORGANIZER'];
+    }
+    if (scoreB > scoreA) {
+      return ['TEAM_B', 'ORGANIZER'];
+    }
+    // Seri / Draw -> Kedua tim & Panitia
+    return ['TEAM_A', 'TEAM_B', 'ORGANIZER'];
+  }
+
+  // Fallback
+  return ['TEAM_A', 'TEAM_B', 'ORGANIZER'];
+}
+
+/**
  * Submits an approval or rejection for a specific immutable report version.
  */
 export async function submitReportApproval(
@@ -245,17 +283,17 @@ export async function submitReportApproval(
     };
   }
 
-  // 7. Check if all three parties have approved (TEAM_A, TEAM_B, ORGANIZER)
+  // 7. Check if required parties have approved (Winning team + Organizer, or both teams + Organizer if draw)
   const allApprovals = await getReportApprovals(db, version.id);
   const approvedTypes = new Set<ApproverType>(
     allApprovals.filter((a) => a.decision === 'APPROVE').map((a) => a.approver_type)
   );
 
-  const requiredTypes: ApproverType[] = ['TEAM_A', 'TEAM_B', 'ORGANIZER'];
+  const requiredTypes = getRequiredApprovers(version);
   const missingApprovers = requiredTypes.filter((t) => !approvedTypes.has(t));
 
   if (missingApprovers.length === 0) {
-    // All 3 parties approved -> transition to LOCKED!
+    // All required parties approved -> transition to LOCKED!
     await updateReportVersionStatus(db, version.id, 'LOCKED');
 
     // Trigger post-lock stats writing and game finalization (Task 5.6)
@@ -274,16 +312,21 @@ export async function submitReportApproval(
         randomUUID(),
         'SYSTEM',
         'SYSTEM',
-        'REPORT_LOCKED_THREE_PARTY_CONSENSUS',
+        'REPORT_LOCKED_CONSENSUS',
         'report_versions',
         version.id,
         JSON.stringify({ status: 'PENDING_APPROVAL' }),
         JSON.stringify({ status: 'LOCKED' }),
-        'All three parties (Team A, Team B, Organizer) approved.',
+        'Report approved by required parties (winning team and organizer, or all parties if draw).',
         correlationId,
         now,
       ],
     });
+
+    const isWinnerOnly = requiredTypes.length === 2 && !requiredTypes.includes('TEAM_A') || !requiredTypes.includes('TEAM_B');
+    const lockMsg = isWinnerOnly
+      ? '✅ Laporan pertandingan telah disetujui oleh tim pemenang dan Panitia. Status resmi LOCKED! Klasemen telah diperbarui.'
+      : '✅ Laporan pertandingan telah disetujui oleh kedua tim dan Panitia. Status resmi LOCKED! Klasemen telah diperbarui.';
 
     return {
       report_version_id: version.id,
@@ -291,9 +334,15 @@ export async function submitReportApproval(
       isLocked: true,
       approvals: allApprovals,
       missingApprovers: [],
-      message: 'Report approved by all three parties and successfully LOCKED.',
+      message: lockMsg,
     };
   }
+
+  const missingLabels = missingApprovers.map((m) => {
+    if (m === 'TEAM_A') return 'Delegasi Tim Pemenang (Tim A)';
+    if (m === 'TEAM_B') return 'Delegasi Tim Pemenang (Tim B)';
+    return 'Panitia / Organizer';
+  }).join(', ');
 
   // Partial approvals: remains PENDING_APPROVAL
   return {
@@ -302,7 +351,7 @@ export async function submitReportApproval(
     isLocked: false,
     approvals: allApprovals,
     missingApprovers,
-    message: `Vote recorded. Waiting for approval from: ${missingApprovers.join(', ')}`,
+    message: `Vote persetujuan dicatat. Masih menunggu persetujuan dari: *${missingLabels}*.\nKetik *!approve* untuk menyetujui.`,
   };
 }
 

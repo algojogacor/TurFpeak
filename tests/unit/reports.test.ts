@@ -680,7 +680,7 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
         validated_data_json: JSON.stringify(validation.validatedData!),
       });
 
-      // 1. Team A approves
+      // 1. Team A (the winner) approves
       const res1 = await submitReportApproval(db, {
         report_version_id: draft.id,
         approver_type: 'TEAM_A',
@@ -689,20 +689,9 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
       });
       expect(res1.status).toBe('PENDING_APPROVAL');
       expect(res1.isLocked).toBe(false);
-      expect(res1.missingApprovers).toEqual(['TEAM_B', 'ORGANIZER']);
+      expect(res1.missingApprovers).toEqual(['ORGANIZER']);
 
-      // 2. Team B approves
-      const res2 = await submitReportApproval(db, {
-        report_version_id: draft.id,
-        approver_type: 'TEAM_B',
-        approver_id: delegateBId,
-        decision: 'APPROVE',
-      });
-      expect(res2.status).toBe('PENDING_APPROVAL');
-      expect(res2.isLocked).toBe(false);
-      expect(res2.missingApprovers).toEqual(['ORGANIZER']);
-
-      // 3. Organizer approves -> Transitions to LOCKED!
+      // 2. Organizer approves -> Transitions to LOCKED! (Only winning team + organizer required)
       const res3 = await submitReportApproval(db, {
         report_version_id: draft.id,
         approver_type: 'ORGANIZER',

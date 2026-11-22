@@ -483,16 +483,11 @@ describe('End-to-End Tournament Integration (Fase 6)', () => {
     expect(version2.status).toBe('PENDING_APPROVAL');
 
     // =========================================================================
-    // Step 7: Three-Party Approval -> Transition to LOCKED (FR-APR-001)
+    // Step 7: Winner + Organizer Approval -> Transition to LOCKED (FR-APR-001)
     // =========================================================================
     const appA = await app.submitApproval(version2.id, 'TEAM_A', delegateAId, 'APPROVE');
     expect(appA.isLocked).toBe(false);
-    expect(appA.missingApprovers).toContain('TEAM_B');
     expect(appA.missingApprovers).toContain('ORGANIZER');
-
-    const appB = await app.submitApproval(version2.id, 'TEAM_B', delegateBId, 'APPROVE');
-    expect(appB.isLocked).toBe(false);
-    expect(appB.missingApprovers).toContain('ORGANIZER');
 
     const appOrg = await app.submitApproval(version2.id, 'ORGANIZER', organizerId, 'APPROVE', true);
     expect(appOrg.isLocked).toBe(true);

@@ -443,7 +443,12 @@ export class ManualReportSessionManager {
           saves: p.goalkeeper_saves,
         })),
         uncertainties: uncertainties.length > 0 ? uncertainties : undefined,
-        pendingApprovers: ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
+        pendingApprovers:
+          pending.scoreA > pending.scoreB
+            ? ['TEAM_A', 'ORGANIZER']
+            : pending.scoreB > pending.scoreA
+            ? ['TEAM_B', 'ORGANIZER']
+            : ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
       });
 
       return {

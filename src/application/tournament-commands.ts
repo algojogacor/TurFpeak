@@ -1368,7 +1368,12 @@ export function registerTournamentCommands(
               defense: p.defense_raw,
               saves: p.goalkeeper_saves,
             })),
-            pendingApprovers: ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
+            pendingApprovers:
+              scoreA > scoreB
+                ? ['TEAM_A', 'ORGANIZER']
+                : scoreB > scoreA
+                ? ['TEAM_B', 'ORGANIZER']
+                : ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
           });
 
           return { success: true, responseText: summaryText };

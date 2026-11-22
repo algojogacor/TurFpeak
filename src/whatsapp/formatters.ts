@@ -144,8 +144,19 @@ export function formatMatchReportSummary(params: MatchReportSummaryParams): stri
         })
         .join(', ');
       lines.push(`Menunggu: *${names}*`);
+      lines.push('');
     }
-    lines.push('Ketik *!approve* untuk menyetujui laporan pertandingan ini.');
+    lines.push('📖 *PANDUAN LANGKAH SELANJUTNYA:*');
+    lines.push('✅ *Jika data di atas SUDAH BENAR:*');
+    lines.push('• Pihak pemenang dan Panitia silakan *Balas (Reply)* pesan draf ini dan ketik:');
+    lines.push('  👉 *!approve*');
+    lines.push('• Ketik *!approve* untuk menyetujui laporan pertandingan ini.');
+    lines.push('• _(Begitu disetujui pihak pemenang & panitia, hasil resmi terkunci & klasemen grup otomatis terupdate!)_');
+    lines.push('');
+    lines.push('❌ *Jika data SALAH / KELIRU:*');
+    lines.push('• *JANGAN !approve!* Cukup *Balas (Reply)* pesan draf ini dengan rincian yang benar.');
+    lines.push('• _Contoh:_ "koreksi: skor game 2-1 bukan 3-1" atau "salah di gol, pemain nomor 1 bikin 2 gol"');
+    lines.push('• Atau kirim ulang foto screenshot hasil match yang lebih jelas ke grup.');
   } else if (status === 'OFFICIAL') {
     lines.push('🔒 *Hasil Resmi Terkunci (OFFICIAL)*');
     lines.push(

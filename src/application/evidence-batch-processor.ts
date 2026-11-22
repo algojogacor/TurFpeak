@@ -606,7 +606,14 @@ export async function processClaimedBatch(
         };
       }),
       uncertainties: validation.warnings,
-      pendingApprovers: draftStatus === 'PENDING_APPROVAL' ? ['TEAM_A', 'TEAM_B', 'ORGANIZER'] : [],
+      pendingApprovers:
+        draftStatus !== 'PENDING_APPROVAL'
+          ? []
+          : teamAScore > teamBScore
+          ? ['TEAM_A', 'ORGANIZER']
+          : teamBScore > teamAScore
+          ? ['TEAM_B', 'ORGANIZER']
+          : ['TEAM_A', 'TEAM_B', 'ORGANIZER'],
     };
 
     const whatsappSummary = formatMatchReportSummary(summaryParams);
