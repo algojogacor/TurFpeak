@@ -1188,3 +1188,76 @@ Mengalihkan atribusi penghargaan kiper terbaik (*Best Winning Goalkeeper*) pada 
 
 
 
+
+## 2026-11-22 - Sesi: Tiga perbaikan UX/AI + pergantian delegasi 2 tim (Task: omak-peak-ux-id-001 / ai-memory / delegate-swap)
+
+### Konteks Sesi
+Sesi lanjutan hari yang sama setelah hotfix deploy PR #9. Tiga permintaan user (Arya) yang berurutan: (1) perbaikan tampilan `!myid` agar delegate terdaftar tidak lagi hanya melihat "Role: DELEGATE" tanpa info tim; (2) analisa & perbaikan `!ai` yang (a) mengarang jam kickoff "22:00 WIB" — tidak ada di mana pun di DB, dan (b) tidak punya memori antar panggilan sehingga follow-up antar user dianggap "percakapan baru mulai"; (3) pergantian delegasi resmi untuk dua tim (Yakigami, Astra Lumina Nova) karena personil delegate berganti — LID lama dihapus, LID baru di-bind.
+
+### Commit pada Sesi Ini
+- `99b50df` feat(myid): show registration status + team/tournament for delegates (UX-ID-001)
+- `7ab5f10` feat(omak-peak): rolling per-group conversation memory + anti-hallucination time rules
+
+### 1. `!myid` (UX-ID-001) — commit `99b50df`
+**Masalah**: Delegate resmi yang jalankan `!myid` hanya melihat `Role di Sistem: DELEGATE` tanpa indikasi apakah benar-benar terdaftar di DB, dan tanpa info tim mana yang diwakilinya. User yang melihat "DELEGATE" malah curiga belum terdaftar.
+
+**Akar masalah**: `idHandler` di `src/whatsapp/router.ts:400` hanya mencetak `ctx.role` — padahal router saat resolve role sudah memegang `delegateId` + `teamId` dari `IdentityResolver.resolveIdentity()`.
+
+**Fix**:
+- `src/identity/resolver.ts`: `resolveIdentity()` sekarang juga mengembalikan `tournament_name` (1 kolom tambahan dari JOIN yang sudah ada).
+- `src/whatsapp/router.ts` (`!id`/`!myid`): handler jadi async; untuk role DELEGATE, re-resolve full record dan cetak: Status Registrasi (✅ Terdaftar & Terverifikasi), Nama Delegate, Tim Anda (team_name + division), Turnamen, Status Tim. UNKNOWN mendapat baris eksplisit "❌ Belum terdaftar sebagai Delegate". Delegate tanpa tim mendapat hint "Belum terikat ke tim — hubungi Organizer". Footer per-role.
+- `tests/unit/whatsapp.test.ts`: +3 assertion path (delegate dengan tim, delegate teamless, unregistered).
+
+**Verifikasi langsung di DB VM** untuk LID `122467200819378@lid` (Team Zodiac FP): delegate "Delegasi Team Zodiac" ACTIVE, tim "Team Zodiac" VERIFIED, turnamen "Gojiha Cup S1" DRAW_READY — user benar-benar terdaftar; sebelumnya hanya tampilan yang ambigu.
+
+### 2. `!ai` hallucinasi jam + tidak ada memori — commit `7ab5f10`
+**Masalah A (jam 22:00)**: Bot membalas pertanyaan "chance Jestre juara" dengan klaim "Matchday 1 mulai malam ini jam 22:00 WIB". Cek DB VM:
+- Tournament `Gojiha Cup S1` (status DRAW_READY) config_json: `kickoff_time:"21:00"` — TIDAK dipakai operasional.
+- Semua 12 fixture: `scheduled_at=null` (matchday belum dijadwalkan).
+- Satu-satunya waktu yang di-hardcode di kode (`src/application/omak-peak.ts:219` RULES_SUMMARY) adalah `Cutoff harian: 19:59 WIB`.
+- Tidak ada field 22:00 di mana pun. User (Arya) memang sengaja ubah DB agar cutoff 19:59 itu tidak meledak sekarang, supaya MD 1 boleh malam ini — tapi bot tetap tidak punya sumber untuk "22:00". Murni hallucination.
+
+**Masalah B (stateless)**: `!ai "coba tebak terserah"` yang dikirim 22 detik setelah `!ai "siapa juara"` (oleh user berbeda) dibalas "percakapan baru mulai, belum ada petunjuk". Akar: `OmakPeakService.handleAiCommand` stateless — context hanya snapshot DB + user message terkini, tidak ada history Q&A sebelumnya.
+
+**Fix**:
+- `src/application/omak-peak.ts`: class baru `ConversationMemory` (in-memory per-chat ring buffer, maks 6 turn, TTL 15 menit, scoped per `chatId`). `OmakPeakService` memegang instance; signature `handleAiCommand(senderRawAddress, userMessage, chatId, senderLabel?)`. Sebelum panggilan AI, snapshot turn-turn terakhir di grup itu di-inject ke `context.recent_ai_turns` (format: `{sender_label, question, answer, ts}`). Setelah response sukses, Q&A turn itu direkam ke buffer. Memory di-capture SEBELUM `buildOmakPeakContext` sehingga tetap hidup walau DB context build throw.
+- `src/application/ai-native-commands.ts`: handler `!ai` sekarang pass `ctx.message.chat_id` + `ctx.message.push_name`.
+- `src/ai/prompts/omak-peak-context.ts`: field baru optional `recent_ai_turns` di `OmakPeakContext`.
+- `src/ai/prompts/omak-peak.ts`: dua section baru di system prompt:
+  - "MEMORI PERCAKAPAN (rolling)": panduan pakai recent_ai_turns untuk resolve follow-up antar user; jangan restate verbatim; sender_label boleh dipakai.
+  - "KETEPATAN WAKTU & JADWAL": rule keras — hanya sebut jam/tanggal matchday kalau ada di `scheduled_at`; kalau semua null, bilang "jadwal belum dirilis"; JANGAN karang jam sendiri.
+- Read-only invariant tetap utuh: memory in-memory only, tidak ada DB write, reset kalau bot restart (acceptable untuk chat asisten komunitas).
+- `tests/unit/ai_native.test.ts`: +5 test (3 unit ConversationMemory: record/TTL/ring-bound/per-chat scope; 2 integration: lanjutan intra-group & cross-group isolation).
+
+**Regresi**: tsc 0 error, vitest 307/307 (sebelumnya 302), eslint bersih.
+
+### 3. Pergantian delegasi Yakigami & Astra Lumina Nova (DB write, no code change)
+**Permintaan**: Yakigami → LID baru `19246486675490@lid`; Astra Lumina Nova → LID baru `256336633815157@lid`; LID lama dihapus.
+
+**Pre-flight cek DB VM**:
+- Yakigami: delegate_id `a6dd1f98-48dd-4553-8103-25a1b958c008`, display_name "Delegasi Yakigami" (role-based, KEEP), LID lama `61208283639870@lid` (is_primary=1).
+- Astra Lumina Nova: delegate_id `a733ecbc-9e29-422c-bb91-942bd2864edf`, display_name "Delegasi Astra Lumina Nova" (KEEP), LID lama `214229210689643@lid`.
+- Conflict check: kedua LID baru FREE — tidak bound ke delegate lain di `whatsapp_identities`.
+
+**Pendekatan**: Jangan hapus delegate record (FK `teams.delegate_id` ON DELETE SET NULL — kalau dihapus, tim ke-hilangan binding-nya). Cukup swap `whatsapp_identities`: DELETE row lama, INSERT row baru dengan `delegate_id` yang sama. Binding tim + audit trail yang me-reference `delegate_id` tetap valid. Display_name role-based, tidak perlu ganti.
+
+**Eksekusi atomic** (`db_swap_delegates.cjs`, `c.batch(ops, 'write')` — 4 statement dalam 1 transaksi):
+1. DELETE whatsapp_identities WHERE delegate_id = Yakigami delegate
+2. INSERT new identity (newUUID, delegate_id sama, raw_address `19246486675490@lid`, address_type LID, is_primary 1, source_chat_id central group)
+3. DELETE whatsapp_identities WHERE delegate_id = Astra delegate
+4. INSERT new identity (`256336633815157@lid`)
+
+**Backup**: `cp local.sqlite local.sqlite.bak-2026-11-22-delegate-swap` di VM sebelum swap (rollback tersedia).
+
+**Post-swap verification** (query langsung di VM):
+- Yakigami team bound to LID `19246486675490@lid`, display_name "Delegasi Yakigami", is_primary=1 ✓
+- Astra Lumina Nova bound to `256336633815157@lid`, "Delegasi Astra Lumina Nova", is_primary=1 ✓
+- LID lama `61208283639870@lid` dan `214229210689643@lid`: GONE (0 rows) ✓
+- Tidak perlu restart bot — `IdentityResolver` query DB tiap resolveIdentity(), tidak ada cache in-memory.
+
+### Deployment Status Akhir Sesi
+- Repo `master` HEAD: `7ab5f10` (sudah ter-push ke `origin/master`).
+- VM `master` HEAD: `7ab5f10` (deployed: `git pull --ff-only && npm run build && pm2 restart flashpeak-bot --update-env && pm2 save`).
+- pm2 `flashpeak-bot`: online, 0 unstable restarts. WA reconnect OK. Error log bersih (cuma sisa ENOENT pre-hotfix `aa45604` dari 05:35 UTC).
+- DB VM: 28 tabel utuh. Backup `local.sqlite.bak-2026-11-22-delegate-swap` tersimpan di VM untuk rollback.
+- Worklog ini di-append ke `worklog.md` repo dan ter-sync ke VM via `git pull` sesi berikutnya.
