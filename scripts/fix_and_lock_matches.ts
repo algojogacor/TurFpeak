@@ -105,11 +105,10 @@ async function main() {
 
     if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
       console.log(`  [DEBUG JESTRE RAW EXTRACT]:`, JSON.stringify(raw, null, 2));
-      const mediaRes = await db.execute({
-        sql: `SELECT ma.storage_key, ma.id FROM report_media rm JOIN media_assets ma ON ma.id = rm.media_asset_id WHERE rm.report_version_id = ?`,
-        args: [reportVersionId],
-      });
-      console.log(`  [DEBUG MEDIA]:`, mediaRes.rows);
+      const allMedia = await db.execute(`SELECT id, storage_key, created_at FROM media_assets ORDER BY created_at DESC LIMIT 10`);
+      console.log(`  [RECENT MEDIA ASSETS]:`, allMedia.rows);
+      const allRepMed = await db.execute(`SELECT report_version_id, media_asset_id FROM report_media`);
+      console.log(`  [ALL REPORT MEDIA]:`, allRepMed.rows);
     }
     console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
     console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
