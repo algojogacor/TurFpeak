@@ -168,6 +168,41 @@ describe('OmakPeakService (D-037)', () => {
     expect(r3.replyText).toContain('cooldown');
     expect(r3.retryAfterSeconds).toBeGreaterThan(0);
   });
+
+  it('never leaks a JSON {thinking, speak} wrapper into the chat reply', async () => {
+    // Regression (prod 2026-11-22): a model wrapped its chat reply in an ad-hoc
+    // {"thinking","speak","style"} envelope and the raw JSON was posted to the
+    // group. Only the spoken part may ever be shown.
+    const fakeRouter: any = {
+      execute: async () => ({
+        raw_text: '{"thinking": "internal reasoning must stay private", "speak": "Halo! Ini jawaban Omak Peak untuk kamu.", "style": "persona notes"}',
+        telemetry: {},
+      }),
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    const res = await svc.handleAiCommand('user-B', 'halo omak');
+    expect(res.rateLimited).toBe(false);
+    expect(res.replyText).toContain('Halo! Ini jawaban Omak Peak untuk kamu.');
+    expect(res.replyText).not.toContain('thinking');
+    expect(res.replyText).not.toContain('{');
+    expect(res.replyText).not.toContain('persona notes');
+  });
+
+  it('strips markdown fences and keeps plain chat text unchanged', async () => {
+    const fakeRouter: any = {
+      execute: async () => ({ raw_text: '```json\n{"speak": "jawaban dalam fence"}\n```', telemetry: {} }),
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    const res = await svc.handleAiCommand('user-C', 'tes fence');
+    expect(res.replyText).toBe('jawaban dalam fence');
+
+    const fakeRouter2: any = {
+      execute: async () => ({ raw_text: 'jawaban plain biasa aja', telemetry: {} }),
+    };
+    const svc2 = new OmakPeakService({ db, providerRouter: fakeRouter2 });
+    const res2 = await svc2.handleAiCommand('user-D', 'tes plain');
+    expect(res2.replyText).toBe('jawaban plain biasa aja');
+  });
 });
 
 // =============================================================================

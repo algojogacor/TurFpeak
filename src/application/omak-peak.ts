@@ -31,6 +31,35 @@ import { buildOmakPeakPrompt } from '../ai/prompts/omak-peak.js';
 import type { OmakPeakContext } from '../ai/prompts/omak-peak-context.js';
 
 // =============================================================================
+// Output normalization — never post raw AI wrappers into the chat.
+//
+// Some models wrap a chat reply in an ad-hoc JSON envelope
+// ({"thinking": ..., "speak": ...}) even WITHOUT json_object mode being forced
+// (observed in prod 2026-11-22 when a legacy adapter forced JSON mode onto
+// CHAT_OMAK_PEAK). If that happens, extract the spoken part only; the
+// "thinking" field is internal reasoning and must never leak to the group.
+// =============================================================================
+
+function extractSpeakText(rawText: string): string {
+  let t = (rawText || '').trim();
+  // Strip markdown code fences if present.
+  if (t.startsWith('```')) {
+    t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  }
+  if (t.startsWith('{')) {
+    try {
+      const obj = JSON.parse(t) as { speak?: unknown };
+      if (typeof obj.speak === 'string' && obj.speak.trim()) {
+        return obj.speak.trim();
+      }
+    } catch {
+      // Not valid JSON — treat as plain chat text.
+    }
+  }
+  return t;
+}
+
+// =============================================================================
 // Rolling-window rate limiter (in-memory; restart resets are acceptable for
 // short abuse windows). 2 uses per 60s per sender per the task brief.
 // =============================================================================
@@ -145,7 +174,7 @@ export class OmakPeakService {
         timeout_ms: 30_000,
         correlation_id: `omak-peak-${randomUUID().slice(0, 8)}`,
       });
-      const text = (response.raw_text || '').trim();
+      const text = extractSpeakText(response.raw_text || '');
       if (!text) {
         return {
           replyText:
