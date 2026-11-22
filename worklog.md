@@ -1165,6 +1165,24 @@ Mengalihkan atribusi penghargaan kiper terbaik (*Best Winning Goalkeeper*) pada 
   ```
   Output: `Test Files: 20 passed (20), Tests: 258 passed (258)`.
 
+## 2026-11-22 - Session: Hotfix Deploy PR #9 — Runtime Data JSON Tidak Tersalin ke dist (Task: fix/build-copy-data)
+
+### Latar & Gejala
+- Deploy pertama PR #9 ke VM produksi (merge commit `0d6e9cd`, auto-deploy watcher) langsung crash-loop: `flashpeak-bot` `errored` dalam <10 dtk, auto-rollback mengembalikan `86b0c7f` (prod aman di kode lama).
+- Log fatal berulang: `ENOENT: open '/home/azureuser/flashpeak-tms/dist/data/flashpeak-trivia.json'` dari `loadTrivia` (`src/application/trivia.ts:47`), dipanggil `registerAiNativeCommands` saat startup — deterministik tiap boot.
+
+### Akar Masalah
+- PM2 produksi menjalankan entry compiled `dist/cli/start.js` (definisi proses lama), bukan tsx/src seperti `ecosystem.config.cjs` terbaru. `tsc` tidak menyalin file non-TS (JSON) ke `dist`, padahal `TRIVIA_PATH` di-resolve relatif `__dirname` (`../data/`) → mode dist mencari `dist/data/` yang tidak pernah ada.
+- Gap tidak tertangkap audit L2 karena seluruh verifikasi berjalan via vitest/tsx dari source tree (JSON hadir) — gap klasik test-env vs runtime-env.
+- Catatan: migrations berjalan sebelum `createApp` (start.ts:67), sehingga migration 004 telah teraplikasi ke DB prod pada percobaan pertama (crash terjadi DI DALAM `createApp`); additive & idempoten — aman terhadap rollback kode.
+
+### Fix
+- `package.json` script `build`: `tsc` → `tsc && mkdir -p dist/data && cp src/data/*.json dist/data/` — artefak dist kini self-contained untuk data runtime.
+
+### Empirical Verification
+- Sandbox clean-build (`rm -rf dist && npm run build`): `dist/data/flashpeak-trivia.json` hadir (11.3 KB) + modul PR #9 (`agent-planner.js`, `qna.js`, dst.) ter-emit; `tsc` tetap 0 error.
+- Redeploy VM dengan guard eksplisit `test -f dist/data/flashpeak-trivia.json` sebelum `pm2 restart` — hasil dicatat di komentar follow-up PR #9.
+
 
 
 

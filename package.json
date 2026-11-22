@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "tsx src/cli/start.ts",
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/data && cp src/data/*.json dist/data/",
     "test": "vitest run",
     "lint": "eslint src",
     "migrate": "tsx src/db/migrate.ts",
