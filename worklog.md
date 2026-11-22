@@ -1,5 +1,42 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: Redesign Schedule Layout (2-Line Format & Completed Match Scores with Checkmarks)
+
+### Konteks Sesi
+- User melaporkan tampilan output `!jadwal` di WhatsApp sulit dibaca, tidak nyaman, dan teksnya saling bertumpuk ("saling tumpuk").
+- Akar masalah:
+  1. Dalam satu baris digabung: nama tim, mention delegasi (`@Delegate`), `vs`, nama tim lawan, mention delegasi lawan, dan keterangan Host berulang (`Host: Nama Tim`). Pada layar HP, baris ini terlipat menjadi 3–4 baris dan bertumpuk tanpa jeda.
+  2. WhatsApp me-render mention LID internal menjadi nama profil WA delegasi yang panjang.
+  3. Tidak ada jeda baris pemisah antar ronde di setiap grup.
+  4. Jadwal belum memunculkan status dan skor pertandingan yang telah selesai.
+- User memilih **Opsi 2**: memisahkan baris mention delegasi ke bawah nama tim, serta menampilkan skor akhir dan centang hijau (`✅`) untuk pertandingan yang sudah selesai (tanpa tag mention), sementara pertandingan belum main (`⏳`) mempertahankan tag delegasi terpisah di baris kedua.
+
+### Perubahan Kode (Surgical)
+1. **`src/whatsapp/formatters.ts`**:
+   - Memperluas interface `FixtureScheduleDisplayItem` dengan `status?: string | null`, `teamAScore?: number | null`, `teamBScore?: number | null`, dan `isWalkover?: boolean | number | null`.
+   - Pada `formatFixturesSchedule`:
+     - Menambahkan baris kosong pemisah sebelum setiap `🔹 *${roundName}*` untuk memberi ruang visual.
+     - Jika match berstatus `COMPLETED` atau `WALKOVER` dengan skor tersedia, tampilkan format rapi bercentang:
+       `  ✅ *Team A*  X - Y  *Team B*` (dengan suffix `_(WO)_` bila walkover).
+     - Jika match belum dimainkan (`SCHEDULED`):
+       - Baris 1: `  ⏳ *Team A* vs *Team B* (Host: HostName)`
+       - Baris 2 (jika ada delegasi): `     👤 @DelegateA vs @DelegateB`
+     - Footer diperbarui dengan keterangan legenda: `💡 _Keterangan: ✅ = Selesai, ⏳ = Belum Tanding._`
+2. **`src/application/tournament-commands.ts`**:
+   - Memperbarui query `fixturesRes` pada command `scheduleHandler` (`!schedule` / `!jadwal`):
+     - Menambahkan kolom `f.status as fixture_status`, `gm.team_a_score`, `gm.team_b_score`, `gm.is_walkover` via LEFT JOIN ke tabel `games`.
+     - Meneruskan `status`, `teamAScore`, `teamBScore`, dan `isWalkover` ke objek `scheduleItems`.
+3. **`tests/unit/formatters.test.ts` & `tests/unit/matchday.test.ts`**:
+   - Memperbarui ekspektasi test schedule agar cocok dengan struktur 2 baris baru.
+   - Menambahkan unit test baru `formats completed and walkover matches with checkmarks and scores` untuk memverifikasi match selesai menampilkan `✅` dan skor, serta match belum main menampilkan `⏳` dan baris delegasi.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 322/322 PASS (23 test files).
+- Script dry run memvalidasi output bersih tanpa tumpukan teks di konsol.
+
+
+
 ## [2026-11-22] Sesi: Enrich Omak Peak Context with Player Stats, Fixture Scores, and Full Schedule
 
 ### Konteks Sesi

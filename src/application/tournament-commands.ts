@@ -484,10 +484,14 @@ export function registerTournamentCommands(
       sql: `
         SELECT 
           f.round_code, 
+          f.status as fixture_status,
           g.group_code, 
           ta.team_name as team_a_name, 
           tb.team_name as team_b_name, 
           tl.team_name as host_name,
+          gm.team_a_score,
+          gm.team_b_score,
+          gm.is_walkover,
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = ta.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_a_address,
           (SELECT raw_address FROM whatsapp_identities WHERE delegate_id = tb.delegate_id ORDER BY is_primary DESC, created_at ASC LIMIT 1) as delegate_b_address
         FROM fixtures f
@@ -495,6 +499,7 @@ export function registerTournamentCommands(
         JOIN teams ta ON f.team_a_id = ta.id
         JOIN teams tb ON f.team_b_id = tb.id
         LEFT JOIN teams tl ON f.left_side_team_id = tl.id
+        LEFT JOIN games gm ON gm.fixture_id = f.id
         WHERE f.tournament_id = ?
         ORDER BY g.group_code ASC, f.round_code ASC
       `,
@@ -526,6 +531,10 @@ export function registerTournamentCommands(
         mentionsSet.add(jidB);
       }
 
+      const scoreA = r.team_a_score !== null && r.team_a_score !== undefined ? Number(r.team_a_score) : null;
+      const scoreB = r.team_b_score !== null && r.team_b_score !== undefined ? Number(r.team_b_score) : null;
+      const isWo = Number(r.is_walkover) === 1;
+
       return {
         roundCode: String(r.round_code),
         groupCode: r.group_code ? String(r.group_code) : '-',
@@ -536,6 +545,10 @@ export function registerTournamentCommands(
         teamBDelegatePhone: phoneB,
         teamADelegateJid: jidA,
         teamBDelegateJid: jidB,
+        status: r.fixture_status ? String(r.fixture_status) : null,
+        teamAScore: scoreA,
+        teamBScore: scoreB,
+        isWalkover: isWo,
       };
     });
 

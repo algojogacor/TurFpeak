@@ -292,5 +292,46 @@ describe('Fase 6: WhatsApp Message Formatters & Failure Handlers', () => {
       expect(schedule).toContain('Elang FC* vs *Badak FC* (Host: Elang FC)');
       expect(schedule).toContain('Tim kiri bertindak sebagai Host Room');
     });
+
+    it('formats completed and walkover matches with checkmarks and scores', () => {
+      const schedule = formatFixturesSchedule('Flash Peak Season 1', [
+        {
+          roundCode: 'ROUND_1',
+          groupCode: 'A',
+          teamAName: 'Garuda FC',
+          teamBName: 'Harimau FC',
+          leftSideHostName: 'Garuda FC',
+          status: 'COMPLETED',
+          teamAScore: 6,
+          teamBScore: 2,
+        },
+        {
+          roundCode: 'ROUND_1',
+          groupCode: 'A',
+          teamAName: 'Singa FC',
+          teamBName: 'Kucing FC',
+          leftSideHostName: 'Singa FC',
+          status: 'WALKOVER',
+          teamAScore: 3,
+          teamBScore: 0,
+          isWalkover: true,
+        },
+        {
+          roundCode: 'ROUND_2',
+          groupCode: 'A',
+          teamAName: 'Harimau FC',
+          teamBName: 'Singa FC',
+          leftSideHostName: 'Harimau FC',
+          status: 'SCHEDULED',
+          teamADelegatePhone: '62812345678',
+          teamBDelegatePhone: '62898765432',
+        },
+      ]);
+
+      expect(schedule).toContain('✅ *Garuda FC*  6 - 2  *Harimau FC*');
+      expect(schedule).toContain('✅ *Singa FC*  3 - 0  *Kucing FC* _(WO)_');
+      expect(schedule).toContain('⏳ *Harimau FC* vs *Singa FC* (Host: Harimau FC)');
+      expect(schedule).toContain('👤 @62812345678 vs @62898765432');
+    });
   });
 });

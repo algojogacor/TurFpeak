@@ -140,7 +140,8 @@ describe('MatchdayService & 19:59 WIB Cutoff (D-031)', () => {
       },
     ]);
 
-    expect(formatted).toContain('Garuda FC* (@6281111111111) vs *Elang FC* (@6282222222222)');
+    expect(formatted).toContain('Garuda FC* vs *Elang FC* (Host: Garuda FC)');
+    expect(formatted).toContain('@6281111111111 vs @6282222222222');
     expect(formatted).toContain('Host: Garuda FC');
   });
 

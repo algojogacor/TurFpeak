@@ -433,6 +433,10 @@ export interface FixtureScheduleDisplayItem {
   teamBDelegatePhone?: string | null;
   teamADelegateJid?: string | null;
   teamBDelegateJid?: string | null;
+  status?: string | null;
+  teamAScore?: number | null;
+  teamBScore?: number | null;
+  isWalkover?: boolean | number | null;
 }
 
 /**
@@ -464,17 +468,37 @@ export function formatFixturesSchedule(
     lines.push('');
     lines.push(`📌 *${grp}*`);
     for (const [roundName, items] of Object.entries(rounds)) {
-      lines.push(`  🔹 *${roundName}:*`);
+      lines.push('');
+      lines.push(`🔹 *${roundName}*`);
       for (const item of items) {
-        const tagA = item.teamADelegatePhone ? ` (@${item.teamADelegatePhone})` : '';
-        const tagB = item.teamBDelegatePhone ? ` (@${item.teamBDelegatePhone})` : '';
-        lines.push(`    ⚽ *${item.teamAName}*${tagA} vs *${item.teamBName}*${tagB} (Host: ${item.leftSideHostName})`);
+        const isDone =
+          (item.status === 'COMPLETED' || item.status === 'WALKOVER') &&
+          item.teamAScore !== null &&
+          item.teamAScore !== undefined &&
+          item.teamBScore !== null &&
+          item.teamBScore !== undefined;
+
+        if (isDone) {
+          const woSuffix = item.isWalkover ? ' _(WO)_' : '';
+          lines.push(`  ✅ *${item.teamAName}*  ${item.teamAScore} - ${item.teamBScore}  *${item.teamBName}*${woSuffix}`);
+        } else {
+          const hostLabel = item.leftSideHostName ? `(Host: ${item.leftSideHostName})` : '(Host)';
+          const tagA = item.teamADelegatePhone ? `@${item.teamADelegatePhone}` : '';
+          const tagB = item.teamBDelegatePhone ? `@${item.teamBDelegatePhone}` : '';
+          const hasTags = Boolean(tagA || tagB);
+
+          lines.push(`  ⏳ *${item.teamAName}* vs *${item.teamBName}* ${hostLabel}`);
+          if (hasTags) {
+            lines.push(`     👤 ${tagA || '-'} vs ${tagB || '-'}`);
+          }
+        }
       }
     }
   }
 
   lines.push('');
   lines.push('──────────────────────────────');
+  lines.push('💡 _Keterangan: ✅ = Selesai, ⏳ = Belum Tanding._');
   lines.push('💡 _Tim kiri bertindak sebagai Host Room di dalam game Flash Peak._');
   lines.push('Selamat bertanding & junjung sportivitas! ⚽🔥');
 
