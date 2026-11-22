@@ -1310,3 +1310,32 @@ Kesimpulan B-3: klaim "model fiktif" dari audit lama **sudah stale untuk 5 dari 
 - Branch `fix/upload-foto-audit-md1` di-push; PR dibuka ke `master` (belum di-merge).
 - **BELUM deploy ke VM** — menunggu approval Arya (prinsip proyek). Prosedur saat approve: `git pull --ff-only && npm run build && pm2 restart flashpeak-bot --update-env && pm2 save`, lalu test manual `!ping` + 1 foto uji di grup internal, dan re-validasi `mistral-medium-latest` saat key pool pulih.
 - Rollback tersedia: `.env.bak-2026-11-22-audit-b123` + `local.sqlite.bak-2026-11-22-audit-b123` di VM.
+
+---
+
+## Sesi 2026-11-22 (3): Investigasi "ada yang rusak" + validasi ulang Mistral + merge PR #10 + backlog monitoring
+
+### 1. Investigasi mandiri — akar masalah DITEMUKAN (bukan code bug yang aktif)
+Gejalan: user lapor "ada yang rusak" tanpa detail; ada kalimat "awal-awal udah bisa kok". Bukti:
+- **Runtime healthy**: flashpeak-bot online (uptime sejak 08:58 UTC, restarts=4, TIDAK ada restart baru), error log PM2 kosong sejak 08:58, flashpeak-media HTTP 200 di 4189, disk 31%, pesan WA mengalir normal (log inbound terus masuk).
+- **DB forensik (read-only)**: 4 foto masuk sepanjang waktu (20-22 Nov), **semua 4 berhasil upload ke media service (media_assets STORED)**, tapi `report_sessions` = **0 sepanjang waktu** (termasuk backup pre-audit `local.sqlite.bak-2026-11-22-delegate-swap`). Caption user Nov 21 ("contoh gini", "ini kenapa ke gw oi") = sedang test kirim foto laporan.
+- **Akar**: `resolveFixtureForMessage` (src/application/fixture-resolver.ts) memfilter `WHERE tr.status = 'ACTIVE'` di SEMUA jalur (caption match, identity auto-lock, fallback organizer). Turnamen `Gojiha Cup S1` statusnya **`DRAW_READY`** (sejak 21 Nov 14:25 UTC, waktu selesai draw) → resolver selalu null → foto di-capture + di-upload tapi `sessionId=null` → tanpa ack, tanpa AI, **bot diam total** (index.ts return `handled:false`). Query persis dari kode dengan filter ACTIVE terhadap DB VM = 0 rows (bukti langsung).
+- **"Awal-awal udah bisa"**: flow foto→laporan TIDAK PERNAH selesai di DB produksi (0 session all-time) — yang "bisa" di awal adalah fitur lain (chat/roster/onboarding/draw). Dilaporkan apa adanya.
+- **Sesi sebelumnya BUKAN penyebab**: PR #10 tidak ter-deploy (VM masih 8d94a87); `.env` VM tidak pernah di-restart setelah diedit (uptime 08:58 < edit 10:49) — env baru belum aktif. Crash loop 05:35 pagi (ENOENT dist/data/flashpeak-trivia.json) terjadi sebelum sesi dan sudah diperbaiki orang lain lewat build 05:41/08:58.
+- **Tindak lanjut untuk Arya (di luar scope fix mandiri)**: (a) saat MD1 mulai, flip turnamen ke `ACTIVE` (hati-hati: otomasi cutoff 19:59 ikut hidup — keputusan timing Arya); (b) follow-up UX: foto masuk saat tidak ada fixture aktif sebaiknya di-reply eksplisit ("turnamen belum aktif"), bukan didiamkan — perlu approve dulu sebelum dibuat.
+
+### 2. Validasi ulang Mistral vision (Prioritas 2) — dan KOREKSI temuan kemarin
+Gambar uji 512×512 (JPEG 7.2KB; ~380 image token bila diproses vs ~40 bila diabaikan — pemisahan tegas; kemarin pakai 128px yang ternyata ambigu karena Mistral diam-diam drop gambar mungil):
+- **VALID di key pool aktif**: `ministral-14b-latest` (HTTP 200, prompt_tokens **391**, jawaban "Square"), `ministral-8b-latest` (200, 391), `ministral-3b-latest` (200, 391).
+- **TIDAK diserve di free tier**: `mistral-small-latest`, `mistral-medium-latest`, `mistral-medium-3.5`, `magistral-medium-latest` (429 persistent di semua key yang dicoba).
+- **Invalid id**: `mistral-medium-2508` (HTTP 400 invalid_model — dokumen docs.mistral.ai menyebut id itu tapi catalog API tidak; catalog yang dipegang: /v1/models).
+- **Koreksi klaim kemarin**: "ministral-14b-latest = model teks yang mengabaikan gambar" SALAH (artefak gambar 128px). Yang benar: keluarga Ministral 3 vision-capable (konsisten dengan docs resmi); `pixtral-12b-2409` tetap retired (config drift: model diserve ≠ model dikonfigurasi).
+- **Default MISTRAL_VISION_MODEL diubah ke `ministral-14b-latest`** (commit `d712381` di PR #10): satu-satunya vision model tervalidasi yang benar-benar jalan di 27 key free tier. Upgrade path: `mistral-medium-latest` dengan key berbayar. `.env` VM ikut di-update (backup `.env.bak-2026-11-22-p2-ministral`, diff 1 baris, TANPA restart).
+
+### 3. Merge PR #10 (wewenang penuh dari user, semua syarat terpenuhi)
+- Merge-gate: investigasi tidak mengindikasikan PR sebagai sumber masalah (belum ter-deploy); re-verifikasi fresh di branch final `d712381`: **tsc 0 error, vitest 318/318, eslint 0 error** (8 warning pre-existing); audit diff 13 file — grep semua string `!command` pada diff = kosong (tidak ada manual command tersentuh).
+- Deskripsi PR dikoreksi (klaim "text-only" → bukti round 2), komentar merge-gate diposting, **di-merge dengan metode merge** → master `c2c6e04` (8d94a87..c2c6e04).
+- **Deploy TETAP menunggu approval** (tidak diotorisasi sesi ini): `git pull --ff-only && npm run build && pm2 restart flashpeak-bot --update-env && pm2 save` + test `!ping` + 1 foto uji.
+
+### 4. Backlog provider failure monitoring (fitur baru — rencana SAJA, belum dieksekusi)
+Rencana 3 fase di-dokumentasikan dan dibuat sebagai **Issue #11** (label backlog+enhancement): (1) wire `onTelemetry` → isi `provider_usage` real (fire-and-forget, tanpa migrasi); (2) deteksi SUSPICIOUS: HTTP 200 tapi image-token/ prompt_tokens < ambang → error_code `IMAGE_TOKENS_MISSING` (pelajaran kasus Mistral + drop gambar mungil); (3) command WA `!aistatus` (organizer) untuk ringkasan 24 jam per provider. Menunggu review Arya.
