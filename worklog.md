@@ -1,5 +1,41 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: Winner-Only Approval Simplification & Informative Report Draft Tutorial
+
+### Konteks Sesi
+- Organizer meminta penyederhanaan alur approval: laporan pertandingan yang memiliki pemenang hanya butuh persetujuan dari **pihak pemenang dan panitia** (tidak perlu menunggu tim yang kalah meng-approve, mencegah bottleneck jika tim kalah offline/enggan approve). Jika game seri (draw), tetap butuh persetujuan kedua tim & panitia.
+- Organizer meminta draf laporan pertandingan dari bot dilengkapi panduan/tutorial kelanjutan yang super informatif agar peserta langsung paham langkah selanjutnya (cara approve vs cara koreksi).
+
+### Perubahan Kode (Surgical)
+1. **`src/reports/approval.ts`**:
+   - Menambahkan fungsi `getRequiredApprovers(version: ReportVersion): ApproverType[]`:
+     - Jika Team A menang (`scoreA > scoreB`): `['TEAM_A', 'ORGANIZER']`.
+     - Jika Team B menang (`scoreB > scoreA`): `['TEAM_B', 'ORGANIZER']`.
+     - Jika seri / draw: `['TEAM_A', 'TEAM_B', 'ORGANIZER']`.
+   - Menggunakan `getRequiredApprovers` dalam `submitReportApproval` untuk mengecek `missingApprovers` dan melakukan transisi ke `LOCKED` segera setelah pemenang dan panitia approve.
+   - Mengubah respon bot saat vote dicatat dan saat terkunci ke bahasa Indonesia yang jelas dan informatif.
+2. **`src/whatsapp/formatters.ts`**:
+   - Memperluas footer draf laporan pertandingan (`status === 'PENDING_APPROVAL'`):
+     - Menampilkan nama delegasi tim pemenang dan organizer yang ditunggu persetujuannya.
+     - Menyertakan tutorial jelas: jika data benar silakan balas draf dengan `!approve`.
+     - Menyertakan tutorial jelas: jika data salah JANGAN approve, balas draf dengan rincian koreksi (contoh format diberikan).
+     - Menambahkan panduan pada status `NEEDS_CORRECTION`.
+3. **`src/application/evidence-batch-processor.ts`, `manual-report-session.ts`, `tournament-commands.ts`**:
+   - Menyelaraskan daftar `pendingApprovers` saat draf dibuat agar memprioritaskan pemenang & organizer.
+4. **`tests/unit/reports.test.ts` & `tests/integration/full_flow.test.ts`**:
+   - Menyelaraskan assertion approval di unit & integration test.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 320/320 PASS (23 test files).
+- Git pushed to `origin/master` (commit `740a9d6`).
+- Deployed ke VM (`forfh`):
+  - `git pull --ff-only origin master`
+  - `npm run build`
+  - `pm2 restart flashpeak-bot --update-env && pm2 save` (PID 3238461, online).
+  - WhatsApp Baileys reconnect: `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!`.
+
+
 ## [2026-11-22] Sesi: Fix Evidence Side Inversion Bug & Participant Dispute Resolution
 
 ### Konteks Sesi
