@@ -106,7 +106,7 @@ async function main() {
     if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
       console.log(`  [DEBUG JESTRE RAW EXTRACT]:`, JSON.stringify(raw, null, 2));
       const mediaRes = await db.execute({
-        sql: `SELECT ma.file_path, ma.id FROM report_media rm JOIN media_assets ma ON ma.id = rm.media_asset_id WHERE rm.report_version_id = ?`,
+        sql: `SELECT ma.storage_key, ma.id FROM report_media rm JOIN media_assets ma ON ma.id = rm.media_asset_id WHERE rm.report_version_id = ?`,
         args: [reportVersionId],
       });
       console.log(`  [DEBUG MEDIA]:`, mediaRes.rows);
