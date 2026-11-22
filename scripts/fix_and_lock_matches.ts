@@ -89,6 +89,34 @@ async function main() {
     const rawLeftScore = Number(raw.team_a_score ?? 0);
     const rawRightScore = Number(raw.team_b_score ?? 0);
 
+    // Specific ground-truth correction for Jestre vs The Apostles Dominion
+    // (Mistral hallucinated nomis goals=7 instead of assists=7; real goals=1. Total 8+1=9.
+    // Also √STxTempest in Jestre corresponds to registered player √STxRalLoyd / substitute).
+    if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
+      for (const p of leftPlayers) {
+        if (cleanSearchKey(p.nickname_raw).includes('nomis')) {
+          p.goals = 1;
+          p.assists = 7;
+          p.passes = 16;
+          p.defense = 3;
+          p.rating = 10.0;
+        }
+        if (cleanSearchKey(p.nickname_raw).includes('4oryst') || cleanSearchKey(p.nickname_raw).includes('aoryst') || cleanSearchKey(p.nickname_raw).includes('moryst')) {
+          p.goals = 8;
+          p.assists = 0;
+          p.passes = 2;
+          p.defense = 4;
+          p.rating = 10.0;
+        }
+      }
+      for (const p of rightPlayers) {
+        if (cleanSearchKey(p.nickname_raw).includes('tempest')) {
+          // Map to registered outfield player √STxRalLoyd
+          p.nickname_raw = '√STxRalLoyd';
+        }
+      }
+    }
+
     let leftMatchesA = 0;
     let leftMatchesB = 0;
     for (const p of leftPlayers) {
@@ -101,39 +129,6 @@ async function main() {
     for (const p of rightPlayers) {
       if (matchPlayerToRoster(p, rosterA)) rightMatchesA++;
       if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
-    }
-
-    if (item.id === '70ab663b-6912-47f9-95fe-48696225432c') {
-      const allDels = await db.execute(`
-        SELECT d.id, d.display_name, wi.raw_address, t.team_name, g.group_code
-        FROM delegates d
-        JOIN teams t ON t.delegate_id = d.id
-        LEFT JOIN whatsapp_identities wi ON wi.delegate_id = d.id
-        LEFT JOIN group_members gm ON gm.team_id = t.id
-        LEFT JOIN groups g ON gm.group_id = g.id
-        WHERE t.team_name LIKE '%7Sins%' OR t.team_name LIKE '%Helix%' OR t.team_name LIKE '%Jestre%'
-      `);
-      console.log(`  [DELEGATES LOOKUP]:`, allDels.rows);
-
-      const allFixtures = await db.execute(`
-        SELECT f.id, f.round_code, f.stage, g.group_code, t1.team_name, t2.team_name, f.status
-        FROM fixtures f
-        JOIN teams t1 ON f.team_a_id = t1.id
-        JOIN teams t2 ON f.team_b_id = t2.id
-        LEFT JOIN groups g ON f.group_id = g.id
-        WHERE t1.team_name LIKE '%Helix%' OR t2.team_name LIKE '%Helix%'
-           OR t1.team_name LIKE '%7Sins%' OR t2.team_name LIKE '%7Sins%'
-        ORDER BY f.round_code ASC
-      `);
-      console.log(`  [FIXTURES HELIX & 7SINS]:`, allFixtures.rows);
-
-      const searchTempest = await db.execute(`
-        SELECT p.id, p.nickname_raw, t.team_name
-        FROM players p
-        JOIN teams t ON p.team_id = t.id
-        WHERE p.nickname_raw LIKE '%Tempest%'
-      `);
-      console.log(`  [SEARCH TEMPEST IN PLAYERS]:`, searchTempest.rows);
     }
     console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
     console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
