@@ -1,5 +1,35 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: 100% Exhaustive Flash Peak Game Data Extraction & Injection
+
+### Konteks Sesi
+- User meminta penegasan apakah seluruh game sudah 100% dibongkar dan dimasukkan ke otak Omak Peak.
+- Dilakukan investigasi mendalam lanjutan ke seluruh 27 bundle di `D:\Projects\FlashPeak\game_data_pulled\files\yoo\Default\BundleFiles` dan `bundle_mod_final`, mengekstrak:
+  1. `FootballPlayerPassiveSkillTable`: 60+ skill pasif in-game resmi (Low Bullet, Relentless Strike, Box Predator, Bulldog Slide, Sticky Slide, Silent Zone, Final Form, Meteor Stride, Parade Rush, Attribute Siphon, Power Press, Precise Deflection, Charging Shield, Aerial Knock-On, Dragon's Flight, Turn Feint, Aerial Duo, dll.) beserta deskripsi angka dan efek persisnya.
+  2. `strings`: Seluruh string lokalisasi resmi bahasa Indonesia (`id`), Inggris (`en`), dan Mandarin (`zh-CN`) untuk nama-nama skill in-game (mis. *Shoulder Charge*, *Gocek*, *Knock*, *Drag*, *Slide*, *Tackle*, *Joki*, *Kunci Bola*, *Umpan Lob*, *Serangan Terakhir*).
+  3. `GameMapTable`: Map 1 Pantai (Rumput/Grass, bounciness 0.5) vs Map 2 Marrakech (Semen/Concrete keras dengan pantulan bola lebih tinggi dan cepat).
+  4. `GameModeTable`: Aturan 4v4 Pantai, Marrakech, Training, dan Beginner.
+  5. `Rank` & `RankProtect`: Tangga ranking lengkap (Bronze 1-3, Silver 1-3, Gold 1-4, Platinum 1-4, Diamond, Master, Heroic).
+  6. `Item`: ID 22 (Room Card untuk membuat custom room turnamen oleh host) dan tipe rarity item.
+  7. Aturan *Final Play* ("Serangan Terakhir"): Penundaan peluit akhir wasit saat serangan tim masih bergulir.
+
+### Perubahan Kode (Surgical)
+1. **`src/ai/prompts/flashpeak-game-knowledge.ts`**:
+   - Memperluas `FLASH_PEAK_GAME_KNOWLEDGE` dengan:
+     - Daftar lengkap 40+ skill pasif (`all_passive_skills`) dengan angka persis.
+     - Kamus map dan karakteristik fisika permukaan (`Pantai` vs `Marrakech`).
+     - Sistem tier ranked dan aturan bintang/proteksi.
+     - Kamus istilah resmi in-game Indonesia (`Joki`, `Knock`, `Serangan Terakhir`, `Gocek`, dll.).
+     - Aturan turnamen terkait Item Room Card (Item 22).
+     - Panduan matchup tambahan (Counter Oscar *Savage Dash*).
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run tests/unit/ai_native.test.ts`: 53/53 tests passed.
+- `npx vitest run`: 325/325 tests passed across all 23 test suites.
+
+---
+
 ## [2026-11-23] Sesi: Flash Peak Deep Game Knowledge Integration into Omak Peak AI Native Engine
 
 ### Konteks Sesi
