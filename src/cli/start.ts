@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { downloadMediaWithLimits } from '../whatsapp/media-download.js';
 import { createClient } from '@libsql/client';
 import { WhatsAppConnection } from '../whatsapp/connection.js';
 import { WhatsAppSender } from '../whatsapp/sender.js';
@@ -168,7 +168,11 @@ async function main() {
         apiKey: mistralKey,
         apiKeys: mistralKeys,
         model: process.env.MISTRAL_MODEL || 'codestral-latest',
-        visionModel: process.env.MISTRAL_VISION_MODEL || 'pixtral-12b-2409',
+        // B-3: pixtral-12b-2409 is retired (absent from Mistral's /v1/models and
+        // silently substituted with the text-only ministral-14b-latest, which
+        // ignores image input). Validated replacement: mistral-medium-latest
+        // (present in the live model catalog; see audit notes in the PR).
+        visionModel: process.env.MISTRAL_VISION_MODEL || 'mistral-medium-latest',
       })
     );
   }
@@ -299,20 +303,28 @@ async function main() {
           Boolean(unwrapped?.imageMessage || unwrapped?.documentMessage);
 
         if (isMedia) {
-          try {
-            console.log(`[WA] Downloading media attachment for message ${msg.key.id}...`);
-            mediaBuffer = (await downloadMediaMessage(
-              msg,
-              'buffer',
-              {},
-              {
-                logger: pino({ level: 'silent' }),
-                reuploadRequest: (reuploadMsg) => currentSock.updateMediaMessage(reuploadMsg),
-              }
-            )) as Buffer;
+          // B-1: bounded download — a stalled or oversized attachment must never
+          // block the inbound message loop (timeout default 20s, cap default 10MB).
+          const mediaResult = await downloadMediaWithLimits(msg, {
+            sock: currentSock,
+            logger: pino({ level: 'silent' }),
+            timeoutMs: process.env.WA_MEDIA_DOWNLOAD_TIMEOUT_MS
+              ? Number(process.env.WA_MEDIA_DOWNLOAD_TIMEOUT_MS)
+              : undefined,
+            maxBytes: process.env.WA_MEDIA_MAX_BYTES
+              ? Number(process.env.WA_MEDIA_MAX_BYTES)
+              : undefined,
+          });
+          if (mediaResult.buffer) {
+            mediaBuffer = mediaResult.buffer;
             console.log(`[WA] Successfully downloaded media: ${mediaBuffer?.length} bytes`);
-          } catch (downloadErr) {
-            console.error('[WA] Error downloading media attachment:', downloadErr);
+          } else {
+            console.warn(
+              `[WA] Media download skipped for message ${msg.key.id} ` +
+                `(reason: ${mediaResult.skipReason}` +
+                (mediaResult.declaredBytes ? `, declared: ${mediaResult.declaredBytes} bytes` : '') +
+                ') — message continues as text-only.'
+            );
           }
         }
 

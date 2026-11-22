@@ -1,7 +1,7 @@
 # Flash Peak TMS — AI Provider Capability Matrix & Telemetry Policy
 
 **Document Status:** Production Reference
-**Last Verified:** 22 Nov 2026 (refreshed against the code on branch `feat/ai-native-expansion-v1`; the previous revision still described the retired 3-provider era)
+**Last Verified:** 22 Nov 2026 (every active vision model re-validated by direct test call against the live provider endpoints from the production VM — see §1.1; the previous revision still described the retired 3-provider era)
 **Applicable Regulations:** D-010, O-010, FR-AI-001–003, FR-FAIL-001–002, PROMPT_CATALOG.md §10
 
 ---
@@ -19,12 +19,27 @@ All adapters declare vision capability (`capabilities.vision = true`); per-reque
 | `GEMINI` | `gemini-3-flash-preview` (`GEMINI_MODEL`) | `gemini-3-flash-preview` (`GEMINI_VISION_MODEL`) | single key | `GEMINI_API_KEY` | **Active (prod)** |
 | `NVIDIA_NIM` | `nvidia/nemotron-3.5-lightning-30b-a3b` (`NVIDIA_TEXT_MODEL` / `NVIDIA_MODEL`) | `nvidia/nemotron-3.5-super-vl-120b-a12b` (`NVIDIA_VISION_MODEL`) | ✅ `NVIDIA_API_KEYS` + `NVIDIA_API_KEY` | `NVIDIA_API_KEY` | **Active (prod)** |
 | `COHERE` | `command-a-reasoning-08-2025` (`COHERE_TEXT_MODEL` / `COHERE_MODEL`) | `c4ai-aya-vision-32b` (`COHERE_VISION_MODEL`) | ✅ `COHERE_API_KEYS` + `COHERE_API_KEY` | `COHERE_API_KEY` | **Active (prod)** |
-| `MISTRAL` | `codestral-latest` (`MISTRAL_TEXT_MODEL` / `MISTRAL_MODEL`) | `pixtral-12b-2409` (`MISTRAL_VISION_MODEL`) | ✅ `MISTRAL_API_KEYS` + `MISTRAL_API_KEY` | `MISTRAL_API_KEY` | **Active (prod)** |
+| `MISTRAL` | `codestral-latest` (`MISTRAL_TEXT_MODEL` / `MISTRAL_MODEL`) | `mistral-medium-latest` (`MISTRAL_VISION_MODEL`) | ✅ `MISTRAL_API_KEYS` + `MISTRAL_API_KEY` | `MISTRAL_API_KEY` | **Active (prod) — key pool degraded** (see §1.1) |
 | `OLLAMA_CLOUD` | `llama3.2-vision` (`OLLAMA_MODEL`) | (same) | single key | `OLLAMA_CLOUD_BASE_URL` (+ `OLLAMA_CLOUD_API_KEY`) | **Inactive — no env set** |
 
 Startup logs the active set explicitly: `[AI] Initialized Multi-Provider Router with N provider(s): …` — check `pm2 logs flashpeak-bot` at boot to confirm which providers are live in a given deployment.
 
 **Verified latency / quota figures:** none published for the current six-provider set. Per-request latency, token counts, and outcomes are recorded per call in `provider_usage` (see §6); publish p50/p95 numbers from that table only, never from estimates.
+
+### 1.1 Vision model validation log (audit fix B-3, 2026-11-22)
+
+Every active vision model was validated by a **direct test call** (tiny JPEG + one-word prompt) against the live provider endpoint from the production VM, using the real configured keys:
+
+| Provider | Vision model | Direct call result |
+| :--- | :--- | :--- |
+| `DEEPSEEK` | `deepseek-flash` | ✅ HTTP 200, image processed (reasoning describes the image content) |
+| `GROQ` | `qwen/qwen3.8-27b` | ✅ HTTP 200, correct one-word answer for the test image |
+| `GEMINI` | `gemini-3-flash-preview` | ✅ HTTP 200, IMAGE modality token accounting present |
+| `NVIDIA_NIM` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | ✅ HTTP 200, image processed (reasoning describes the image content) |
+| `COHERE` | `c4ai-aya-vision-32b` | ✅ HTTP 200, `image_tokens` accounting present |
+| `MISTRAL` | ~~`pixtral-12b-2409`~~ | ❌ Model retired: absent from `GET /v1/models`; the API **silently substitutes** the text-only `ministral-14b-latest` and **ignores the image** (HTTP 200 with text-only token counts) — the worst failure mode, because the router records it as SUCCESS. Fixed by switching the default to `mistral-medium-latest` (present in the live catalog). |
+
+**Mistral key pool status (2026-11-22):** of the 27 configured keys, 3 return `401 Invalid API Key`, 3 return `402` (budget exhausted / payment failure), and the rest are `429` rate-limited, so a full vision test call for `mistral-medium-latest` could not complete at validation time (the 429s are quota errors, not model errors — the model is confirmed present via `GET /v1/models`). Mistral remains in the vision chain; rate-limit/billing failures trip the circuit breaker and fail over gracefully.
 
 ---
 
@@ -99,6 +114,8 @@ If all configured providers in the router fail simultaneously (or trip their res
 ---
 
 ## 6. Telemetry & Audit Persistence
+
+> **Known gap (found 2026-11-22, reported for triage):** `src/cli/start.ts` constructs `ProviderRouter` **without** an `onTelemetry` callback, so although the router emits telemetry for every attempt, nothing writes it to `provider_usage` in production — the table is empty on the VM. This must be wired (router → `provider_usage` insert) before any §6 statistics can be published.
 
 Every AI inference attempt records structured telemetry to the `provider_usage` table in Turso (migration 004 rebuilt the table to extend both CHECK constraints; existing rows were preserved):
 - `id`: Stable UUID

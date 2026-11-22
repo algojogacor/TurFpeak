@@ -75,7 +75,12 @@ export class MistralAdapter implements ProviderAdapter {
     }
     this.apiKeys = rawKeys.filter(Boolean);
 
-    this.visionModel = config.visionModel || process.env.MISTRAL_VISION_MODEL || 'pixtral-12b-2409';
+    // B-3: 'pixtral-12b-2409' is retired — it is absent from Mistral's live
+    // /v1/models catalog, and the API silently substitutes the text-only
+    // ministral-14b-latest, which ignores image input entirely (validated by
+    // direct test call 2026-11-22). Default to the current vision-capable
+    // medium line instead.
+    this.visionModel = config.visionModel || process.env.MISTRAL_VISION_MODEL || 'mistral-medium-latest';
     this.textModel = config.textModel || process.env.MISTRAL_TEXT_MODEL || 'codestral-latest';
     this.model = config.model || process.env.MISTRAL_MODEL || this.textModel;
     this.endpoint = config.endpoint || process.env.MISTRAL_ENDPOINT || 'https://api.mistral.ai/v1/chat/completions';

@@ -21,6 +21,7 @@ import { createClient, type Client } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
 import { runMigrations } from '../../src/db/migrate.js';
 import { createApp } from '../../src/index.js';
+import { createStubMediaClient } from '../helpers/stub_media_client.js';
 import { OnboardingService } from '../../src/identity/onboarding.js';
 import { IdentityResolver } from '../../src/identity/resolver.js';
 import { prepareDraw, revealNext } from '../../src/competition/draw.js';
@@ -393,6 +394,7 @@ describe('End-to-End Tournament Integration (Fase 6)', () => {
 
     const app = createApp({
       db,
+      mediaClient: createStubMediaClient(),
       providerRouter,
       quietWindowMs: 50,
     });
@@ -626,6 +628,7 @@ describe('End-to-End Tournament Integration (Fase 6)', () => {
 
     const app = createApp({
       db,
+      mediaClient: createStubMediaClient(),
       providerRouter,
       quietWindowMs: 50,
     });
