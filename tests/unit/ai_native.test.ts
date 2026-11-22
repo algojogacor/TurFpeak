@@ -204,6 +204,17 @@ describe('OmakPeakService (D-037)', () => {
     expect(res2.replyText).toBe('jawaban plain biasa aja');
   });
 
+  it('does not truncate long responses and delivers full text without ellipses', async () => {
+    const longText = 'Analisa panjang untuk peluang tim juara: '.repeat(60); // > 2400 chars
+    const fakeRouter: any = {
+      execute: async () => ({ raw_text: longText, telemetry: {} }),
+    };
+    const svc = new OmakPeakService({ db, providerRouter: fakeRouter });
+    const res = await svc.handleAiCommand('user-long', 'berapa chance lolos?', 'grp-test@g.us');
+    expect(res.replyText).toBe(longText.trim());
+    expect(res.replyText.endsWith('…')).toBe(false);
+  });
+
   it('ConversationMemory: records, returns oldest-first within TTL, prunes expired', () => {
     let clock = 1_000_000;
     const mem = new ConversationMemory(6, 1000, () => clock);

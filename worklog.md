@@ -1,5 +1,27 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Remove Artificial Character Truncation on Omak Peak Chat Responses
+
+### Konteks Sesi
+- User memeriksa log aktivitas WhatsApp selama 30 menit terakhir dan menemukan bahwa ketika peserta menanyakan analisis peluang juara atau skenario kelolosan (`!ai kasih chance berapa persen lolos...`), respon bot terpotong di tengah kalimat dan berakhiran tanda elipsis (`…`).
+- User meminta agar batasan pengiriman tersebut dihapus agar analisis mendalam tidak terpotong.
+- Investigasi akar masalah:
+  - Pada `src/application/omak-peak.ts` terdapat pemotongan artifisial `const maxLen = 1800; const finalText = text.length > maxLen ? text.slice(0, maxLen - 1) + '…' : text;`.
+  - WhatsApp protokol mendukung hingga 65.536 karakter, sehingga pemotongan 1.800 karakter adalah batas artifisial yang tidak perlu.
+  - Provider adapters untuk LLM text task sudah unconstrained; satu-satunya pemotong adalah baris tersebut.
+
+### Perubahan Kode (Surgical)
+1. **`src/application/omak-peak.ts`**:
+   - Menghapus pemotongan karakter 1.800 dan elipsis (`…`). Respon AI sekarang dikirim penuh (`finalText = text`) sehingga seluruh penjelasan skenario dan persentase tidak terpotong.
+2. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan unit test `does not truncate long responses and delivers full text without ellipses` (> 2.400 karakter) untuk memastikan teks panjang dikirim utuh tanpa terpotong.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 323/323 PASS (23 test files).
+
+
+
 ## [2026-11-22] Sesi: Redesign Schedule Layout (2-Line Format & Completed Match Scores with Checkmarks)
 
 ### Konteks Sesi

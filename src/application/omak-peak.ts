@@ -265,9 +265,8 @@ export class OmakPeakService {
           rateLimited: false,
         };
       }
-      // Truncate very long AI responses to keep WhatsApp readable.
-      const maxLen = 1800;
-      const finalText = text.length > maxLen ? text.slice(0, maxLen - 1) + '…' : text;
+      // Kirim jawaban lengkap tanpa batasan buatan agar pesan analisa panjang tidak terpotong.
+      const finalText = text;
       // Record into rolling memory AFTER a successful response. The current
       // turn is not in the snapshot above, so the model never sees its own
       // in-progress answer (avoids self-referential noise).
