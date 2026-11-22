@@ -1096,6 +1096,60 @@ describe('OmakPeak context LID flag (audit polish #7)', () => {
     expect(system_prompt).toContain('@lid');
     expect(system_prompt).toContain('BOLEH dibagikan');
   });
+
+  it('populates top_scorers, top_assists, top_defenders, and fixture scores when available', async () => {
+    const now = new Date().toISOString();
+    // Add player and game stats
+    await db.execute({
+      sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+            VALUES ('p-striker-1', 'tourn-1', 'team-a', 'StrikerKing', 'StrikerKing', 'strikerking', 'OUTFIELD', 1, 'STARTER', 'ACTIVE', ?, ?)`,
+      args: [now, now],
+    });
+    await db.execute({
+      sql: `INSERT INTO fixtures (id, tournament_id, stage, round_code, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+            VALUES ('fix-test-1', 'tourn-1', 'GROUP', 'ROUND_1', 'team-a', 'team-b', 'team-a', 'COMPLETED', ?, ?)`,
+      args: [now, now],
+    });
+    await db.execute({
+      sql: `INSERT INTO games (id, fixture_id, game_number, status, team_a_score, team_b_score, is_walkover, evidence_status, created_at, updated_at)
+            VALUES ('game-test-1', 'fix-test-1', 1, 'COMPLETED', 5, 2, 0, 'VERIFIED', ?, ?)`,
+      args: [now, now],
+    });
+    await db.execute({
+      sql: `INSERT INTO report_sessions (id, fixture_id, submitting_team_id, status, last_message_at, debounce_due_at, version, created_at, updated_at)
+            VALUES ('sess-test-1', 'fix-test-1', 'team-a', 'DRAFT_READY', ?, ?, 1, ?, ?)`,
+      args: [now, now, now, now],
+    });
+    await db.execute({
+      sql: `INSERT INTO report_versions (id, report_session_id, fixture_id, version_number, status, extraction_json, validated_data_json, provenance, created_by, created_at)
+            VALUES ('ver-test-1', 'sess-test-1', 'fix-test-1', 1, 'LOCKED', '{}', '{}', 'AI', 'SYSTEM', ?)`,
+      args: [now],
+    });
+    await db.execute({
+      sql: `INSERT INTO player_game_stats (id, game_id, player_id, team_id, rating, goals, assists, passes, defense_raw, is_award_eligible, stats_json, source_report_version_id, created_at)
+            VALUES ('pgs-test-1', 'game-test-1', 'p-striker-1', 'team-a', 10, 5, 2, 10, 15, 1, '{}', 'ver-test-1', ?)`,
+      args: [now],
+    });
+
+    const ctx = await buildOmakPeakContext(db);
+    expect(ctx.top_scorers).toBeDefined();
+    expect(ctx.top_scorers?.length).toBeGreaterThan(0);
+    expect(ctx.top_scorers?.[0].nickname).toBe('StrikerKing');
+    expect(ctx.top_scorers?.[0].goals).toBe(5);
+
+    expect(ctx.top_assists).toBeDefined();
+    expect(ctx.top_assists?.[0].nickname).toBe('StrikerKing');
+    expect(ctx.top_assists?.[0].assists).toBe(2);
+
+    expect(ctx.top_defenders).toBeDefined();
+    expect(ctx.top_defenders?.[0].nickname).toBe('StrikerKing');
+    expect(ctx.top_defenders?.[0].defense).toBe(15);
+
+    const f1 = ctx.today_fixtures.find((f) => f.fixture_id === 'fix-test-1');
+    expect(f1).toBeDefined();
+    expect(f1?.score).toBe('5 - 2');
+    expect(f1?.status).toBe('COMPLETED');
+  });
 });
 
 // =============================================================================

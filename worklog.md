@@ -1,5 +1,37 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-22] Sesi: Enrich Omak Peak Context with Player Stats, Fixture Scores, and Full Schedule
+
+### Konteks Sesi
+- Peserta di grup WhatsApp bertanya ke `!ai` (`!ai info top scorrer`, `!ai siapa top score skrg`). Bot menjawab tidak memiliki data pencetak gol karena data tersebut belum diinjeksikan ke dalam `OmakPeakContext`.
+- Peserta juga menanyakan jadwal match selanjutnya, sementara sebelumnya query fixture dibatasi `LIMIT 12` tanpa memuat skor pertandingan yang telah selesai.
+- Organizer meminta agar `!ai` memahami seluruh konteks turnamen yang ada: pencetak gol terbanyak (*top scorers*), pemberi assist terbanyak (*top assists*), pemain bertahan (*top defenders*), dan seluruh 24 jadwal pertandingan lengkap dengan skor match yang sudah selesai.
+
+### Perubahan Kode (Surgical)
+1. **`src/ai/prompts/omak-peak-context.ts`**:
+   - Memperluas antarmuka `OmakPeakContext` dengan:
+     - `top_scorers?: Array<{ rank, nickname, team_name, goals, matches }>`
+     - `top_assists?: Array<{ rank, nickname, team_name, assists, matches }>`
+     - `top_defenders?: Array<{ rank, nickname, team_name, defense, matches }>`
+     - `awards_status?: { goalkeeper_award_suspended, active_awards, notes }`
+     - Menambahkan field `score?: string | null` dan `is_walkover?: boolean` pada `today_fixtures`.
+2. **`src/application/omak-peak.ts`**:
+   - Memperbarui query `today_fixtures` untuk mengambil seluruh jadwal turnamen (menghapus batas sempit `LIMIT 12`), melakukan LEFT JOIN ke `games`, dan menyertakan skor real-time untuk pertandingan berstatus `COMPLETED` maupun `WALKOVER`.
+   - Mengambil Top 10 Goal Scorers dari tabel `player_game_stats` (dikelompokkan per pemain, diurutkan total gol terbanyak).
+   - Mengambil Top 10 Assist Providers dari tabel `player_game_stats`.
+   - Mengambil Top 10 Defenders dari tabel `player_game_stats`.
+   - Menyertakan catatan status penghargaan (`awards_status`) bahwa kategori kiper ditangguhkan sementara atas instruksi panitia.
+   - Memperbarui `RULES_SUMMARY` di sistem prompt Omak Peak agar sinkron dengan aturan 1 screenshot scoreboard.
+3. **`src/ai/prompts/omak-peak.ts`**:
+   - Memperluas instruksi prompt Omak Peak pada bagian `JAWAB BERDASARKAN KONTEKS` agar proaktif dan percaya diri menggunakan data `top_scorers`, `top_assists`, `top_defenders`, dan skor fixture saat ditanya oleh peserta.
+4. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan unit test baru untuk memverifikasi bahwa `buildOmakPeakContext` berhasil memuat `top_scorers`, `top_assists`, `top_defenders`, serta skor pertandingan yang sudah selesai.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 321/321 PASS (23 test files).
+
+
 ## [2026-11-22] Sesi: Suspend Goalkeeper Screenshot Requirement & Award Category
 
 ### Konteks Sesi

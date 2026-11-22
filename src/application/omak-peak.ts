@@ -302,10 +302,11 @@ const RULES_SUMMARY = `Aturan inti Gojiha Tournament (Flash Peak):
 - Roster: 5 starters (1 GK + 4 outfield), maks 5 subs (total maks 10). Karakter in-game harus unik per tim (no duplicate character).
 - Group Stage: round-robin 1 game per fixture. Win=3pts, Draw=1pt, Loss=0pts. Top 2 per group lolos KO.
 - Knockout: BO3 (first to 2 wins) sampai final; Grand Final BO5 (first to 3 wins). Tied KO game di-replay, skor replay masuk ke series score.
+- Pelaporan Skor: Tim pemenang cukup kirim 1 screenshot skor akhir (scoreboard utama). Kewajiban kartu statistik kiper DITANGGUHKAN sementara demi kemudahan pelaporan.
 - Room host: tim sisi kiri default (rekomendasi); kalau nggak bisa host dan lawan mau, match jalan; kalau lawan nolak, lawan kena forfeit.
 - Double room-card unavailable: Group Stage = double walkover (0 pts each, no stats); Knockout = double loss (kedua tim kalah, pasangan ronde berikutnya bye).
 - Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff kena aturan di atas (D-031 grup / D-032 KO).
-- Best Goalkeeper Award: dianugerahi ke TIM (bukan individu), dengan kiper utama tim itu sebagai representatif (D-036).`;
+- Best Goalkeeper Award: DITANGGUHKAN sementara untuk season ini atas keputusan panitia. Penghargaan aktif: Golden Boot, Top Assist, Best Defender.`;
 
 export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext> {
   // Active tournament (any non-terminal status).
@@ -341,22 +342,27 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     config = {};
   }
 
-  // Fixtures: upcoming + recent (bounded). scheduled_at nulls last.
+  // Fixtures: all fixtures with scores if completed/locked
   const fxRes = await db.execute({
     sql: `SELECT f.id, f.stage, f.round_code, f.scheduled_at, f.status,
                  ta.team_name AS team_a_name, tb.team_name AS team_b_name,
-                 g.group_code
+                 g.group_code, gm.team_a_score, gm.team_b_score, gm.is_walkover
           FROM fixtures f
           LEFT JOIN teams ta ON ta.id = f.team_a_id
           LEFT JOIN teams tb ON tb.id = f.team_b_id
           LEFT JOIN groups g ON g.id = f.group_id
+          LEFT JOIN games gm ON gm.fixture_id = f.id
           WHERE f.tournament_id = ?
-          ORDER BY (f.scheduled_at IS NULL), f.scheduled_at ASC
-          LIMIT 12`,
+          ORDER BY f.round_code ASC, g.group_code ASC, (f.scheduled_at IS NULL), f.scheduled_at ASC`,
     args: [tournamentId],
   });
   const today_fixtures = fxRes.rows.map((r) => {
     const row = r as unknown as Record<string, unknown>;
+    const status = String(row.status);
+    let score: string | null = null;
+    if (status !== 'SCHEDULED' && row.team_a_score !== null && row.team_b_score !== null) {
+      score = `${row.team_a_score} - ${row.team_b_score}${row.is_walkover ? ' (WO)' : ''}`;
+    }
     return {
       fixture_id: String(row.id),
       stage: String(row.stage),
@@ -365,9 +371,98 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
       team_a_name: String(row.team_a_name),
       team_b_name: String(row.team_b_name),
       scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
-      status: String(row.status),
+      status,
+      score,
+      is_walkover: Boolean(row.is_walkover),
     };
   });
+
+  // Top Scorers across tournament
+  let top_scorers: OmakPeakContext['top_scorers'] = [];
+  try {
+    const tsRes = await db.execute({
+      sql: `SELECT p.nickname_raw, t.team_name, SUM(pgs.goals) AS total_goals, COUNT(pgs.id) AS matches
+            FROM player_game_stats pgs
+            JOIN players p ON pgs.player_id = p.id
+            JOIN teams t ON pgs.team_id = t.id
+            WHERE p.tournament_id = ?
+            GROUP BY p.id
+            HAVING total_goals > 0
+            ORDER BY total_goals DESC
+            LIMIT 10`,
+      args: [tournamentId],
+    });
+    top_scorers = tsRes.rows.map((r, i) => {
+      const row = r as unknown as Record<string, unknown>;
+      return {
+        rank: i + 1,
+        nickname: String(row.nickname_raw),
+        team_name: String(row.team_name),
+        goals: Number(row.total_goals),
+        matches: Number(row.matches),
+      };
+    });
+  } catch {
+    top_scorers = [];
+  }
+
+  // Top Assists across tournament
+  let top_assists: OmakPeakContext['top_assists'] = [];
+  try {
+    const taRes = await db.execute({
+      sql: `SELECT p.nickname_raw, t.team_name, SUM(pgs.assists) AS total_assists, COUNT(pgs.id) AS matches
+            FROM player_game_stats pgs
+            JOIN players p ON pgs.player_id = p.id
+            JOIN teams t ON pgs.team_id = t.id
+            WHERE p.tournament_id = ?
+            GROUP BY p.id
+            HAVING total_assists > 0
+            ORDER BY total_assists DESC
+            LIMIT 10`,
+      args: [tournamentId],
+    });
+    top_assists = taRes.rows.map((r, i) => {
+      const row = r as unknown as Record<string, unknown>;
+      return {
+        rank: i + 1,
+        nickname: String(row.nickname_raw),
+        team_name: String(row.team_name),
+        assists: Number(row.total_assists),
+        matches: Number(row.matches),
+      };
+    });
+  } catch {
+    top_assists = [];
+  }
+
+  // Top Defenders across tournament
+  let top_defenders: OmakPeakContext['top_defenders'] = [];
+  try {
+    const tdRes = await db.execute({
+      sql: `SELECT p.nickname_raw, t.team_name, SUM(pgs.defense_raw) AS total_def, COUNT(pgs.id) AS matches
+            FROM player_game_stats pgs
+            JOIN players p ON pgs.player_id = p.id
+            JOIN teams t ON pgs.team_id = t.id
+            WHERE p.tournament_id = ? AND p.position = 'OUTFIELD'
+            GROUP BY p.id
+            HAVING total_def > 0
+            ORDER BY total_def DESC
+            LIMIT 10`,
+      args: [tournamentId],
+    });
+    top_defenders = tdRes.rows.map((r, i) => {
+      const row = r as unknown as Record<string, unknown>;
+      return {
+        rank: i + 1,
+        nickname: String(row.nickname_raw),
+        team_name: String(row.team_name),
+        defense: Number(row.total_def),
+        matches: Number(row.matches),
+      };
+    });
+  } catch {
+    top_defenders = [];
+  }
 
   // Standings per group (bounded rows per group).
   const stRes = await db.execute({
@@ -470,6 +565,14 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     },
     today_fixtures,
     standings_by_group,
+    top_scorers,
+    top_assists,
+    top_defenders,
+    awards_status: {
+      goalkeeper_award_suspended: true,
+      active_awards: ['GOLDEN_BOOT (Top Scorer)', 'TOP_ASSIST', 'BEST_DEFENDER'],
+      notes: 'Penghargaan kiper (Best Goalkeeper) ditangguhkan sementara selama season ini. Penghargaan individu aktif: Golden Boot, Top Assist, Best Defender.',
+    },
     teams_and_delegates,
     qna_entries,
     rules_summary: RULES_SUMMARY,

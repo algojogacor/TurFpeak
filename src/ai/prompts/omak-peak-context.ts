@@ -33,6 +33,8 @@ export interface OmakPeakContext {
     team_b_name: string;
     scheduled_at: string | null;
     status: string;
+    score?: string | null;
+    is_walkover?: boolean;
   }>;
   /**
    * Compact standings per group (top rows). Bounded per group so the prompt
@@ -51,6 +53,44 @@ export interface OmakPeakContext {
       points: number;
     }>;
   }>;
+  /**
+   * Top goal scorers across all completed matches in the tournament.
+   */
+  top_scorers?: Array<{
+    rank: number;
+    nickname: string;
+    team_name: string;
+    goals: number;
+    matches: number;
+  }>;
+  /**
+   * Top assist providers across all completed matches in the tournament.
+   */
+  top_assists?: Array<{
+    rank: number;
+    nickname: string;
+    team_name: string;
+    assists: number;
+    matches: number;
+  }>;
+  /**
+   * Top outfield defenders by defensive contributions.
+   */
+  top_defenders?: Array<{
+    rank: number;
+    nickname: string;
+    team_name: string;
+    defense: number;
+    matches: number;
+  }>;
+  /**
+   * Current status of tournament awards.
+   */
+  awards_status?: {
+    goalkeeper_award_suspended: boolean;
+    active_awards: string[];
+    notes: string;
+  };
   /**
    * Teams + their delegate's WhatsApp address. Per the tournament's open-communication
    * norm (D-037), delegate contacts are shareable so participants can coordinate matches
