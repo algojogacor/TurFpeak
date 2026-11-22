@@ -42,7 +42,7 @@ export class MistralAdapter implements ProviderAdapter {
   public readonly textModel: string;
   public readonly visionModel: string;
   public readonly capabilities: ProviderCapabilities = {
-    vision: true,
+    vision: false,
     text: true,
     structured_output: true,
     max_image_dimensions: { width: 4096, height: 4096 },

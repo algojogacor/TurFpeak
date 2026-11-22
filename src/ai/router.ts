@@ -190,8 +190,8 @@ export class ProviderRouter {
 
     if (this.prioritizeByTask) {
       const priorityOrder: AIProviderName[] = isVision
-        ? ['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'MISTRAL', 'COHERE', 'OLLAMA_CLOUD']
-        : ['GROQ', 'DEEPSEEK', 'NVIDIA_NIM', 'COHERE', 'MISTRAL', 'GEMINI', 'OLLAMA_CLOUD'];
+        ? ['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'COHERE', 'OLLAMA_CLOUD']
+        : ['MISTRAL', 'GROQ', 'DEEPSEEK', 'NVIDIA_NIM', 'COHERE', 'GEMINI', 'OLLAMA_CLOUD'];
 
       const sorted = [...this.adapters].sort((a, b) => {
         let idxA = priorityOrder.indexOf(a.name);

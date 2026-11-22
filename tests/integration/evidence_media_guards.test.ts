@@ -304,4 +304,49 @@ describe('Evidence media download guards (B-2)', () => {
     expect(validatedData.team_a_players[0].nickname_raw).toBe('RAKeeper');
     expect(validatedData.team_b_players[0].nickname_raw).toBe('RBKeeper');
   });
+
+  it('attaches designated goalkeeper when scoreboard extraction only has 4 outfield players', async () => {
+    await createSessionWithAssets(['msg-4players'], teamAId);
+    const batch = await claimDebounceBatch(db, 'test-worker', 30_000);
+    expect(batch).toBeTruthy();
+
+    const fourPlayerPayload = {
+      raw_extraction: {},
+      summary_data: {
+        team_a_score: 3,
+        team_b_score: 1,
+        team_a_players: [
+          { nickname_raw: 'RAPlayer2', rating: 7.0, goals: 1, assists: 1, passes: 8, defense: 1 },
+          { nickname_raw: 'RAPlayer3', rating: 6.5, goals: 1, assists: 1, passes: 7, defense: 3 },
+          { nickname_raw: 'RAPlayer4', rating: 6.0, goals: 1, assists: 0, passes: 6, defense: 2 },
+          { nickname_raw: 'RAPlayer5', rating: 5.5, goals: 0, assists: 0, passes: 5, defense: 1 },
+        ],
+        team_b_players: [
+          { nickname_raw: 'RBPlayer2', rating: 7.0, goals: 1, assists: 0, passes: 8, defense: 2 },
+          { nickname_raw: 'RBPlayer3', rating: 6.5, goals: 0, assists: 1, passes: 7, defense: 2 },
+          { nickname_raw: 'RBPlayer4', rating: 6.0, goals: 0, assists: 0, passes: 6, defense: 1 },
+          { nickname_raw: 'RBPlayer5', rating: 5.0, goals: 0, assists: 0, passes: 5, defense: 2 },
+        ],
+      },
+    };
+
+    const deps = buildDeps({
+      mediaClient: createStubMediaClient({ allowRemoteId: (id) => id === 'msg-4players' }),
+      extractMock: vi.fn(async () => fourPlayerPayload),
+    });
+
+    const res = await processClaimedBatch(deps, batch!);
+    expect(res.status).toBe('DRAFT_CREATED');
+    expect(res.draftVersion?.status).toBe('PENDING_APPROVAL');
+
+    const draft = await db.execute({
+      sql: 'SELECT validated_data_json FROM report_versions WHERE id = ?',
+      args: [res.draftVersion!.id],
+    });
+    const validatedData = JSON.parse(String(draft.rows[0][0]));
+    expect(validatedData.team_a_players.length).toBe(5);
+    expect(validatedData.team_b_players.length).toBe(5);
+    expect(validatedData.team_a_players.some((p: any) => p.nickname_raw === 'RAKeeper')).toBe(true);
+    expect(validatedData.team_b_players.some((p: any) => p.nickname_raw === 'RBKeeper')).toBe(true);
+  });
 });

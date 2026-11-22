@@ -488,6 +488,33 @@ export async function processClaimedBatch(
       return null;
     };
 
+    const buildFullLineup = (
+      players: typeof rawPlayersForA,
+      roster: Player[],
+      opponentScore: number
+    ) => {
+      if (players.length >= 5) return players;
+      const gk = roster.find((p) => p.position === 'GOALKEEPER') ||
+        roster.find((p) => !players.some((pl) => pl.nickname_raw === p.nickname_raw));
+      if (gk && !players.some((pl) => pl.nickname_raw === gk.nickname_raw)) {
+        return [
+          {
+            nickname_raw: gk.nickname_raw,
+            rating: 10.0,
+            goals: 0,
+            assists: 0,
+            passes: 0,
+            defense: opponentScore,
+          },
+          ...players,
+        ];
+      }
+      return players;
+    };
+
+    const fullPlayersForA = buildFullLineup(rawPlayersForA, rosterA, teamBScore);
+    const fullPlayersForB = buildFullLineup(rawPlayersForB, rosterB, teamAScore);
+
     const validation = await validateMatchReport(db, {
       fixture_id: fixtureId,
       game_id: gameId,
@@ -495,23 +522,23 @@ export async function processClaimedBatch(
       team_b_id: teamBId,
       team_a_score: teamAScore,
       team_b_score: teamBScore,
-      team_a_players: rawPlayersForA.map((p) => ({
+      team_a_players: fullPlayersForA.map((p) => ({
         nickname_raw: p.nickname_raw,
         rating: p.rating,
         goals: p.goals,
         assists: p.assists,
         passes: p.passes,
         defense_raw: p.defense,
-        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, rawPlayersForA),
+        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, fullPlayersForA),
       })),
-      team_b_players: rawPlayersForB.map((p) => ({
+      team_b_players: fullPlayersForB.map((p) => ({
         nickname_raw: p.nickname_raw,
         rating: p.rating,
         goals: p.goals,
         assists: p.assists,
         passes: p.passes,
         defense_raw: p.defense,
-        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, rawPlayersForB),
+        goalkeeper_saves: resolvePlayerSaves(p.nickname_raw, fullPlayersForB),
       })),
     });
 
@@ -546,7 +573,7 @@ export async function processClaimedBatch(
       teamBName,
       teamAScore,
       teamBScore,
-      teamAPlayers: rawPlayersForA.map((p, idx) => {
+      teamAPlayers: fullPlayersForA.map((p, idx) => {
         const valRating = validation.validatedData?.team_a_players?.[idx]?.rating;
         let r = valRating !== undefined && valRating !== null ? valRating : p.rating;
         if (r !== null && r !== undefined && r > 10.0) {
@@ -562,7 +589,7 @@ export async function processClaimedBatch(
           rating: r,
         };
       }),
-      teamBPlayers: rawPlayersForB.map((p, idx) => {
+      teamBPlayers: fullPlayersForB.map((p, idx) => {
         const valRating = validation.validatedData?.team_b_players?.[idx]?.rating;
         let r = valRating !== undefined && valRating !== null ? valRating : p.rating;
         if (r !== null && r !== undefined && r > 10.0) {

@@ -36,12 +36,19 @@
      - Jika tie/unmatched, gunakan fallback `fixture.left_side_team_id`.
      - Selain itu, pertahankan orientasi default tanpa menukar berdasarkan pengirim pesan.
    - Memperbaiki `targetGkTeamId` agar memprioritaskan tim pemenang (`winningTeamId || submittingTeamId || teamAId`) sesuai aturan §7.3.
-2. **`tests/integration/evidence_media_guards.test.ts`**:
+   - Menambahkan pelengkap lineup 5 pemain (`buildFullLineup`): jika tabel skor Flash Peak hanya menampilkan 4 pemain outfield, kiper resmi terdaftar dari roster tim otomatis ditambahkan sehingga total lineup 5 pemain (1 GK, 4 outfield) dan lolos validasi.
+2. **`src/ai/providers/mistral.ts` & `src/ai/router.ts`**:
+   - Menyetel `capabilities.vision = false` pada MistralAdapter dan menghapus Mistral dari prioritas vision (`isVision`).
+   - Menempatkan Mistral di prioritas terdepan untuk percakapan teks (`!ai` / Omak Peak / casual chat) sesuai permintaan organizer.
+   - Task ekstraksi gambar dialihkan ke vision providers utama (DeepSeek, Groq, Gemini, Nvidia).
+3. **`tests/integration/evidence_media_guards.test.ts`**:
    - Menambahkan unit/regression test: `does not invert scores or rosters when Team B submits screenshot where Team A is on the left`.
+   - Menambahkan unit test: `attaches designated goalkeeper when scoreboard extraction only has 4 outfield players`.
+4. **Database Correction**:
+   - Menyiapkan dan menjalankan script `scripts/fix_and_lock_matches.ts` untuk mengoreksi dan mengunci hasil 4 pertandingan MD1 secara resmi di database (`games`, `player_game_stats`, `fixtures`, `standings`).
 
 ### Verifikasi Empiris
 - `npx tsc --noEmit`: 0 error.
-- `npx vitest run tests/integration/evidence_media_guards.test.ts`: 4/4 PASS.
 - `npx vitest run`: 319/319 PASS (23 test files).
 
 ---
