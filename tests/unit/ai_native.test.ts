@@ -16,7 +16,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { runMigrations } from '../../src/db/migrate.js';
-import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO } from '../../src/application/omak-peak.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext } from '../../src/application/omak-peak.js';
+import { buildOmakPeakPrompt } from '../../src/ai/prompts/omak-peak.js';
 import {
   AgentActionCatalog,
   buildDefaultAgentActionCatalog,
@@ -667,6 +668,58 @@ describe('AgentPlannerService audit-fix regressions (PR #9 blockers)', () => {
     const row = await db.execute({ sql: 'SELECT status FROM ai_action_plans WHERE plan_code = ?', args: [code] });
     expect(String((row.rows[0] as any).status)).toBe('CANCELLED');
   });
+
+  // --- Polish #4: markFailed must be status-guarded (cannot overwrite a terminal status) ---
+
+  it('POLISH-4 (control): corrupt plan_json still marks an EXECUTING plan FAILED (normal path intact)', async () => {
+    const planCode = 'AGENT-P4A';
+    const now = new Date();
+    const expires = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES ('plan-p4a', ?, 'org-1@s.whatsapp.net', 'corrupt test', 'this is not json', 'PENDING', ?, ?, ?)`,
+      args: [planCode, expires, now.toISOString(), now.toISOString()],
+    });
+    const res = await planner.confirmAndExecute(planCode, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('korup');
+    const row = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: [planCode] });
+    expect(String((row.rows[0] as any).status)).toBe('FAILED');
+    expect(String((row.rows[0] as any).failure_reason)).toContain('corrupt');
+  });
+
+  it('POLISH-4: markFailed guard never overwrites a concurrent terminal status (stays EXECUTED, not FAILED)', async () => {
+    // Stage a PENDING plan with corrupt plan_json so confirmAndExecute takes the
+    // markFailed path right after the atomic claim. A racing writer then moves
+    // the plan to a terminal EXECUTED between the claim and markFailed — the
+    // guarded markFailed (WHERE status='EXECUTING') must not overwrite it.
+    const planCode = 'AGENT-P4B';
+    const now = new Date();
+    const expires = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+    await db.execute({
+      sql: `INSERT INTO ai_action_plans (id, plan_code, organizer_address, instruction_text, plan_json, status, expires_at, created_at, updated_at)
+            VALUES ('plan-p4b', ?, 'org-1@s.whatsapp.net', 'corrupt race test', 'this is not json', 'PENDING', ?, ?, ?)`,
+      args: [planCode, expires, now.toISOString(), now.toISOString()],
+    });
+    let raced = false;
+    const racingDb = racingClient("SET status='EXECUTING'", 'after', async () => {
+      if (raced) return;
+      raced = true;
+      await db.execute({
+        sql: "UPDATE ai_action_plans SET status='EXECUTED', executed_at=?, updated_at=? WHERE plan_code=? AND status='EXECUTING'",
+        args: [new Date().toISOString(), new Date().toISOString(), planCode],
+      });
+    });
+    const racingPlanner = new AgentPlannerService({ db: racingDb, actionCatalog: catalog });
+
+    const res = await racingPlanner.confirmAndExecute(planCode, 'org-1@s.whatsapp.net');
+    expect(res.success).toBe(false);
+    expect(res.responseText).toContain('korup');
+    // The concurrent terminal status is NOT overwritten by markFailed:
+    const row = await db.execute({ sql: 'SELECT status, failure_reason FROM ai_action_plans WHERE plan_code = ?', args: [planCode] });
+    expect(String((row.rows[0] as any).status)).toBe('EXECUTED');
+    expect((row.rows[0] as any).failure_reason).toBeNull();
+  });
 });
 
 // =============================================================================
@@ -740,6 +793,193 @@ describe('QnaService (D-039)', () => {
     const r2 = await svc.extractAndSave(args);
     expect(r2.success).toBe(false);
     expect(r2.responseText).toContain('detik');
+  });
+});
+
+// =============================================================================
+// QnaService — audit polish regressions: real source_message_ids traceability
+// + honest "Ditambahkan: N" counting (UNIQUE-skipped duplicates not inflated).
+// =============================================================================
+
+describe('QnaService audit-fix regressions (traceability + honest counting)', () => {
+  let db: Client;
+  const CHAT = 'group-x@g.us';
+
+  beforeEach(async () => {
+    db = await freshDb();
+  });
+
+  /** Insert one TEXT message into inbound_messages for the group window. */
+  async function seedGroupMessage(id: string, sender: string, text: string, offsetMs: number): Promise<void> {
+    const ts = new Date(Date.now() - 120_000 + offsetMs).toISOString();
+    await db.execute({
+      sql: `INSERT INTO inbound_messages
+              (id, provider_message_key, chat_id, sender_raw_address, delegate_id,
+               message_timestamp, received_at, message_type, text_body, caption,
+               reply_to_key, report_session_id, raw_metadata_json, created_at)
+            VALUES (?, ?, ?, ?, NULL, ?, ?, 'TEXT', ?, NULL, NULL, NULL, '{}', ?)`,
+      args: [id, 'pmk-' + id, CHAT, sender, ts, ts, text, ts],
+    });
+  }
+
+  it('POLISH-2: inserted Q&A stores real source_message_ids; hallucinated ids are dropped', async () => {
+    await seedGroupMessage('msg-q1', '6281111111111@s.whatsapp.net', 'Kapan main ya?', 0);
+    await seedGroupMessage('msg-a1', '6289999999999@s.whatsapp.net', 'Besok jam 8 malam.', 5_000);
+    // AI returns one genuine pair citing the real ids PLUS a made-up id.
+    const fakeRouter: any = {
+      execute: async () => ({
+        raw_text: JSON.stringify({
+          pairs: [{
+            question: 'Kapan main?',
+            answer: 'Besok jam 8 malam.',
+            category: 'jadwal',
+            source_message_ids: ['msg-q1', 'msg-a1', 'totally-made-up-id'],
+            duplicate_of_existing: false,
+          }],
+        }),
+        telemetry: {},
+      }),
+    };
+    const svc = new QnaService({ db, providerRouter: fakeRouter });
+    const res = await svc.extractAndSave({
+      chatId: CHAT,
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    });
+    expect(res.success).toBe(true);
+    expect(res.responseText).toContain('Ditambahkan ke FAQ: 1');
+    const row = await db.execute({ sql: 'SELECT source_message_ids_json FROM qna_entries ORDER BY created_at DESC LIMIT 1' });
+    const ids = JSON.parse(String((row.rows[0] as any).source_message_ids_json));
+    expect(ids).toEqual(['msg-q1', 'msg-a1']); // made-up id filtered out
+  });
+
+  it('POLISH-2 (control): AI pairs without source_message_ids insert with empty array (back-compat)', async () => {
+    await seedGroupMessage('msg-q2', '6281111111111@s.whatsapp.net', 'Aturan WO gimana?', 0);
+    await seedGroupMessage('msg-a2', '6289999999999@s.whatsapp.net', 'Lawan no-show berarti kalah.', 5_000);
+    const fakeRouter: any = {
+      execute: async () => ({
+        raw_text: JSON.stringify({
+          pairs: [{ question: 'Aturan WO?', answer: 'Lawan no-show berarti kalah.', category: 'wo' }],
+        }),
+        telemetry: {},
+      }),
+    };
+    const svc = new QnaService({ db, providerRouter: fakeRouter });
+    const res = await svc.extractAndSave({
+      chatId: CHAT,
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    });
+    expect(res.success).toBe(true);
+    const row = await db.execute({ sql: 'SELECT source_message_ids_json FROM qna_entries ORDER BY created_at DESC LIMIT 1' });
+    expect(JSON.parse(String((row.rows[0] as any).source_message_ids_json))).toEqual([]);
+  });
+
+  it('POLISH-3: exact duplicate silently skipped by UNIQUE is NOT counted as inserted', async () => {
+    // Pre-insert a Q&A pair the AI will fail to flag as duplicate.
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO qna_entries (id, question, answer, category, created_by_organizer, is_active, created_at, updated_at)
+            VALUES ('q-pre', 'Kapan main?', 'Besok jam 8 malam.', 'jadwal', 1, 1, ?, ?)`,
+      args: [now, now],
+    });
+    await seedGroupMessage('msg-q3', '6281111111111@s.whatsapp.net', 'Kapan main?', 0);
+    await seedGroupMessage('msg-a3', '6289999999999@s.whatsapp.net', 'Besok jam 8 malam.', 5_000);
+    await seedGroupMessage('msg-q4', '6282222222222@s.whatsapp.net', 'Bisa ganti karakter?', 10_000);
+    await seedGroupMessage('msg-a4', '6289999999999@s.whatsapp.net', 'Nggak bisa, nickname terkunci.', 15_000);
+    // Two pairs returned: the first is an EXACT duplicate of q-pre (not flagged
+    // by the AI), the second is genuinely new.
+    const fakeRouter: any = {
+      execute: async () => ({
+        raw_text: JSON.stringify({
+          pairs: [
+            {
+              question: 'Kapan main?',
+              answer: 'Besok jam 8 malam.',
+              category: 'jadwal',
+              source_message_ids: ['msg-q3', 'msg-a3'],
+              duplicate_of_existing: false, // AI misses this one
+            },
+            {
+              question: 'Bisa ganti karakter?',
+              answer: 'Nggak bisa, nickname terkunci.',
+              category: 'aturan',
+              source_message_ids: ['msg-q4', 'msg-a4'],
+              duplicate_of_existing: false,
+            },
+          ],
+        }),
+        telemetry: {},
+      }),
+    };
+    const svc = new QnaService({ db, providerRouter: fakeRouter });
+    const res = await svc.extractAndSave({
+      chatId: CHAT,
+      count: 10,
+      organizerAddress: 'org-1@s.whatsapp.net',
+      organizerDelegateId: null,
+    });
+    expect(res.success).toBe(true);
+    // Only the genuinely new pair counts as inserted — not 2.
+    expect(res.responseText).toContain('Ditambahkan ke FAQ: 1');
+    expect(res.responseText).not.toContain('Ditambahkan ke FAQ: 2');
+    // The silently skipped exact duplicate is reported, not hidden.
+    expect(res.responseText).toContain('Duplikat persis');
+    expect(res.responseText).toContain(': 1');
+    // DB truth: exactly 2 rows (the pre-inserted one + the new one).
+    const count = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM qna_entries' });
+    expect(Number((count.rows[0] as any).n)).toBe(2);
+  });
+});
+
+// =============================================================================
+// OmakPeak context — LID contact flag (audit polish #7): a delegate whose only
+// known WhatsApp identity is an internal @lid address must be flagged so the
+// prompt never presents it as an actionable contact.
+// =============================================================================
+
+describe('OmakPeak context LID flag (audit polish #7)', () => {
+  let db: Client;
+
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedTournamentFixture(db);
+    const now = new Date().toISOString();
+    // team-a's delegate has ONLY an internal LID identity (production reality).
+    await db.execute({
+      sql: `INSERT INTO whatsapp_identities (id, delegate_id, raw_address, address_type, is_primary, created_at)
+            VALUES ('wi-a', 'del-a', '987654321098765@lid', 'LID', 1, ?)`,
+      args: [now],
+    });
+    // team-b's delegate has a real phone-number JID.
+    await db.execute({
+      sql: `INSERT INTO whatsapp_identities (id, delegate_id, raw_address, address_type, is_primary, created_at)
+            VALUES ('wi-b', 'del-b', '6281234567890@s.whatsapp.net', 'JID', 1, ?)`,
+      args: [now],
+    });
+  });
+
+  it('flags @lid identities as non-actionable, keeps real JIDs shareable', async () => {
+    const ctx = await buildOmakPeakContext(db);
+    const byTeam = new Map(ctx.teams_and_delegates.map((t) => [t.team_name, t]));
+    const singa = byTeam.get('Singa FC')!;
+    const elang = byTeam.get('Elang FC')!;
+    expect(singa.delegate_whatsapp).toBe('987654321098765@lid');
+    expect(singa.delegate_whatsapp_is_lid).toBe(true);
+    expect(elang.delegate_whatsapp).toBe('6281234567890@s.whatsapp.net');
+    expect(elang.delegate_whatsapp_is_lid).toBe(false);
+  });
+
+  it('the Omak Peak system prompt carries the @lid contact guidance', async () => {
+    const ctx = await buildOmakPeakContext(db);
+    const { system_prompt } = buildOmakPeakPrompt(ctx, 'kontak delegasi Singa FC dong');
+    // The prompt must (a) mark LID-flagged delegates as NOT dialable contacts,
+    // and (b) still allow sharing real phone-number contacts (D-037 norm).
+    expect(system_prompt).toContain('delegate_whatsapp_is_lid');
+    expect(system_prompt).toContain('@lid');
+    expect(system_prompt).toContain('BOLEH dibagikan');
   });
 });
 

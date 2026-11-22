@@ -9,12 +9,18 @@
  * - Relies on the broad text capture (AI-NATIVE-001 in src/index.ts) which
  *   persists all central-group TEXT messages to inbound_messages. Without that
  *   capture, !saveqna would have nothing to read.
+ * - Traceability: every inserted pair stores the source message IDs (AI returns
+ *   them from the chat history; the backend validates each ID actually exists
+ *   in the extraction window before insert, so hallucinated IDs are dropped).
  * - The AI decides which message pairs are genuine Q&A (participant question +
  *   organizer answer) vs unrelated chat. No rigid heuristic — per the brief,
  *   "serahkan penilaian itu ke AI".
  * - Dedup: the AI is passed the existing Q list and asked to mark each new
  *   candidate as new vs duplicate-of-existing. Exact (question, answer) pairs
  *   are also rejected by the UNIQUE constraint on qna_entries.
+ * - Honest counting: "Ditambahkan: N" counts only rows actually inserted
+ *   (rowsAffected of each INSERT OR IGNORE), so silently-ignored exact
+ *   duplicates never inflate the reported number.
  * - Rate guard: !saveqna is organizer-only and bounded to one invocation per
  *   30 seconds (in-memory) so a misclick doesn't burn quota.
  */
@@ -45,6 +51,7 @@ Tugasmu:
 3. Abaikan obrolan santai/spam yang BUKAN Q&A turnamen. Hanya ambil pasangan yang genuine informatif.
 4. Cek <existing_qna> — kalau pasangan yang sama sudah ada (atau sangat mirip), tandai duplicate_of_existing=true.
 5. Rapihkan: question ringkas (kalimat pertanyaan inti), answer jelas (jawaban organizer yang inti).
+6. Untuk tiap pasangan, isi source_message_ids dengan ID pesan ASAL pasangan itu: id pesan pertanyaan dan id pesan jawaban, diambil dari field "id" entri yang sesuai di <chat_history>.
 
 OUTPUT (JSON saja):
 {
@@ -53,6 +60,7 @@ OUTPUT (JSON saja):
       "question": "...",
       "answer": "...",
       "category": "jadwal|aturan|teknis|wo|roster|hasil|umum",
+      "source_message_ids": ["id-pesan-pertanyaan", "id-pesan-jawaban"],
       "duplicate_of_existing": false
     }
   ]
@@ -62,7 +70,8 @@ Aturan:
 - Maksimum 10 pasangan per run.
 - Jangan invent pertanyaan/jawaban yang tidak ada di chat.
 - Kalau tidak ada pasangan Q&A yang valid, return { "pairs": [] }.
-- category harus salah satu dari enum di atas (atau null kalau tidak yakin).`;
+- category harus salah satu dari enum di atas (atau null kalau tidak yakin).
+- source_message_ids HANYA boleh berisi id yang benar-benar muncul di <chat_history> — jangan mengarang id. Kalau tidak yakin id-nya, kirim array kosong [].`;
 
 export interface QnaDeps {
   db: Client;
@@ -205,7 +214,10 @@ export class QnaService {
         timeout_ms: 45_000,
         correlation_id: `qna-${randomUUID().slice(0, 8)}`,
       });
-      pairs = parseQnaResponse(response.raw_text || '');
+      // Validate returned source_message_ids against the ids actually present
+      // in the extraction window — hallucinated ids are dropped here.
+      const validIds = new Set(msgs.map((m) => m.id));
+      pairs = parseQnaResponse(response.raw_text || '', validIds);
     } catch (err) {
       if (err instanceof AllProvidersFailedError) {
         return {
@@ -226,10 +238,14 @@ export class QnaService {
       };
     }
 
-    // Persist new (non-duplicate) pairs.
+    // Persist new (non-duplicate) pairs. Counting is honest: each INSERT OR
+    // IGNORE's rowsAffected is checked, so exact (question, answer) duplicates
+    // silently skipped by the UNIQUE constraint are reported as skipped, not
+    // as inserted.
     const now = new Date().toISOString();
     let inserted = 0;
     let skippedDup = 0;
+    let skippedUnique = 0;
     const insertedPairs: Array<{ question: string; answer: string; category: string | null }> = [];
     for (const p of pairs) {
       if (p.duplicate_of_existing) {
@@ -237,7 +253,7 @@ export class QnaService {
         continue;
       }
       try {
-        await this.deps.db.execute({
+        const insRes = await this.deps.db.execute({
           sql: `INSERT OR IGNORE INTO qna_entries
                   (id, question, answer, category, source_message_ids_json,
                    created_by_delegate_id, created_by_organizer, is_active, created_at, updated_at)
@@ -253,11 +269,15 @@ export class QnaService {
             now,
           ],
         });
-        // OR IGNORE means exact dupes (UNIQUE question+answer) silently skip.
-        // We can't easily distinguish "inserted" from "ignored" without changes() —
-        // approximate by checking post-insert existence.
-        insertedPairs.push({ question: p.question, answer: p.answer, category: p.category });
-        inserted++;
+        const insertedRows = (insRes as any).rowsAffected ?? (insRes as any).changes ?? 0;
+        if (insertedRows > 0) {
+          insertedPairs.push({ question: p.question, answer: p.answer, category: p.category });
+          inserted++;
+        } else {
+          // OR IGNORE silently skipped an exact (question, answer) duplicate
+          // the AI did not flag — count it so the summary stays honest.
+          skippedUnique++;
+        }
       } catch (e) {
         // Skip on error, continue.
       }
@@ -268,7 +288,8 @@ export class QnaService {
     lines.push('━━━━━━━━━━━━━━━━━━━━━━━━');
     lines.push(`📊 Dibaca: ${msgs.length} pesan terakhir grup`);
     lines.push(`✅ Ditambahkan ke FAQ: ${inserted} pasangan baru`);
-    if (skippedDup > 0) lines.push(`♻️ Duplikat existing (di-skip): ${skippedDup}`);
+    if (skippedDup > 0) lines.push(`♻️ Duplikat existing (ditandai AI, di-skip): ${skippedDup}`);
+    if (skippedUnique > 0) lines.push(`♻️ Duplikat persis (UNIQUE, otomatis di-skip): ${skippedUnique}`);
     if (insertedPairs.length > 0) {
       lines.push('');
       lines.push('*Pasangan baru:*');
@@ -284,7 +305,7 @@ export class QnaService {
   }
 }
 
-function parseQnaResponse(raw: string): ExtractedQnaPair[] {
+function parseQnaResponse(raw: string, validMessageIds: Set<string>): ExtractedQnaPair[] {
   const trimmed = raw.trim();
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
@@ -308,7 +329,13 @@ function parseQnaResponse(raw: string): ExtractedQnaPair[] {
         ['jadwal', 'aturan', 'teknis', 'wo', 'roster', 'hasil', 'umum'].includes(p.category)
           ? String(p.category)
           : null,
-      source_message_ids: [],
+      // Keep only source ids that actually exist in the extraction window;
+      // drop anything else (guards against hallucinated ids).
+      source_message_ids: Array.isArray(p.source_message_ids)
+        ? p.source_message_ids
+            .filter((mid: unknown) => typeof mid === 'string' && validMessageIds.has(mid))
+            .slice(0, 10)
+        : [],
       duplicate_of_existing: Boolean(p.duplicate_of_existing),
     });
   }

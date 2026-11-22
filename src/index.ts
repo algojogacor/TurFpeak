@@ -313,16 +313,21 @@ export class FlashPeakApp {
     }
 
     // AI-NATIVE-001 (22 Nov 2026): broad capture of TEXT messages in the central
-    // tournament group (and organizer DM) into inbound_messages, with no session
-    // attachment. Purpose: enable !saveqna (needs last-N group messages to extract
+    // tournament group ONLY into inbound_messages, with no session attachment.
+    // Purpose: enable !saveqna (needs last-N central-group messages to extract
     // Q&A pairs from chat history) and provide a durable WA log for future audit
-    // (task #3 of the AI-native expansion brief). Idempotent via the existing
-    // provider_message_key UNIQUE constraint (captureInboundMessage returns
-    // isDuplicate=true on the second call). IMAGE/VIDEO/AUDIO/DOCUMENT messages
-    // are NOT captured here — they continue to flow through the evidence path
-    // below, which captures them with the correct report_session_id. Text
-    // commands (!ai, !standings, ...) are captured too: they are real group
-    // messages and !saveqna benefits from seeing the full conversation context.
+    // (task #3 of the AI-native expansion brief). DMs (organizer or participant)
+    // are deliberately NOT captured: any DM to the bot may be private chat
+    // (e.g. !ai questions), and no current feature reads DM history — !saveqna
+    // queries inbound_messages by the central group's chat_id, so DM capture
+    // would add no consumer while widening capture into private conversations.
+    // Idempotent via the existing provider_message_key UNIQUE constraint
+    // (captureInboundMessage returns isDuplicate=true on the second call).
+    // IMAGE/VIDEO/AUDIO/DOCUMENT messages are NOT captured here — they
+    // continue to flow through the evidence path below, which captures them
+    // with the correct report_session_id. Text commands (!ai, !standings, ...)
+    // are captured too: they are real group messages and !saveqna benefits
+    // from seeing the full conversation context.
     if (
       centralGroup &&
       message.chat_id === centralGroup &&

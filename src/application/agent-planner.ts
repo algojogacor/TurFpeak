@@ -596,8 +596,12 @@ export class AgentPlannerService {
 
   // ---------------------------------------------------------------------------
   private async markFailed(planCode: string, reason: string): Promise<void> {
+    // Status guard: only an EXECUTING plan may transition to FAILED here —
+    // same guard principle as the atomic claim and the final EXECUTED update,
+    // so a terminal status set concurrently (e.g. EXECUTED by a racing
+    // completion, or FAILED by the sweep) is never overwritten.
     await this.deps.db.execute({
-      sql: "UPDATE ai_action_plans SET status='FAILED', failure_reason=?, updated_at=? WHERE plan_code=?",
+      sql: "UPDATE ai_action_plans SET status='FAILED', failure_reason=?, updated_at=? WHERE plan_code=? AND status='EXECUTING'",
       args: [reason.slice(0, 1000), new Date().toISOString(), planCode],
     });
   }

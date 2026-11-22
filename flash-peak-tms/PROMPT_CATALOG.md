@@ -326,11 +326,11 @@ version pinning in source control.
 - The AI NEVER executes — backend validates, previews, and requires `!agentconfirm <code>` before any execution.
 
 ### prompt: qna_extractor_v1 (task EXTRACT_QNA)
-- File: `src/ai/prompts/qna-extractor.ts` (inline system prompt in `qna.ts`)
+- File: inline system prompt in `src/application/qna.ts` (`QNA_EXTRACTOR_SYSTEM_PROMPT`)
 - Role: extract Q&A pairs from chat history for the living FAQ.
 - Trusted context: existing Q&A list (for dedup marking).
-- Untrusted evidence: `<chat_history>` (last N central-group messages, oldest-first).
-- Output: JSON `{ "pairs": [{ "question", "answer", "category", "duplicate_of_existing" }] }`.
+- Untrusted evidence: `<chat_history>` (last N central-group messages, oldest-first, each entry carrying its `id`).
+- Output: JSON `{ "pairs": [{ "question", "answer", "category", "source_message_ids", "duplicate_of_existing" }] }` — `source_message_ids` must be ids that actually appear in `<chat_history>` (the question message's and the answer message's ids); the backend re-validates them against the extraction window before insert.
 - Rules: only genuine participant-question + organizer-answer pairs; ignore spam/chat; max 10 pairs; never invent; mark duplicates against existing Q&A.
 
 ### prompt: engagement_formatter_v1 (task FORMAT_HYPE)
@@ -347,7 +347,7 @@ version pinning in source control.
 - Output: 4 lines only, no explanation.
 
 ### prompt: trivia_rephrase_v1 (task REPHRASE_TRIVIA)
-- File: `src/ai/prompts/trivia.ts`
+- File: inline system prompt in `src/application/trivia.ts` (`randomFact`)
 - Role: rephrase a verified Flash Peak fact for variety.
 - Hard rule: preserve ALL technical facts (numbers, character names, positions, mechanics) exactly. Never add new facts. Max 2 sentences.
 - The source fact comes from `src/data/flashpeak-trivia.json` (curated at development time from web research — see the file's `_meta`). Runtime AI only rephrases; if rephrase fails, the raw curated fact is used directly.

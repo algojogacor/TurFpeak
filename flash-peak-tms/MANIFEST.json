@@ -9,7 +9,7 @@
     "Verified Flash Peak trivia DB at src/data/flashpeak-trivia.json (curated at development time from web research; runtime AI only rephrases, never invents facts).",
     "worklog.md deduplicated (5 stale file copies collapsed to 1; all 18 unique sessions preserved).",
     "Fresh-eyes audit findings recorded: approval flow not transactional (LOW, theoretical — WhatsApp messages are sequential); numeric-index column access fragility (LOW, cosmetic); AI-first nickname-to-roster matching enhancement recommended as follow-up (the current tiered deterministic matcher added 2026-11-21 is working with zero false positives); tournament-commands.ts modularization recommended as separate PR.",
-    "Audit-log WA scan (task #3): no unanswered participant questions found in the central tournament group within the logged window (2026-11-20 to 2026-11-21); organizer (Arya) highly responsive (typically <30s)."
+    "Audit-log WA scan (task #3): central-group chat history (2026-11-20 to 2026-11-21) reviewed. Organizer responsiveness varied: many participant questions were answered quickly, but several were left unanswered for extended periods before being answered. (The initial \"no unanswered questions, typically <30s\" reading was corrected after an independent second-opinion audit re-read the logs in full.)"
   ],
   "files": [
     "AGENT.md",

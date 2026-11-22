@@ -55,12 +55,20 @@ export interface OmakPeakContext {
    * Teams + their delegate's WhatsApp address. Per the tournament's open-communication
    * norm (D-037), delegate contacts are shareable so participants can coordinate matches
    * (room host, scheduling). Limited to teams in the active tournament.
+   *
+   * delegate_whatsapp_is_lid flags addresses that are WhatsApp internal LIDs
+   * (`@lid`) rather than dialable phone-number JIDs: production identities are
+   * LID-typed, and a raw LID is NOT actionable as a contact for the recipient.
+   * The Omak Peak prompt uses this flag to avoid presenting such an address
+   * as a usable "contact" (it directs askers to tag the delegate in the group
+   * instead — see D-037 contact-sharing guidance in omak-peak.ts).
    */
   teams_and_delegates: Array<{
     team_name: string;
     team_code: string | null;
     delegate_display_name: string | null;
     delegate_whatsapp: string | null;
+    delegate_whatsapp_is_lid: boolean;
     group_code: string | null;
   }>;
   /**

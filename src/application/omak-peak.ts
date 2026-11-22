@@ -287,6 +287,10 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
   const standings_by_group = Array.from(groupMap.values());
 
   // Teams + delegates + primary WA identity (delegate contacts shareable per D-037).
+  // NOTE on LIDs: when the primary identity is a WhatsApp internal LID
+  // (raw_address ending '@lid'), it is flagged (delegate_whatsapp_is_lid)
+  // instead of being treated as an actionable contact — see the prompt rule
+  // in src/ai/prompts/omak-peak.ts.
   const tdRes = await db.execute({
     sql: `SELECT t.team_name, t.team_code, d.display_name AS delegate_display_name,
                  wi.raw_address AS delegate_whatsapp, g.group_code
@@ -302,11 +306,16 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
   });
   const teams_and_delegates = tdRes.rows.map((r) => {
     const row = r as unknown as Record<string, unknown>;
+    const delegateWhatsapp = row.delegate_whatsapp ? String(row.delegate_whatsapp) : null;
     return {
       team_name: String(row.team_name),
       team_code: row.team_code ? String(row.team_code) : null,
       delegate_display_name: row.delegate_display_name ? String(row.delegate_display_name) : null,
-      delegate_whatsapp: row.delegate_whatsapp ? String(row.delegate_whatsapp) : null,
+      delegate_whatsapp: delegateWhatsapp,
+      // Flag internal WhatsApp LIDs: a raw @lid address is NOT a dialable
+      // phone contact, so the prompt must not offer it as one (D-037
+      // contact-sharing stays honest — see omak-peak.ts prompt guidance).
+      delegate_whatsapp_is_lid: delegateWhatsapp !== null && delegateWhatsapp.endsWith('@lid'),
       group_code: row.group_code ? String(row.group_code) : null,
     };
   });
