@@ -43,13 +43,6 @@ async function main() {
     const teamBName = String(fRow[8]);
     const gameId = String(fRow[9]);
 
-    console.log(`  Raw Left Score: ${rawLeftScore}, Raw Right Score: ${rawRightScore}`);
-    console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
-    console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
-    console.log(`  Roster A (${teamAName}):`, rosterA.map(p => `${p.nickname_raw} (${p.position})`));
-    console.log(`  Roster B (${teamBName}):`, rosterB.map(p => `${p.nickname_raw} (${p.position})`));
-    console.log(`  Match count -> Left on A: ${leftMatchesA}, Left on B: ${leftMatchesB} | Right on A: ${rightMatchesA}, Right on B: ${rightMatchesB}`);
-
     // Query active roster for both teams
     const playersRes = await db.execute({
       sql: `SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status
@@ -109,6 +102,13 @@ async function main() {
       if (matchPlayerToRoster(p, rosterA)) rightMatchesA++;
       if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
     }
+
+    console.log(`  Raw Left Score: ${rawLeftScore}, Raw Right Score: ${rawRightScore}`);
+    console.log(`  Left players (${leftPlayers.length}):`, leftPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
+    console.log(`  Right players (${rightPlayers.length}):`, rightPlayers.map(p => `${p.nickname_raw} (g:${p.goals})`));
+    console.log(`  Roster A (${teamAName}):`, rosterA.map(p => `${p.nickname_raw} (${p.position})`));
+    console.log(`  Roster B (${teamBName}):`, rosterB.map(p => `${p.nickname_raw} (${p.position})`));
+    console.log(`  Match count -> Left on A: ${leftMatchesA}, Left on B: ${leftMatchesB} | Right on A: ${rightMatchesA}, Right on B: ${rightMatchesB}`);
 
     let isSidesSwapped = false;
     const normalScore = leftMatchesA + rightMatchesB;
