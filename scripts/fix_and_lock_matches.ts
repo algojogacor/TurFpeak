@@ -116,14 +116,14 @@ async function main() {
       console.log(`  [DELEGATES LOOKUP]:`, allDels.rows);
 
       const allFixtures = await db.execute(`
-        SELECT f.id, f.round_number, f.stage, g.group_code, t1.team_name, t2.team_name, f.status
+        SELECT f.id, f.round_code, f.stage, g.group_code, t1.team_name, t2.team_name, f.status
         FROM fixtures f
         JOIN teams t1 ON f.team_a_id = t1.id
         JOIN teams t2 ON f.team_b_id = t2.id
         LEFT JOIN groups g ON f.group_id = g.id
         WHERE t1.team_name LIKE '%Helix%' OR t2.team_name LIKE '%Helix%'
            OR t1.team_name LIKE '%7Sins%' OR t2.team_name LIKE '%7Sins%'
-        ORDER BY f.round_number ASC
+        ORDER BY f.round_code ASC
       `);
       console.log(`  [FIXTURES HELIX & 7SINS]:`, allFixtures.rows);
 
