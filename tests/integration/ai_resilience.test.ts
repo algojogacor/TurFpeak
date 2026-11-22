@@ -21,6 +21,7 @@ import { createClient, type Client } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
 import { runMigrations } from '../../src/db/migrate.js';
 import { createApp } from '../../src/index.js';
+import { createStubMediaClient } from '../helpers/stub_media_client.js';
 import { ProviderRouter, AllProvidersFailedError } from '../../src/ai/router.js';
 import { AIMalformedResponseError } from '../../src/ai/adapter.js';
 import {
@@ -314,6 +315,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [failingAdapter] }),
         quietWindowMs: 50,
         aiMaxRetries: 3,
@@ -377,6 +379,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [flakyAdapter] }),
         quietWindowMs: 50,
         aiMaxRetries: 3,
@@ -411,6 +414,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [failingAdapter] }),
         quietWindowMs: 50,
         aiMaxRetries: 2,
@@ -461,6 +465,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       const router = new ProviderRouter({ adapters: [failingAdapter] });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: router,
         quietWindowMs: 50,
         aiMaxRetries: 1,
@@ -582,6 +587,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [adapter] }),
         quietWindowMs: 50,
       });
@@ -634,6 +640,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [adapter] }),
         quietWindowMs: 50,
       });
@@ -669,6 +676,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [adapter] }),
         quietWindowMs: 50,
         aiMaxRetries: 3,
@@ -745,6 +753,7 @@ describe('AI Resilience: Retry Queue & Status Notification (v3)', () => {
       });
       const app = createApp({
         db,
+        mediaClient: createStubMediaClient(),
         providerRouter: new ProviderRouter({ adapters: [groq, gemini] }),
         quietWindowMs: 50,
       });

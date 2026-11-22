@@ -1261,3 +1261,52 @@ Sesi lanjutan hari yang sama setelah hotfix deploy PR #9. Tiga permintaan user (
 - pm2 `flashpeak-bot`: online, 0 unstable restarts. WA reconnect OK. Error log bersih (cuma sisa ENOENT pre-hotfix `aa45604` dari 05:35 UTC).
 - DB VM: 28 tabel utuh. Backup `local.sqlite.bak-2026-11-22-delegate-swap` tersimpan di VM untuk rollback.
 - Worklog ini di-append ke `worklog.md` repo dan ter-sync ke VM via `git pull` sesi berikutnya.
+
+---
+
+## Sesi 2026-11-22 (2): Audit ulang & fix B-1/B-2/B-3 — pipeline upload foto laporan match + stats kiper (branch `fix/upload-foto-audit-md1`)
+
+### Konteks & verifikasi VM
+Audit sebelumnya menemukan 3 CRITICAL + 3 HIGH di pipeline upload foto. Verifikasi langsung di VM (`forfh-korea-vm`, pm2: flashpeak-bot/flashpeak-media online): deploy = `master` HEAD `8d94a87` (post-merge PR #9) — jadi temuan B-1/B-2/B-3 **bukan regresi PR #9, memang belum pernah difix**. `.env` VM mem-set nama model identik dengan default kode. Laporan audit lama tidak dilampirkan; semua temuan diverifikasi ulang dari kode, bukan asumsi.
+
+### Validasi model vision via test call langsung (B-3) — 22 Nov 2026, dari VM dengan key produksi
+Setiap nama model divalidasi via curl langsung ke endpoint provider (JPEG uji 1287 byte + prompt satu kata):
+- `DEEPSEEK deepseek-flash` ✅ HTTP 200, gambar diproses (reasoning menyebut isi gambar)
+- `GROQ qwen/qwen3.8-27b` ✅ HTTP 200, jawaban benar (" red")
+- `GEMINI gemini-3-flash-preview` ✅ HTTP 200, IMAGE modality 1089 token
+- `NVIDIA nvidia/nemotron-3.5-super-vl-120b-a12b` ✅ HTTP 200, gambar diproses (282 token)
+- `COHERE c4ai-aya-vision-32b` ✅ HTTP 200, `image_tokens: 259` (422 awal = salah shape probe, bukan salah model; adapter `cohere.ts` sudah pakai shape object yang benar)
+- `MISTRAL pixtral-12b-2409` ❌ **RETIRED**: tidak ada di `GET /v1/models`; API diam-diam substitusi ke `ministral-14b-latest` (model TEKS) dan mengabaikan gambar (41 prompt token, tanpa image token) — HTTP 200 "sukses" palsu, mode kegagalan paling berbahaya (router mencatat SUCCESS, ekstraksi jadi sampah). Replacement `mistral-medium-latest` terkonfirmasi ADA di catalog; full vision call tertahan kuota (lihat temuan H-2).
+
+Kesimpulan B-3: klaim "model fiktif" dari audit lama **sudah stale untuk 5 dari 6 provider** (semua valid via direct call). Satu-satunya yang benar-benar rusak: Mistral.
+
+### Fix B-1 — download media tanpa batas (`src/cli/start.ts`)
+- Baru: `src/whatsapp/media-download.ts` — `downloadMediaWithLimits()`: timeout 20s default (`WA_MEDIA_DOWNLOAD_TIMEOUT_MS`), size cap 10MB default (`WA_MEDIA_MAX_BYTES`), pre-check `fileLength` sebelum download (aset oversize ditolak tanpa transfer byte), post-check buffer aktual, never-throws (`{buffer: null, skipReason}`).
+- `src/cli/start.ts` handler `messages.upsert` pakai wrapper; download gagal/timeout/oversize → pesan dilanjutkan text-only (session tetap jalan; batch tanpa aset → reply NO_MEDIA minta kirim ulang, path yang sudah ada).
+- Test: `tests/unit/media_download.test.ts` (7 test). **Bukti FAIL di master**: `Cannot find module .../media-download.js` — di master wrapper tidak ada dan await-nya tanpa batas sama sekali.
+
+### Fix B-2 — fallback MOCK_BASE64_DATA (`src/application/evidence-batch-processor.ts`)
+- Hapus kedua fallback `base64 = 'MOCK_BASE64_DATA'` (asset gagal re-download dari media service, dan kasus tanpa mediaClient). Asset yang gagal di-download di-**skip** (tidak pernah diklasifikasi).
+- Semua asset gagal → `completeDebounceBatch(INCOMPLETE)` + status `NO_MEDIA` + reply eksplisit: "Semua N foto bukti gagal diunduh ulang dari layanan media. Silakan kirim ulang screenshot skor akhir pertandingan."
+- Kegagalan parsial → proses lanjut dengan asset yang berhasil + warning `ℹ️ N foto bukti gagal diunduh ulang ... dan dilewati` masuk uncertainties summary (prefix ℹ️, bukan ⚠️, supaya tidak memicu invalidasi KO).
+- Test: `tests/integration/evidence_media_guards.test.ts` (3 test). **Bukti FAIL di master**: `expected 'AI_FAILED' to be 'NO_MEDIA'` + `"spy" to be called 1 times, but got 2 times` (master mengklasifikasi SEMUA asset dengan bytes mock). Test lama yang bergantung mock (`ai_resilience` 8 titik, `full_flow` 2 titik) diinject stub `tests/helpers/stub_media_client.ts` (downloadMedia → bytes deterministik) — intent test tetap, kini lewat jalur download yang sama dengan produksi.
+
+### Fix B-3 — default vision model Mistral
+- `src/ai/providers/mistral.ts` + `src/cli/start.ts`: default `pixtral-12b-2409` → `mistral-medium-latest` (validated via catalog; bukti substitusi senyap tercatat di PROVIDER_MATRIX.md §1.1). Provider TIDAK di-drop dari priority list vision maupun text (dipakai task text lain: PARSE_*, CHAT_OMAK_PEAK dll); 429/402 saat key sehat → circuit breaker failover normal.
+- `.env.example`: provider lengkap (Groq/Gemini/DeepSeek/NVIDIA/Cohere/Mistral/Ollama) dengan nama model tervalidasi + env guardrail B-1 + fix port media 4190→4189 (produksi & ecosystem.config.cjs pakai 4189).
+- `docs/PROVIDER_MATRIX.md`: §1.1 validation log + status Mistral + known-gap telemetri §6.
+- Test: `test/multi-provider-adapters.test.ts` +1. **Bukti FAIL di master**: `expected 'pixtral-12b-2409' to be 'mistral-medium-latest'`.
+- **VM `.env`**: backup `local.sqlite.bak-2026-11-22-audit-b123` + `.env.bak-2026-11-22-audit-b123`, lalu `MISTRAL_VISION_MODEL` di-update (diff = 1 baris). **TANPA pm2 restart** — proses berjalan masih env lama; env baru aktif saat deploy berikutnya (`pm2 restart --update-env`) setelah approval.
+
+### Temuan tambahan (REPORT-ONLY, butuh keputusan Arya — di luar scope fix mandiri task ini)
+- **H-1**: `onTelemetry` tidak pernah di-wire (`start.ts` membuat `ProviderRouter` tanpa callback) → tabel `provider_usage` KOSONG di produksi; klaim telemetri PROVIDER_MATRIX §6 tidak terpenuhi. Sudah didokumentasikan sebagai known-gap.
+- **H-2**: Pool 27 key Mistral sekarat: 3× `401 Invalid API Key`, 3× `402` (budget exhausted / payment failure), sisanya `429` (semua retry setelah cooldown tetap 429 — kuota, bukan burst). Mistral efektif dead-weight sampai key diperbarui; full vision call `mistral-medium-latest` belum bisa divalidasi sampai key pulih — perlu re-validasi post-deploy.
+- `gemini-2.0-flash` & `llama-3.2-11b-vision-preview` di `.env.example` lama = stale (tidak ada di catalog Groq/Gemini saat ini) — sudah diperbaiki di `.env.example` baru.
+
+### Regresi
+- tsc: 0 error. vitest: **318/318** (master 307 + 11 test baru). eslint: 0 error, 8 warning pre-existing (verifikasi via diff: tidak ada dari perubahan ini).
+
+### Deployment Status Akhir Sesi
+- Branch `fix/upload-foto-audit-md1` di-push; PR dibuka ke `master` (belum di-merge).
+- **BELUM deploy ke VM** — menunggu approval Arya (prinsip proyek). Prosedur saat approve: `git pull --ff-only && npm run build && pm2 restart flashpeak-bot --update-env && pm2 save`, lalu test manual `!ping` + 1 foto uji di grup internal, dan re-validasi `mistral-medium-latest` saat key pool pulih.
+- Rollback tersedia: `.env.bak-2026-11-22-audit-b123` + `local.sqlite.bak-2026-11-22-audit-b123` di VM.

@@ -113,9 +113,14 @@ export async function processClaimedBatch(
 
     let mainMatchBase64: string | null = null;
     const gkDetailAssets: Array<{ base64: string; mime_type: string; caption?: string }> = [];
+    const gkWarnings: string[] = [];
+    let downloadFailureCount = 0;
 
     for (const asset of batch.mediaAssets) {
-      let base64 = '';
+      // B-2: a media asset that cannot be re-downloaded is SKIPPED. Placeholder
+      // bytes (the old MOCK_BASE64_DATA fallback) must never be fed to the
+      // vision pipeline — the participant is told below when this happens.
+      let base64: string;
       if (mediaClient) {
         try {
           const filename = path.basename(asset.storage_key);
@@ -124,10 +129,15 @@ export async function processClaimedBatch(
           base64 = downloaded.buffer.toString('base64');
         } catch (dlErr) {
           console.error(`[AI] Failed to download media asset ${asset.id}:`, dlErr);
-          base64 = 'MOCK_BASE64_DATA';
+          downloadFailureCount++;
+          continue;
         }
       } else {
-        base64 = 'MOCK_BASE64_DATA';
+        // No media client configured: the stored bytes cannot be retrieved, so
+        // this asset is unusable for AI processing. Production always wires a
+        // media client (start.ts aborts without the media secret).
+        downloadFailureCount++;
+        continue;
       }
 
       const classification = await classifier.classify({
@@ -159,6 +169,34 @@ export async function processClaimedBatch(
       }
     }
 
+    // B-2: when EVERY asset failed to re-download, no AI call happened at all.
+    // Complete the session as INCOMPLETE and ask the participant to resend —
+    // never fall through with placeholder bytes.
+    if (downloadFailureCount > 0 && downloadFailureCount === batch.mediaAssets.length) {
+      await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
+      return {
+        sessionId,
+        fixtureId,
+        targetChatId,
+        status: 'NO_MEDIA',
+        whatsappSummary: formatUnreadableEvidenceMessage({
+          sessionId,
+          reason:
+            `Semua ${downloadFailureCount} foto bukti gagal diunduh ulang dari layanan media. ` +
+            'Silakan kirim ulang screenshot skor akhir pertandingan.',
+        }),
+        error: `All ${downloadFailureCount} media assets failed to re-download from the media service`,
+      };
+    }
+
+    // B-2 (partial failure): proceed with the assets that did download, but
+    // surface the skipped ones so the summary never claims they were read.
+    if (downloadFailureCount > 0) {
+      gkWarnings.push(
+        `ℹ️ ${downloadFailureCount} foto bukti gagal diunduh ulang dari layanan media dan dilewati.`
+      );
+    }
+
     if (!mainMatchBase64) {
       await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
       return {
@@ -170,7 +208,10 @@ export async function processClaimedBatch(
           sessionId,
           reason:
             'Screenshot skor akhir pertandingan (main match summary) tidak terdeteksi di laporan ini. ' +
-            'Pastikan kamu mengirim screenshot halaman skor akhir, bukan hanya halaman detail pemain.',
+            'Pastikan kamu mengirim screenshot halaman skor akhir, bukan hanya halaman detail pemain.' +
+            (downloadFailureCount > 0
+              ? ` (${downloadFailureCount} foto juga gagal diunduh ulang dari layanan media.)`
+              : ''),
         }),
         error: 'Main match summary screenshot missing',
       };
@@ -308,8 +349,6 @@ export async function processClaimedBatch(
         expectedGkCount = teamAScore === teamBScore ? 0 : 1;
       }
     }
-
-    const gkWarnings: string[] = [];
 
     // Check GK screenshot quota completeness
     let isGkCountValid = true;

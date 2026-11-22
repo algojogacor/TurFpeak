@@ -75,7 +75,16 @@ export class MistralAdapter implements ProviderAdapter {
     }
     this.apiKeys = rawKeys.filter(Boolean);
 
-    this.visionModel = config.visionModel || process.env.MISTRAL_VISION_MODEL || 'pixtral-12b-2409';
+    // B-3: 'pixtral-12b-2409' is retired — absent from Mistral's live /v1/models
+    // catalog, so calls are silently served by a DIFFERENT model than the one
+    // configured (config drift: echoed model was ministral-14b-latest while the
+    // config said pixtral). Validated by direct test calls 2026-11-22:
+    // ministral-14b-latest processes real images (512px JPEG -> prompt_tokens 391
+    // with correct image description) and is served on the current free-tier key
+    // pool; mistral-small/medium/magistral all return persistent 429 on that pool.
+    // Default to the largest VALIDATED vision model. Upgrade path once paid keys
+    // exist: mistral-medium-latest (in catalog, but never served on free tier).
+    this.visionModel = config.visionModel || process.env.MISTRAL_VISION_MODEL || 'ministral-14b-latest';
     this.textModel = config.textModel || process.env.MISTRAL_TEXT_MODEL || 'codestral-latest';
     this.model = config.model || process.env.MISTRAL_MODEL || this.textModel;
     this.endpoint = config.endpoint || process.env.MISTRAL_ENDPOINT || 'https://api.mistral.ai/v1/chat/completions';
