@@ -1,5 +1,40 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Implementasi Transactional Outbox Pattern & CLI Announcement Dispatcher
+
+### Konteks Sesi & Permintaan User
+1. **Permintaan Pengiriman Pengumuman via Nomor Bot Omak Peak**:
+   - User meminta agar pengumuman pembaruan fitur kuis (`!quiz`), leaderboard kuis (`!topquiz`), dan update CN pemain dapat disiarkan langsung melalui akun WhatsApp bot Omak Peak ke grup turnamen.
+2. **Kebutuhan Teknis & Batasan Arsitektur**:
+   - Bot Baileys berjalan di background VM (`flashpeak-bot` PID 3307309). Menjalankan proses Baileys kedua pada kredensial `auth_state` yang sama berisiko memicu konflik sesi / disconnect (`Bad MAC` / stream conflict).
+   - Solusi arsitektural yang aman dan standar industri adalah **Transactional Outbox Pattern**:
+     - Tabel `outbox_messages` di database.
+     - Bot yang sedang aktif melakukan polling pesan pending secara reguler dan mengirimkannya menggunakan socket resminya.
+     - Script CLI `src/cli/announce.ts` memudahkan penambahan pesan broadcast ke outbox secara instan.
+
+### Perubahan Kode & Data
+1. `migrations/006_outbox_messages.sql`:
+   - Membuat tabel `outbox_messages`:
+     - Kolom: `id`, `chat_id`, `message_text`, `status` (`PENDING`, `SENT`, `FAILED`), `error`, `created_at`, `sent_at`.
+     - Index: `idx_outbox_messages_status` pada `(status, created_at)`.
+2. `src/index.ts`:
+   - Menambahkan method `processOutboxMessages()` pada `FlashPeakApp` yang mengambil pesan `PENDING` dan mengirimkannya via `this.sender.sendText(chatId, text)`.
+   - Mengintegrasikan pemanggilan `processOutboxMessages()` ke dalam loop `this.pollTimer`.
+3. `src/cli/announce.ts`:
+   - Script CLI untuk mengantrekan pengumuman ke tabel `outbox_messages` dengan target default ke `WA_CENTRAL_GROUP_JID`.
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `npx tsc --noEmit` lolos 0 error.
+   - `npx vitest run tests/migration.test.ts` lolos.
+   - `npx vitest run` full suite lolos 333/333 tests.
+2. **Server VM (`forfh`)**:
+   - Push commit `fceadc0`, git pull di server VM.
+   - Migrasi 006 berhasil diterapkan (`Applied: 006_outbox_messages.sql`).
+   - `npm run build` sukses di VM.
+   - PM2 restart `flashpeak-bot` (PID 3307309) berhasil dan langsung terhubung kembali ke WhatsApp.
+
+
 ## [2026-11-23] Sesi: Kuis Interaktif Real-Time 15 Detik, Feedback Salah, Timeout Closure, Leaderboard Kuis Komunitas & Injeksi Omak Peak
 
 ### Konteks Sesi & Permintaan User
