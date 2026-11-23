@@ -319,10 +319,51 @@ const RULES_SUMMARY = `Aturan inti Gojiha Tournament (Flash Peak):
 - Group Stage: round-robin 1 game per fixture. Win=3pts, Draw=1pt, Loss=0pts. Top 2 per group lolos KO.
 - Knockout: BO3 (first to 2 wins) sampai final; Grand Final BO5 (first to 3 wins). Tied KO game di-replay, skor replay masuk ke series score.
 - Pelaporan Skor: Tim pemenang cukup kirim 1 screenshot skor akhir (scoreboard utama). Kewajiban kartu statistik kiper DITANGGUHKAN sementara demi kemudahan pelaporan.
-- Room host: tim sisi kiri default (rekomendasi); kalau nggak bisa host dan lawan mau, match jalan; kalau lawan nolak, lawan kena forfeit.
+- Room host: tim sisi kiri default (rekomendasi / host_team_name); kalau nggak bisa host dan lawan mau, match jalan; kalau lawan nolak, lawan kena forfeit.
 - Double room-card unavailable: Group Stage = double walkover (0 pts each, no stats); Knockout = double loss (kedua tim kalah, pasangan ronde berikutnya bye).
-- Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff kena aturan di atas (D-031 grup / D-032 KO).
+- Sistem Matchday & Waktu Tanding:
+  • Seluruh pertandingan grup telah dijadwalkan per ronde (Ronde 1, Ronde 2, Ronde 3) sejak fase undian (!draw / !schedule).
+  • Tiap ronde/matchday berdurasi 24 jam dengan batas cutoff pukul 19:59 WIB.
+  • Jam kickoff spesifik TIDAK ditentukan kaku oleh panitia, melainkan bebas disepakati bersama oleh delegasi kedua tim (fleksibel) selama diselesaikan sebelum batas cutoff 19:59 WIB.
+- Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff otomatis dinyatakan Double Walkover (D-031 babak grup, 0 poin untuk kedua tim) atau Kalah Ganda (D-032 babak KO).
 - Best Goalkeeper Award: DITANGGUHKAN sementara untuk season ini atas keputusan panitia. Penghargaan aktif: Golden Boot, Top Assist, Best Defender.`;
+
+function formatRoundLabel(roundCode: string | null | undefined): string {
+  if (!roundCode) return '-';
+  if (/^ROUND_(\d+)$/i.test(roundCode)) {
+    return roundCode.replace(/^ROUND_(\d+)$/i, 'Ronde $1');
+  }
+  return roundCode.replace(/_/g, ' ');
+}
+
+function getWibInfo(): { wibNow: string; cutoffTime: string; timeRemaining: string } {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(now);
+  const p: Record<string, string> = {};
+  for (const part of parts) p[part.type] = part.value;
+  const hours = parseInt(p.hour, 10);
+  const minutes = parseInt(p.minute, 10);
+  const currentTotal = hours * 60 + minutes;
+  const cutoffTotal = 19 * 60 + 59;
+  let diff = cutoffTotal - currentTotal;
+  if (diff < 0) diff += 24 * 60;
+  const hoursLeft = Math.floor(diff / 60);
+  const minsLeft = diff % 60;
+  return {
+    wibNow: `${p.hour}:${p.minute} WIB (${p.year}-${p.month}-${p.day})`,
+    cutoffTime: '19:59 WIB',
+    timeRemaining: `${hoursLeft} jam ${minsLeft} menit`,
+  };
+}
 
 async function fetchQuizLeaderboard(db: Client): Promise<OmakPeakContext['quiz_leaderboard']> {
   try {
@@ -380,14 +421,48 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     config = {};
   }
 
+  // Active round detection (earliest unfinished round, same progression as MatchdayService)
+  let currentRoundCode: string | null = null;
+  try {
+    const unfinRes = await db.execute({
+      sql: `SELECT round_code
+            FROM fixtures
+            WHERE tournament_id = ? AND round_code IS NOT NULL
+              AND stage IN ('GROUP', 'KNOCKOUT')
+              AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+            GROUP BY round_code
+            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END,
+              CASE round_code
+                WHEN 'ROUND_OF_32' THEN 0
+                WHEN 'ROUND_OF_16' THEN 1
+                WHEN 'QUARTER_FINAL' THEN 2
+                WHEN 'SEMI_FINAL' THEN 3
+                WHEN 'FINAL' THEN 4
+                ELSE 5
+              END ASC,
+              MIN(created_at) ASC
+            LIMIT 1`,
+      args: [tournamentId],
+    });
+    if (unfinRes.rows.length > 0) {
+      currentRoundCode = String(unfinRes.rows[0].round_code ?? unfinRes.rows[0][0]);
+    }
+  } catch {
+    currentRoundCode = null;
+  }
+
+  const { wibNow, cutoffTime, timeRemaining } = getWibInfo();
+
   // Fixtures: all fixtures with scores if completed/locked
   const fxRes = await db.execute({
     sql: `SELECT f.id, f.stage, f.round_code, f.scheduled_at, f.status,
                  ta.team_name AS team_a_name, tb.team_name AS team_b_name,
+                 tl.team_name AS host_name,
                  g.group_code, gm.team_a_score, gm.team_b_score, gm.is_walkover
           FROM fixtures f
           LEFT JOIN teams ta ON ta.id = f.team_a_id
           LEFT JOIN teams tb ON tb.id = f.team_b_id
+          LEFT JOIN teams tl ON tl.id = f.left_side_team_id
           LEFT JOIN groups g ON g.id = f.group_id
           LEFT JOIN games gm ON gm.fixture_id = f.id
           WHERE f.tournament_id = ?
@@ -397,6 +472,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
   const today_fixtures = fxRes.rows.map((r) => {
     const row = r as unknown as Record<string, unknown>;
     const status = String(row.status);
+    const roundCode = row.round_code ? String(row.round_code) : null;
     let score: string | null = null;
     if (status !== 'SCHEDULED' && row.team_a_score !== null && row.team_b_score !== null) {
       score = `${row.team_a_score} - ${row.team_b_score}${row.is_walkover ? ' (WO)' : ''}`;
@@ -405,9 +481,12 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
       fixture_id: String(row.id),
       stage: String(row.stage),
       group_code: row.group_code ? String(row.group_code) : null,
-      round_code: row.round_code ? String(row.round_code) : null,
+      round_code: roundCode,
+      round_label: formatRoundLabel(roundCode),
       team_a_name: String(row.team_a_name),
       team_b_name: String(row.team_b_name),
+      host_team_name: String(row.host_name || row.team_a_name),
+      is_current_round: Boolean(currentRoundCode && roundCode === currentRoundCode),
       scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
       status,
       score,
@@ -639,6 +718,12 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     tournament: {
       name: tournamentName,
       status: tournamentStatus,
+      current_round_code: currentRoundCode,
+      current_round_label: formatRoundLabel(currentRoundCode),
+      wib_now: wibNow,
+      cutoff_time: cutoffTime,
+      time_remaining_to_cutoff: timeRemaining,
+      matchday_policy: 'Sistem matchday harian 24 jam dengan batas cutoff pukul 19:59 WIB. Setiap ronde berlangsung hingga cutoff 19:59 WIB. Waktu tanding ditentukan atas kesepakatan delegasi kedua tim sebelum batas cutoff 19:59 WIB.',
       kickoff_time: config.kickoff_time,
       confirmation_deadline: config.confirmation_deadline,
       grace_period_minutes: config.grace_period_minutes,

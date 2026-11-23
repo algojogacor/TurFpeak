@@ -1213,6 +1213,39 @@ describe('OmakPeak context LID flag (audit polish #7)', () => {
     expect(system_prompt).toContain('SingaKeeper');
     expect(system_prompt).toContain('SingaSub');
   });
+
+  it('populates tournament schedule details (current_round, wib_now, host_team_name) and includes matchday instructions in prompt', async () => {
+    const now = new Date().toISOString();
+    // Mark MD1 completed so ROUND_2 becomes the active unfinished round
+    await db.execute({
+      sql: `UPDATE fixtures SET status = 'COMPLETED' WHERE id = 'fix-1'`,
+    });
+    await db.execute({
+      sql: `INSERT INTO fixtures (id, tournament_id, stage, round_code, team_a_id, team_b_id, left_side_team_id, status, created_at, updated_at)
+            VALUES ('fix-sched-1', 'tourn-1', 'GROUP', 'ROUND_2', 'team-a', 'team-b', 'team-a', 'SCHEDULED', ?, ?)`,
+      args: [now, now],
+    });
+
+    const ctx = await buildOmakPeakContext(db);
+    expect(ctx.tournament?.current_round_code).toBe('ROUND_2');
+    expect(ctx.tournament?.current_round_label).toBe('Ronde 2');
+    expect(ctx.tournament?.wib_now).toContain('WIB');
+    expect(ctx.tournament?.cutoff_time).toBe('19:59 WIB');
+    expect(ctx.tournament?.time_remaining_to_cutoff).toBeDefined();
+
+    const fSched = ctx.today_fixtures.find((f) => f.fixture_id === 'fix-sched-1');
+    expect(fSched).toBeDefined();
+    expect(fSched?.round_code).toBe('ROUND_2');
+    expect(fSched?.round_label).toBe('Ronde 2');
+    expect(fSched?.host_team_name).toBe('Singa FC');
+    expect(fSched?.is_current_round).toBe(true);
+
+    const { system_prompt } = buildOmakPeakPrompt(ctx, 'nnti malam singa fc lawan siapa');
+    expect(system_prompt).toContain('KETEPATAN WAKTU & JADWAL (MATCHDAY & FIXTURES)');
+    expect(system_prompt).toContain('19:59 WIB');
+    expect(system_prompt).toContain('JANGAN PERNAH bilang "jadwal belum dirilis" jika pertandingannya sudah tercatat di "today_fixtures"');
+    expect(system_prompt).not.toContain('semua fixture scheduled_at null');
+  });
 });
 
 // =============================================================================

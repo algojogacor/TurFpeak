@@ -13,6 +13,12 @@ export interface OmakPeakContext {
   tournament?: {
     name: string;
     status: string;
+    current_round_code?: string | null;
+    current_round_label?: string | null;
+    wib_now?: string;
+    cutoff_time?: string;
+    time_remaining_to_cutoff?: string;
+    matchday_policy?: string;
     kickoff_time?: string;
     confirmation_deadline?: string;
     grace_period_minutes?: number;
@@ -22,17 +28,21 @@ export interface OmakPeakContext {
     points_loss?: number;
   };
   /**
-   * Fixtures scheduled for "today" (Asia/Jakarta) — bounded to a reasonable
-   * count to keep prompt size manageable. Includes stage/group/round and status
-   * so Omak Peak can answer "siapa lawan tim X hari ini" / "kapan main" / etc.
+   * Fixtures scheduled across tournament rounds — bounded to a reasonable
+   * count to keep prompt size manageable. Includes stage/group/round, host team,
+   * active round indicator, and status so Omak Peak can answer "siapa lawan tim X",
+   * "kapan main", "jadwal ronde 2", etc. accurately without technical jargon.
    */
   today_fixtures: Array<{
     fixture_id: string;
     stage: string;
     group_code: string | null;
     round_code: string | null;
+    round_label?: string | null;
     team_a_name: string;
     team_b_name: string;
+    host_team_name?: string;
+    is_current_round?: boolean;
     scheduled_at: string | null;
     status: string;
     score?: string | null;
