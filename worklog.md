@@ -1,5 +1,39 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Perluasan Database Trivia & Quiz Flash Peak (Mekanik Tempur & Easter Egg Oscar)
+
+### Konteks Sesi & Permintaan User
+1. **Ekspansi Database !trivia & !quiz**:
+   - Memasukkan data pembongkaran game client Flash Peak (mekanik combat, formula benturan bahu, stamina/energi, debuff double-teaming, dimensi pitch, skill karakter mendalam, dsb.).
+2. **Easter Egg Karakter Tersembunyi: OSCAR (ID 1011)**:
+   - Menambahkan karakter Striker rahasia Oscar (奥斯卡) yang belum dirilis resmi di server publik sebagai Easter Egg di database trivia dan kuis.
+
+### Perubahan Kode & Data
+1. `src/data/flashpeak-trivia.json`:
+   - Menambahkan 15 fakta baru (total 37 fakta) mencakup:
+     - Easter Egg: Karakter tersembunyi Oscar (ST, ID 1011, Power 78, Two Point Sprint, Ultimate Savage Dash).
+     - Formula Shoulder Barge & Catastrophic Knockdown (Delta Power > 25, 80% knockdown, 100% bola lepas).
+     - Debuff Double-Teaming (Overlap 2 bek = sprint drop ke 90% + benturan bahu tiap 0.5s).
+     - Dimensi pitch resmi (66m x 103m x 20m) & aturan Final Play (serangan terakhir).
+     - Skill detail: Andrew Super Tackle 18m, Ford Super Block 4s + 12% energy, Kelly Wall Dash 15m, Tatsuya Dash gratis (0 stamina/energi), Homer Full Vision (ulti termurah 280 energy), Steffie Doodle Storm (dual slide tim), Moco Blind Cam 2s, Rafael Super Armor Fake Shoot, Orion Aerial Protection, Kiper anti-stall (0.3s backpass).
+   - Menambahkan 12 kuis baru (total 22 soal kuis) dengan pertanyaan dan jawaban terverifikasi.
+2. `tests/unit/ai_native.test.ts`:
+   - Menambahkan unit test `includes Oscar easter egg and unpacked gameplay mechanics in trivia and quiz`.
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `node -e` validasi sintaks JSON: 37 fakta, 22 kuis, valid 100%.
+   - `npx vitest run tests/unit/ai_native.test.ts` lolos 55/55 tests.
+   - `npx tsc --noEmit` lolos 0 error.
+2. **Server VM (`forfh`)**:
+   - Commit `1180b11` dipull, `npm run build` sukses menyalin `flashpeak-trivia.json` ke `dist/data/`, dan `flashpeak-bot` di-restart (PID 3302858, status online).
+   - Pengujian live di VM:
+     - `svc.randomFact()` berhasil mengambil fakta baru.
+     - `svc.randomQuiz()` berhasil mengambil kuis baru.
+     - Trivia dan kuis Easter Egg Oscar (`fp-easteregg-oscar`, `fp-quiz-oscar-hidden`) berhasil diverifikasi aktif dan tampil sempurna.
+
+---
+
 ## [2026-11-23] Sesi: Perubahan Nickname Resmi Peserta (Change Name / CN) — 7Sins Venom
 
 ### Konteks Sesi & Instruksi User
