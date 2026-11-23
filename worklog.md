@@ -1,5 +1,33 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Penyesuaian Prioritas Provider AI Berdasarkan Biaya (Cost-Aware Routing)
+
+### Konteks Sesi & Instruksi User
+1. **Pemberhentian Mistral pada Vision**:
+   - User menginstruksikan agar Vision tidak menggunakan Mistral dan dikembalikan ke urutan teruji sebelumnya:
+     `['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'COHERE', 'OLLAMA_CLOUD']`.
+2. **Penyesuaian Prioritas Teks Berdasarkan Biaya / Saldo (Cost Hierarchy)**:
+   - User menjelaskan rasional pemilihan: Mistral murah untuk teks, Groq di posisi kedua, Nvidia NIM di posisi ketiga.
+   - DeepSeek ditaruh di urutan paling akhir karena menggunakan balance asli/berbayar, sehingga diproteksi sebagai cadangan darurat (emergency fallback) agar saldo tidak terkuras untuk chat biasa.
+
+### Perubahan Kode
+1. `src/ai/router.ts`:
+   - Vision order: `['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'COHERE', 'OLLAMA_CLOUD']` (Mistral dihilangkan dari vision).
+   - Text order: `['MISTRAL', 'GROQ', 'NVIDIA_NIM', 'COHERE', 'GEMINI', 'DEEPSEEK', 'OLLAMA_CLOUD']` (Mistral #1, Groq #2, Nvidia #3, Cohere #4, Gemini #5, DeepSeek #6/terakhir).
+2. `src/application/ai-native-commands.ts`:
+   - Memperbarui footer pada `!aistatus` agar mencerminkan hierarki biaya baru secara transparan:
+     `Prioritas teks: Mistral ➔ Groq ➔ Nvidia NIM ➔ Cohere ➔ Gemini ➔ DeepSeek (hemat saldo).`
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `npx tsc --noEmit` lolos 0 error.
+   - `npx vitest run tests/unit/ai.test.ts tests/unit/ai_native.test.ts` lolos 87/87 tests.
+2. **Server VM (`forfh`)**:
+   - Commit `48e4e28` di-push dan di-pull ke server VM.
+   - `npm run build` sukses.
+   - PM2 restart `flashpeak-bot` (PID 3311298) sukses online dan terhubung ke WhatsApp.
+
+
 ## [2026-11-23] Sesi: Telemetri Persisten LLM (provider_usage), Logging Real-Time PM2, Prioritas Mistral, & Command !aistatus
 
 ### Konteks Sesi & Permintaan User
