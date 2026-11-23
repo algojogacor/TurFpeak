@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
+import type { ProviderRouter } from '../ai/router.js';
 
 export interface QuizQuestion {
   id: string;
@@ -34,15 +35,19 @@ export interface QuizLeaderboardEntry {
 
 /**
  * Normalizes input text and checks whether it matches any of the quiz keywords.
- * Supports exact single-word tokens and multi-word phrases.
+ * Supports exact single-word tokens, numbers with decimals (e.g. 0.3 or 0,3),
+ * percentage values, and multi-word phrases.
  */
 export function isQuizAnswerMatch(input: string, keywords: string[]): boolean {
   if (!input || !keywords || keywords.length === 0) return false;
 
+  // 1. Normalize comma in decimal numbers (e.g. "0,3" -> "0.3") and preserve dots/percentages
   const cleanInput = input
     .toLowerCase()
     .normalize('NFKD')
-    .replace(/[^\w\s%]/g, ' ')
+    .replace(/(\d+),(\d+)/g, '$1.$2')
+    .replace(/[^\w\s.%]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 
   if (!cleanInput) return false;
@@ -50,16 +55,22 @@ export function isQuizAnswerMatch(input: string, keywords: string[]): boolean {
   const words = cleanInput.split(/\s+/).filter(Boolean);
 
   for (const kw of keywords) {
-    const cleanKw = kw.toLowerCase().trim();
+    const cleanKw = kw
+      .toLowerCase()
+      .trim()
+      .replace(/(\d+),(\d+)/g, '$1.$2')
+      .replace(/[^\w\s.%]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!cleanKw) continue;
 
-    // Multi-word phrase (e.g. "guided pulse pass", "free fire", "world class")
+    // Multi-word phrase (e.g. "guided pulse pass", "free fire", "world class", "0.3 detik")
     if (cleanKw.includes(' ')) {
       if (cleanInput.includes(cleanKw)) {
         return true;
       }
     } else {
-      // Single-word token (e.g. "oscar", "kelly", "steffie", "280", "18", "tatsuya")
+      // Single-word token (e.g. "oscar", "kelly", "steffie", "280", "18", "0.3", "5", "1")
       if (words.includes(cleanKw) || cleanInput === cleanKw) {
         return true;
       }
@@ -72,16 +83,19 @@ export function isQuizAnswerMatch(input: string, keywords: string[]): boolean {
 export interface QuizSessionManagerDeps {
   db: Client;
   durationMs?: number; // default 15_000 (15 seconds)
+  providerRouter?: ProviderRouter;
 }
 
 export class QuizSessionManager {
   private readonly db: Client;
   private readonly durationMs: number;
+  private readonly providerRouter?: ProviderRouter;
   private activeQuizzes = new Map<string, ActiveQuiz>();
 
   constructor(deps: QuizSessionManagerDeps) {
     this.db = deps.db;
     this.durationMs = deps.durationMs ?? 15_000;
+    this.providerRouter = deps.providerRouter;
   }
 
   /**
@@ -152,25 +166,121 @@ export class QuizSessionManager {
 
   /**
    * Evaluates an incoming message against the active quiz.
+   * Priority:
+   * 1. Fast deterministic keyword match (0ms latency, zero tokens, instant celebration).
+   * 2. Casual chatter / laughter filter to avoid spamming "Kurang tepat" on banter.
+   * 3. LLM semantic evaluation fallback if keywords did not match (judges whether the
+   *    answer is semantically correct, incorrect, or not an answer attempt).
    */
-  evaluateAnswer(
+  async evaluateAnswer(
     chatId: string,
     text: string
-  ): { isAnswerToQuiz: boolean; isCorrect: boolean; active?: ActiveQuiz; elapsedSeconds: number } {
+  ): Promise<{
+    isAnswerToQuiz: boolean;
+    isCorrect: boolean;
+    active?: ActiveQuiz;
+    elapsedSeconds: number;
+    judgedBy: 'KEYWORD' | 'LLM' | 'NONE';
+  }> {
     const key = chatId.toLowerCase();
     const active = this.activeQuizzes.get(key);
     if (!active) {
-      return { isAnswerToQuiz: false, isCorrect: false, elapsedSeconds: 0 };
+      return { isAnswerToQuiz: false, isCorrect: false, elapsedSeconds: 0, judgedBy: 'NONE' };
     }
 
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - active.startedAt) / 1000));
-    const isCorrect = isQuizAnswerMatch(text, active.quiz.keywords);
+
+    // Priority 1: Fast deterministic keyword match
+    if (isQuizAnswerMatch(text, active.quiz.keywords)) {
+      return {
+        isAnswerToQuiz: true,
+        isCorrect: true,
+        active,
+        elapsedSeconds,
+        judgedBy: 'KEYWORD',
+      };
+    }
+
+    const trimmed = text.trim();
+
+    // Filter out obvious casual chatter / laughter to prevent spamming "Kurang tepat"
+    const isObviousBanter =
+      /^(?:[wk]+|[ha]+|[he]+|[wko]+|anj+|jir|gilak|lah|woe|woy|anjir|bjir|ngakak|capek|pake laptop)\b/i.test(trimmed) ||
+      trimmed.length < 1;
+
+    if (isObviousBanter) {
+      return {
+        isAnswerToQuiz: false,
+        isCorrect: false,
+        active,
+        elapsedSeconds,
+        judgedBy: 'NONE',
+      };
+    }
+
+    // Priority 2: LLM semantic evaluation fallback if keyword did not match
+    if (this.providerRouter && trimmed.length >= 1) {
+      try {
+        const judgePrompt = `Kamu adalah juri penilai kuis trivia game Flash Peak.
+Pertanyaan: "${active.quiz.question}"
+Kunci Jawaban Resmi: "${active.quiz.answer}"
+Pesan Peserta: "${trimmed}"
+
+Tugas:
+1. Jika pesan peserta secara makna BENAR dan menjawab pertanyaan di atas (termasuk sinonim, kalimat santai, atau angka yang setara), jawab: BENAR
+2. Jika pesan peserta adalah tebakan/jawaban kuis tapi SALAH, jawab: SALAH
+3. Jika pesan peserta sama sekali BUKAN tebakan kuis (misal sekadar obrolan santai, tawa, atau komentar tidak jelas), jawab: BUKAN_JAWABAN
+
+Jawab HANYA satu kata: BENAR, SALAH, atau BUKAN_JAWABAN.`;
+
+        const resp = await this.providerRouter.execute<string>({
+          task: 'CHAT_OMAK_PEAK',
+          system_prompt: 'Kamu adalah juri kuis presisi. Jawab HANYA satu kata: BENAR, SALAH, atau BUKAN_JAWABAN.',
+          prompt: judgePrompt,
+          temperature: 0.1,
+          timeout_ms: 3500,
+          correlation_id: `quiz-judge-${randomUUID().slice(0, 8)}`,
+        });
+
+        const rawReply = (resp.raw_text || '').trim().toUpperCase();
+        if (rawReply.includes('BENAR')) {
+          return {
+            isAnswerToQuiz: true,
+            isCorrect: true,
+            active,
+            elapsedSeconds,
+            judgedBy: 'LLM',
+          };
+        }
+        if (rawReply.includes('BUKAN_JAWABAN')) {
+          return {
+            isAnswerToQuiz: false,
+            isCorrect: false,
+            active,
+            elapsedSeconds,
+            judgedBy: 'LLM',
+          };
+        }
+        if (rawReply.includes('SALAH')) {
+          return {
+            isAnswerToQuiz: true,
+            isCorrect: false,
+            active,
+            elapsedSeconds,
+            judgedBy: 'LLM',
+          };
+        }
+      } catch {
+        // If LLM fails or times out, fallback to treating as normal attempt
+      }
+    }
 
     return {
       isAnswerToQuiz: true,
-      isCorrect,
+      isCorrect: false,
       active,
       elapsedSeconds,
+      judgedBy: 'NONE',
     };
   }
 

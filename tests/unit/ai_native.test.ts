@@ -1364,14 +1364,22 @@ describe('Interactive Quiz & Community Leaderboard', () => {
   });
 
   it('isQuizAnswerMatch correctly identifies matching keywords and phrases', () => {
-    const keywords = ['oscar', 'savage dash', '1011', 'striker'];
+    const keywords = ['oscar', 'savage dash', '1011', 'striker', '0.3', '0,3 detik', '1', '5'];
 
-    // Single-word matches
+    // Single-word and number matches
     expect(isQuizAnswerMatch('oscar', keywords)).toBe(true);
     expect(isQuizAnswerMatch('Oscar!', keywords)).toBe(true);
     expect(isQuizAnswerMatch('jawabannya oscar min', keywords)).toBe(true);
     expect(isQuizAnswerMatch('striker', keywords)).toBe(true);
     expect(isQuizAnswerMatch('karakter 1011', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('1', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('5', keywords)).toBe(true);
+
+    // Decimal numbers with dot and comma
+    expect(isQuizAnswerMatch('0.3', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('0,3', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('0.3 detik', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('0,3 detik', keywords)).toBe(true);
 
     // Multi-word phrase matches
     expect(isQuizAnswerMatch('savage dash', keywords)).toBe(true);
@@ -1409,14 +1417,19 @@ describe('Interactive Quiz & Community Leaderboard', () => {
     expect(dupRes.success).toBe(false);
 
     // Incorrect answer evaluation
-    const wrongEval = manager.evaluateAnswer(chatId, '12 meter');
+    const wrongEval = await manager.evaluateAnswer(chatId, '12 meter');
     expect(wrongEval.isAnswerToQuiz).toBe(true);
     expect(wrongEval.isCorrect).toBe(false);
 
+    // Casual chatter / laughter is ignored (not treated as wrong answer attempt)
+    const banterEval = await manager.evaluateAnswer(chatId, 'wkwkwk');
+    expect(banterEval.isAnswerToQuiz).toBe(false);
+
     // Correct answer evaluation
-    const correctEval = manager.evaluateAnswer(chatId, '18 meter');
+    const correctEval = await manager.evaluateAnswer(chatId, '18 meter');
     expect(correctEval.isAnswerToQuiz).toBe(true);
     expect(correctEval.isCorrect).toBe(true);
+    expect(correctEval.judgedBy).toBe('KEYWORD');
 
     // Cancel quiz on correct answer
     manager.cancelQuiz(chatId);
@@ -1463,5 +1476,56 @@ describe('Interactive Quiz & Community Leaderboard', () => {
     const { system_prompt } = buildOmakPeakPrompt(ctx, 'siapa raja kuis di grup ini');
     expect(system_prompt).toContain('quiz_leaderboard');
     expect(system_prompt).toContain('Habibi Top Quiz');
+  });
+
+  it('QuizSessionManager falls back to LLM semantic evaluation when keywords do not match', async () => {
+    let mockLlmResponse = 'BENAR';
+    const mockRouter = {
+      execute: async () => ({
+        raw_text: mockLlmResponse,
+        model: 'mock-model',
+        provider: 'MOCK',
+        latency_ms: 100,
+      }),
+    } as any;
+
+    const manager = new QuizSessionManager({ db, providerRouter: mockRouter, durationMs: 15_000 });
+    const chatId = 'group-llm@g.us';
+
+    const testQuestion: QuizQuestion = {
+      id: 'test-llm',
+      category: 'General',
+      question: 'Satu pemain mengontrol berapa karakter dalam satu pertandingan?',
+      answer: 'Satu karakter saja.',
+      keywords: ['1', 'satu'],
+    };
+
+    manager.startQuiz(chatId, testQuestion, async () => {});
+
+    // 1. Keyword match takes priority
+    const kwEval = await manager.evaluateAnswer(chatId, '1');
+    expect(kwEval.isCorrect).toBe(true);
+    expect(kwEval.judgedBy).toBe('KEYWORD');
+
+    // 2. Keyword does not match, LLM judges semantic answer as BENAR
+    mockLlmResponse = 'BENAR';
+    const llmEval = await manager.evaluateAnswer(chatId, 'hanya single individual player min');
+    expect(llmEval.isCorrect).toBe(true);
+    expect(llmEval.judgedBy).toBe('LLM');
+
+    // 3. Keyword does not match, LLM judges casual banter as BUKAN_JAWABAN
+    mockLlmResponse = 'BUKAN_JAWABAN';
+    const banterEval = await manager.evaluateAnswer(chatId, 'wah seru banget');
+    expect(banterEval.isAnswerToQuiz).toBe(false);
+    expect(banterEval.isCorrect).toBe(false);
+
+    // 4. Keyword does not match, LLM judges incorrect attempt as SALAH
+    mockLlmResponse = 'SALAH';
+    const wrongEval = await manager.evaluateAnswer(chatId, 'sebelas orang kayak fifa');
+    expect(wrongEval.isAnswerToQuiz).toBe(true);
+    expect(wrongEval.isCorrect).toBe(false);
+    expect(wrongEval.judgedBy).toBe('LLM');
+
+    manager.cancelQuiz(chatId);
   });
 });

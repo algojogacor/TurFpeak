@@ -613,7 +613,7 @@ export class FlashPeakApp {
       message.message_type === 'TEXT'
     ) {
       if (rawMsgText.length > 0 && (rawMsgText.length <= 60 || message.reply_to_key)) {
-        const evalRes = this.quizSessionManager.evaluateAnswer(message.chat_id, rawMsgText);
+        const evalRes = await this.quizSessionManager.evaluateAnswer(message.chat_id, rawMsgText);
         if (evalRes.isAnswerToQuiz) {
           const senderJid = message.sender_raw_address || message.sender_normalized_address;
           const pushName = message.push_name || (senderJid.split('@')[0]);

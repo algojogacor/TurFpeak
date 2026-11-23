@@ -64,7 +64,12 @@ export function registerAiNativeCommands(
   const engagement = new EngagementService({ providerRouter: deps.providerRouter });
   const trivia = new TriviaService({ providerRouter: deps.providerRouter });
   const quizSessionManager =
-    deps.quizSessionManager ?? new QuizSessionManager({ db: deps.db, durationMs: 15_000 });
+    deps.quizSessionManager ??
+    new QuizSessionManager({
+      db: deps.db,
+      durationMs: 15_000,
+      providerRouter: deps.providerRouter,
+    });
 
   // -------------------------------------------------------------------------
   // !ai  —  read-only chat with Omak Peak (any role, group + DM)
