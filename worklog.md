@@ -1,5 +1,27 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Polish Omak Peak Persona & Tone to Eliminate AI Spec-Sheet Dumping
+
+### Konteks Sesi
+- User mengamati respon Omak Peak di grup WhatsApp ketika ditanya `"!ai sebutkan karakter tergacor di game ini, dan taktik apa yang enak menurutmu"`. Respon bot terasa seperti "nge-dump" data teknis (membagi semua posisi ST, CM, CB, WF, memuntahkan angka spec sheet seperti Power 87, luncuran 18m, debuff lari 90%, dan 5 poin taktik kaku) alih-alih mengobrol santai seperti pemain pro di tongkrongan.
+- User menyetujui pemolesan instruksi persona di `src/ai/prompts/omak-peak.ts` agar Omak Peak berbicara luwes, memiliki opini tajam, menginternalisasi data alih-alih membacakan spesifikasi, dan menghindari format artikel ensiklopedia.
+
+### Perubahan Kode (Surgical)
+1. **`src/ai/prompts/omak-peak.ts`**:
+   - Memperbarui `OMAK_PEAK_SYSTEM_TEMPLATE` pada bagian `IDENTITAS & NADA (PRO-PLAYER TONGKRONGAN)`:
+     - Larangan eksplisit terhadap gaya artikel, kamus, wiki, atau buku manual game.
+     - Larangan membuat daftar inventaris seluruh posisi/karakter saat ditanya opini/rekomendasi; model diinstruksikan memilih 1–2 karakter jagoan yang paling menonjol dan menceritakan *feeling* serta alur tandingnya.
+     - Aturan *Internalisasi Data*: Data teknis (Power 87, 18m, kerucut 120°, debuff 90%) digunakan sebagai dasar logika di kepala, bukan dibacakan kaku; dibahasakan secara manusiawi (misal "Andrew badak banget, Kelly lari deket dia sekali ditabrak pasti mental").
+     - Format respon diprioritaskan menjadi 2–3 paragraf mengalir ramah WhatsApp tanpa bullet point panjang.
+   - Memperbarui prompt suffix: `Jawab sebagai Omak Peak (bahasa Indonesia santai ala tongkrongan pro-player WhatsApp, mengalir alami, jangan nge-dump data/list panjang):`.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run tests/unit/ai_native.test.ts`: 53/53 tests passed.
+- `npx vitest run tests/unit/formatters.test.ts`: 11/11 tests passed.
+
+---
+
 ## [2026-11-23] Sesi: 100% Exhaustive Flash Peak Game Data Extraction & Injection
 
 ### Konteks Sesi
