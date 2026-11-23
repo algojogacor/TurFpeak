@@ -287,8 +287,8 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
       expect(strikerA?.goalkeeper_saves).toBeNull();
     });
 
-    it('rejects lineup if active players count is not exactly 5 per side', async () => {
-      const lineupWith4 = createValidLineupA().slice(0, 4);
+    it('rejects lineup if active players count is less than 4 or more than 5 per side', async () => {
+      const lineupWith3 = createValidLineupA().slice(0, 3);
 
       const validation = await validateMatchReport(db, {
         fixture_id: fixtureId,
@@ -297,12 +297,31 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
         team_b_id: teamBId,
         team_a_score: 3,
         team_b_score: 1,
-        team_a_players: lineupWith4, // Only 4 players
+        team_a_players: lineupWith3, // Only 3 players
         team_b_players: createValidLineupB(),
       });
 
       expect(validation.isValid).toBe(false);
-      expect(validation.errors.some((e) => e.includes('must have exactly 5 players'))).toBe(true);
+      expect(validation.errors.some((e) => e.includes('must have 4 or 5 players'))).toBe(true);
+    });
+
+    it('accepts lineup with 4 outfield players per side (when goalkeeper is not tracked)', async () => {
+      const lineupA4 = createValidLineupA().filter((p) => p.nickname_raw !== 'AstraGK');
+      const lineupB4 = createValidLineupB().filter((p) => p.nickname_raw !== 'ChronosGK');
+
+      const validation = await validateMatchReport(db, {
+        fixture_id: fixtureId,
+        game_id: gameId,
+        team_a_id: teamAId,
+        team_b_id: teamBId,
+        team_a_score: 3,
+        team_b_score: 1,
+        team_a_players: lineupA4,
+        team_b_players: lineupB4,
+      });
+
+      expect(validation.isValid).toBe(true);
+      expect(validation.errors).toHaveLength(0);
     });
 
     it('rejects unregistered player in lineup (roster membership check)', async () => {

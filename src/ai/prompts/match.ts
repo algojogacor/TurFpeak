@@ -35,12 +35,14 @@ PRIORITY:
 1. Extract only information visible in the supplied image.
 2. Preserve every nickname exactly, including Unicode symbols, combining marks, punctuation, spaces, and clan tags. Do NOT strip, normalize, or alter raw nicknames.
 3. Distinguish team-side grouping (left vs right, or top vs bottom) from actual team identity. Group the sides as team_a (left/home side) and team_b (right/away side).
-4. Do not infer an invisible team name from nickname prefixes unless the trusted roster context explicitly supports the mapping.
-5. Never invent a missing or blurry number.
-6. Return null for unreadable or absent values.
-7. Keep raw text and visible stats in separate fields.
-8. Player ratings in Flash Peak are strictly on a decimal scale from 0.0 to 10.0 (e.g. 10.0, 7.3, 8.5). The decimal point next to the avatar is small and stylized. Always output rating as a decimal number between 0.0 and 10.0 (e.g. 10.0, never 100.0; 7.3, never 73.0).
-9. The backend performs all business-rule validation.
+4. In Flash Peak match summary screens, each team table displays exactly 4 outfield player rows (the goalkeeper is not displayed on the match summary scoreboard, and goalkeeper awards are suspended). Extract the 4 visible rows for each side in top-to-bottom order. Do NOT attempt to identify, invent, or substitute a goalkeeper.
+5. Do not confuse distinct teammates with similar prefixes or suffixes (e.g. "TZ・Ҡurøko✦" vs "TZ・Ҡurøna✦"). Transcribe each row's name character-by-character.
+6. Do not infer an invisible team name from nickname prefixes unless the trusted roster context explicitly supports the mapping.
+7. Never invent a missing or blurry number.
+8. Return null for unreadable or absent values.
+9. Keep raw text and visible stats in separate fields.
+10. Player ratings in Flash Peak are strictly on a decimal scale from 0.0 to 10.0 (e.g. 10.0, 7.3, 8.5). The decimal point next to the avatar is small and stylized. Always output rating as a decimal number between 0.0 and 10.0 (e.g. 10.0, never 100.0; 7.3, never 73.0).
+11. The backend performs all business-rule validation.
 
 OUTPUT FORMAT:
 Return only JSON conforming to:
@@ -65,7 +67,7 @@ Return only JSON conforming to:
   "uncertainties": ["list of observations"]
 }`,
   buildUserPrompt: (trustedContextJson?: string): string => {
-    let p = 'Extract all match summary statistics and player performance records from the attached screenshot.';
+    let p = 'Extract all match summary statistics and player performance records from the attached screenshot.\nNote: Flash Peak summary screens show exactly 4 outfield players per team. Extract the 4 visible rows per team. Do NOT add or substitute any goalkeeper.';
     if (trustedContextJson) {
       p += `\n\n<trusted_context>\n${trustedContextJson}\n</trusted_context>`;
     }

@@ -533,6 +533,9 @@ export async function processClaimedBatch(
       roster: Player[],
       opponentScore: number
     ) => {
+      // When GK is suspended by tournament rules, scoreboard's 4 outfield players are accepted as complete
+      // without injecting a phantom goalkeeper into the match report.
+      if (isGkSuspended && players.length >= 4) return players;
       if (players.length >= 5) return players;
       const gk = roster.find((p) => p.position === 'GOALKEEPER') ||
         roster.find((p) => !players.some((pl) => pl.nickname_raw === p.nickname_raw));

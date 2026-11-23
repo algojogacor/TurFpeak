@@ -381,15 +381,15 @@ export async function validateMatchReport(
   const isTeamBWinner = input.team_b_score > input.team_a_score;
   const isDraw = input.team_a_score === input.team_b_score;
 
-  // 3. Player Counts per Side (Exactly 5 active players per side in lineup)
-  if (input.team_a_players.length !== 5) {
+  // 3. Player Counts per Side (4 to 5 active players per side in lineup)
+  if (input.team_a_players.length < 4 || input.team_a_players.length > 5) {
     errors.push(
-      `Team A must have exactly 5 players in the lineup (1 GK, 4 outfield), got ${input.team_a_players.length}`
+      `Team A must have 4 or 5 players in the lineup, got ${input.team_a_players.length}`
     );
   }
-  if (input.team_b_players.length !== 5) {
+  if (input.team_b_players.length < 4 || input.team_b_players.length > 5) {
     errors.push(
-      `Team B must have exactly 5 players in the lineup (1 GK, 4 outfield), got ${input.team_b_players.length}`
+      `Team B must have 4 or 5 players in the lineup, got ${input.team_b_players.length}`
     );
   }
 
@@ -635,21 +635,17 @@ export async function validateMatchReport(
     });
   }
 
-  // 7. Check 1 GK + 4 Outfield composition (when all 5 players are registered)
-  if (input.team_a_players.length === 5 && seenPlayerIdsA.size === 5) {
-    if (teamAGkCount !== 1 || teamAOutfieldCount !== 4) {
-      errors.push(
-        `Team A lineup must contain exactly 1 GOALKEEPER and 4 OUTFIELD players (got ${teamAGkCount} GK, ${teamAOutfieldCount} outfield)`
-      );
-    }
+  // 7. Check composition: at most 1 GOALKEEPER per side
+  if (teamAGkCount > 1) {
+    errors.push(
+      `Team A lineup cannot contain more than 1 GOALKEEPER (got ${teamAGkCount})`
+    );
   }
 
-  if (input.team_b_players.length === 5 && seenPlayerIdsB.size === 5) {
-    if (teamBGkCount !== 1 || teamBOutfieldCount !== 4) {
-      errors.push(
-        `Team B lineup must contain exactly 1 GOALKEEPER and 4 OUTFIELD players (got ${teamBGkCount} GK, ${teamBOutfieldCount} outfield)`
-      );
-    }
+  if (teamBGkCount > 1) {
+    errors.push(
+      `Team B lineup cannot contain more than 1 GOALKEEPER (got ${teamBGkCount})`
+    );
   }
 
   // 8. Recompute & Validate Score Consistency (ARCHITECTURE.md §8)
