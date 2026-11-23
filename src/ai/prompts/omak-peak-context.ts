@@ -9,6 +9,8 @@
 
 import type { FlashPeakGameKnowledge } from './flashpeak-game-knowledge.js';
 
+export type OmakPeakIntent = 'TOURNAMENT' | 'GAME' | 'CHIT_CHAT' | 'HYBRID' | 'ALL';
+
 export interface OmakPeakContext {
   tournament?: {
     name: string;

@@ -28,8 +28,98 @@ import type { ProviderRouter } from '../ai/router.js';
 import { AllProvidersFailedError } from '../ai/router.js';
 import { AIError } from '../ai/adapter.js';
 import { buildOmakPeakPrompt } from '../ai/prompts/omak-peak.js';
-import type { OmakPeakContext } from '../ai/prompts/omak-peak-context.js';
+import type { OmakPeakContext, OmakPeakIntent } from '../ai/prompts/omak-peak-context.js';
 import { FLASH_PEAK_GAME_KNOWLEDGE } from '../ai/prompts/flashpeak-game-knowledge.js';
+
+export type { OmakPeakIntent };
+
+export interface BuildContextOptions {
+  intent?: OmakPeakIntent;
+  userMessage?: string;
+}
+
+/**
+ * Classifies a user query into an Omak Peak intent domain:
+ * - 'TOURNAMENT': Fixtures, schedules, scores, standings, stats, rosters, rules, awards, delegates
+ * - 'GAME': Character skills, builds, counters, Catastrophic Knockdown, gameplay tips, stamina
+ * - 'CHIT_CHAT': Greetings, persona self-inquiry, short casual banter (< 60 chars)
+ * - 'HYBRID': Multi-domain queries or cross-cutting questions
+ * - 'ALL': Full monolithic context (fallback / tests)
+ */
+export function classifyOmakPeakIntent(userMessage: string): OmakPeakIntent {
+  const text = (userMessage || '').toLowerCase().trim();
+  if (!text) return 'CHIT_CHAT';
+
+  const gameKeywords = [
+    'andrew', 'ford', 'homer', 'hassan', 'shuki', 'kuroko', 'kurona', 'kelly',
+    'charlie', 'yuki', 'raul', 'damon', 'brian', 'victor', 'bobby', 'karl', 'biel',
+    'skill', 'ultimate', 'ult', 'passive', 'pasif', 'build', 'taktik', 'meta',
+    'formasi', 'gameplay', 'knockdown', 'catastrophic', 'stamina', 'sliding',
+    'tekel', 'tackle', 'dribble', 'passing', 'heading', 'shooting', 'debuff',
+    'buff', 'counter', 'gacor', 'barge', 'shoulder barge', 'mekanik', 'kontrol',
+    'arcade', 'power shot', 'curve', 'intercept'
+  ];
+
+  const tournamentKeywords = [
+    'jadwal', 'kapan main', 'lawan', 'tanding', 'match', 'fixture', 'jam berapa',
+    'cutoff', '19:59', 'wib', 'host', 'room', 'room card', 'kartu room',
+    'klasemen', 'standing', 'skor', 'score', 'hasil', 'poin', 'point', 'menang',
+    'kalah', 'peringkat', 'grup', 'group', 'ronde', 'round', 'wo', 'walkover',
+    'forfeit', 'draw', 'seri', 'replay', 'top skor', 'top score', 'top scorer',
+    'top assist', 'defender', 'gol terbanyak', 'awards', 'penghargaan', 'golden boot',
+    'best defender', 'kiper penghargaan', 'roster', 'lineup', 'pemain', 'cadangan',
+    'starter', 'substitute', 'delegasi', 'kontak', 'nomor wa', 'panitia', 'arya',
+    'aturan', 'rules', 'quiz', 'kuis', 'raja kuis',
+    'kazekage', 'zodiac', 'apostles', 'yakigami', 'jestre', 'astra', 'lumina', 'nova',
+    'inferno', 'venom', '7sins', 'bluelock', 'avoid', 'prime', 'impact', 'elite 8',
+    'elite8', 'hokage', 'raikage', 'moonbreaker', 'helix'
+  ];
+
+  const chitChatKeywords = [
+    'halo', 'hai', 'hello', 'hey', 'hei', 'assalamualaikum', 'pagi', 'siang',
+    'sore', 'malam', 'siapa kamu', 'kamu siapa', 'omak peak itu apa', 'kenalan',
+    'makasih', 'terima kasih', 'thanks', 'thx', 'mantap', 'keren', 'wkwk',
+    'haha', 'hehe', 'canda', 'tes', 'test', 'ping', 'p'
+  ];
+
+  let hasGame = false;
+  for (const kw of gameKeywords) {
+    const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
+    if (regex.test(text)) {
+      hasGame = true;
+      break;
+    }
+  }
+
+  let hasTournament = false;
+  for (const kw of tournamentKeywords) {
+    const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
+    if (regex.test(text)) {
+      hasTournament = true;
+      break;
+    }
+  }
+
+  if (hasGame && hasTournament) {
+    return 'HYBRID';
+  }
+  if (hasGame) {
+    return 'GAME';
+  }
+  if (hasTournament) {
+    return 'TOURNAMENT';
+  }
+
+  if (text.length < 60) {
+    for (const kw of chitChatKeywords) {
+      if (text.includes(kw)) {
+        return 'CHIT_CHAT';
+      }
+    }
+  }
+
+  return 'HYBRID';
+}
 
 // =============================================================================
 // Output normalization — never post raw AI wrappers into the chat.
@@ -235,10 +325,11 @@ export class OmakPeakService {
     // Captured BEFORE building DB context so memory survives even if DB build
     // throws (we still want follow-ups to work when the DB hiccups).
     const recentTurns = this.memory.recent(chatId);
+    const intent = classifyOmakPeakIntent(trimmed);
 
     let context: OmakPeakContext;
     try {
-      context = await buildOmakPeakContext(this.deps.db);
+      context = await buildOmakPeakContext(this.deps.db, { intent, userMessage: trimmed });
     } catch {
       // Context build failure is non-fatal: proceed with an empty context so the
       // user still gets a response (the AI will hedge about tournament specifics).
@@ -250,7 +341,7 @@ export class OmakPeakService {
         quiz_leaderboard: [],
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
-        game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
+        game_knowledge: intent === 'TOURNAMENT' || intent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
       };
     }
     if (recentTurns.length > 0) {
@@ -383,13 +474,18 @@ async function fetchQuizLeaderboard(db: Client): Promise<OmakPeakContext['quiz_l
   }
 }
 
-export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext> {
+export async function buildOmakPeakContext(
+  db: Client,
+  options?: BuildContextOptions
+): Promise<OmakPeakContext> {
+  const intent = options?.intent ?? 'ALL';
+
   // Active tournament (any non-terminal status).
   const tRes = await db.execute({
     sql: "SELECT id, name, status, config_json FROM tournaments WHERE status NOT IN ('COMPLETED','ARCHIVED') ORDER BY created_at DESC LIMIT 1",
   });
   if (tRes.rows.length === 0) {
-    const quiz_leaderboard = await fetchQuizLeaderboard(db);
+    const quiz_leaderboard = intent === 'CHIT_CHAT' || intent === 'GAME' ? [] : await fetchQuizLeaderboard(db);
     return {
       today_fixtures: [],
       standings_by_group: [],
@@ -398,7 +494,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
       quiz_leaderboard,
       qna_entries: [],
       rules_summary: RULES_SUMMARY,
-      game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
+      game_knowledge: intent === 'TOURNAMENT' || intent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
     };
   }
   const tRow = tRes.rows[0] as unknown as Record<string, unknown>;
@@ -452,6 +548,59 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
   }
 
   const { wibNow, cutoffTime, timeRemaining } = getWibInfo();
+
+  const baseTournament = {
+    name: tournamentName,
+    status: tournamentStatus,
+    current_round_code: currentRoundCode,
+    current_round_label: formatRoundLabel(currentRoundCode),
+    wib_now: wibNow,
+    cutoff_time: cutoffTime,
+    time_remaining_to_cutoff: timeRemaining,
+    matchday_policy: 'Sistem matchday harian 24 jam dengan batas cutoff pukul 19:59 WIB. Setiap ronde berlangsung hingga cutoff 19:59 WIB. Waktu tanding ditentukan atas kesepakatan delegasi kedua tim sebelum batas cutoff 19:59 WIB.',
+    kickoff_time: config.kickoff_time,
+    confirmation_deadline: config.confirmation_deadline,
+    grace_period_minutes: config.grace_period_minutes,
+    report_window_minutes: config.report_window_minutes,
+    points_win: config.points_win,
+    points_draw: config.points_draw,
+    points_loss: config.points_loss,
+  };
+
+  // Fast-path 1: CHIT_CHAT needs zero tournament records and zero game knowledge
+  if (intent === 'CHIT_CHAT') {
+    return {
+      tournament: baseTournament,
+      today_fixtures: [],
+      standings_by_group: [],
+      top_scorers: [],
+      top_assists: [],
+      top_defenders: [],
+      teams_and_delegates: [],
+      team_rosters: [],
+      quiz_leaderboard: [],
+      qna_entries: [],
+      rules_summary: 'Turnamen Flash Peak (Gojiha Tournament Season 1): 4v4 arcade street football, matchday harian dengan batas cutoff 19:59 WIB.',
+    };
+  }
+
+  // Fast-path 2: GAME needs deep game knowledge and rules, but no tournament database records
+  if (intent === 'GAME') {
+    return {
+      tournament: baseTournament,
+      today_fixtures: [],
+      standings_by_group: [],
+      top_scorers: [],
+      top_assists: [],
+      top_defenders: [],
+      teams_and_delegates: [],
+      team_rosters: [],
+      quiz_leaderboard: [],
+      qna_entries: [],
+      rules_summary: RULES_SUMMARY,
+      game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
+    };
+  }
 
   // Fixtures: all fixtures with scores if completed/locked
   const fxRes = await db.execute({
@@ -715,23 +864,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
   const quiz_leaderboard = await fetchQuizLeaderboard(db);
 
   return {
-    tournament: {
-      name: tournamentName,
-      status: tournamentStatus,
-      current_round_code: currentRoundCode,
-      current_round_label: formatRoundLabel(currentRoundCode),
-      wib_now: wibNow,
-      cutoff_time: cutoffTime,
-      time_remaining_to_cutoff: timeRemaining,
-      matchday_policy: 'Sistem matchday harian 24 jam dengan batas cutoff pukul 19:59 WIB. Setiap ronde berlangsung hingga cutoff 19:59 WIB. Waktu tanding ditentukan atas kesepakatan delegasi kedua tim sebelum batas cutoff 19:59 WIB.',
-      kickoff_time: config.kickoff_time,
-      confirmation_deadline: config.confirmation_deadline,
-      grace_period_minutes: config.grace_period_minutes,
-      report_window_minutes: config.report_window_minutes,
-      points_win: config.points_win,
-      points_draw: config.points_draw,
-      points_loss: config.points_loss,
-    },
+    tournament: baseTournament,
     today_fixtures,
     standings_by_group,
     top_scorers,
@@ -747,6 +880,6 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     quiz_leaderboard,
     qna_entries,
     rules_summary: RULES_SUMMARY,
-    game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
+    game_knowledge: intent === 'TOURNAMENT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
   };
 }

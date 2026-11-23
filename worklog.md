@@ -1,5 +1,83 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Upgrade Model NVIDIA NIM (Nemotron 550B Ultra) & Modular Context Dispatcher (Just-In-Time Context Routing) untuk Omak Peak (!ai)
+
+### Konteks Sesi & Permintaan User
+1. **Pembaruan Model NVIDIA NIM**:
+   - User meminta model NVIDIA NIM diganti dan jangan memakai parameter kecil (sebelumnya `bolt-e4b` 4B yang kaku). Model harus diganti ke model parameter besar.
+2. **Arsitektur Modular Context Routing (Agentic Context Dispatcher)**:
+   - User mengusulkan agar konteks prompt AI dipecah modular sesuai domain pertanyaan:
+     - Jika tanya turnamen -> hanya load data turnamen.
+     - Jika tanya mekanik game -> hanya load data game knowledge.
+     - Jika tanya sapaan/umum/keduanya -> load secara efisien atau bertahap tanpa membebani token.
+   - User meminta riset best practice industri (Semantic Routing / Dynamic Context Assembly).
+
+### Riset & Arsitektur Solusi
+1. **NVIDIA NIM Model Upgrade**:
+   - Diuji katalog 32 model NVIDIA NIM via API `https://integrate.api.nvidia.com/v1/models`.
+   - Menguji kandidat model besar: `nvidia/nemotron-3-ultra-550b-a55b` (550 Miliar Parameter Ultra Model), `mistralai/mistral-large-4-1t-a52b`, dan model fast text.
+   - Hasil benchmark: `nvidia/nemotron-3-ultra-550b-a55b` merespons dalam ~4.5 - 5.8s dengan bahasa Indonesia gaul yang sangat natural, santai, cerdas, dan format rapi.
+   - Mengubah `NVIDIA_TEXT_MODEL=nvidia/nemotron-3-ultra-550b-a55b` pada `.env` lokal dan VM.
+2. **Context Routing (Just-In-Time Context Assembly)**:
+   - Riset arsitektur agen kontemporer (Semantic Routing / Context Dispatcher):
+     - Membuang prompt monolitik (sebelumnya 87.000 karakter / ~27.500 token) yang memicu HTTP 413 pada Groq dan quota limit pada Gemini.
+     - Mengimplementasikan `classifyOmakPeakIntent(userMessage)` (<1ms deterministik regex/keyword pattern) yang mengklasifikasikan query ke dalam 4 domain:
+       - `CHIT_CHAT`: sapaan, ucapan terima kasih, identitas bot -> hanya load persona dasar + memori chat (~120 token, 869ms response).
+       - `GAME`: skill, karakter, build, knockdown, counter -> hanya load `game_knowledge` tanpa database fixture/roster (~7.500 token).
+       - `TOURNAMENT`: jadwal, klasemen, roster, skor, top scorer, aturan, tim -> hanya load database turnamen tanpa 25k karakter mekanik game (~5.500 token, 829ms response).
+       - `HYBRID`: query silang domain -> memuat ringkasan gabungan terkurasi secara efisien.
+   - Menghilangkan pretty-print `null, 2` pada JSON stringify di `buildOmakPeakPrompt`, menghemat ~35% ukuran karakter.
+
+### Perubahan File Konkret
+- `.env`: Memperbarui `NVIDIA_TEXT_MODEL=nvidia/nemotron-3-ultra-550b-a55b` (dan disinkronkan ke `.env` VM).
+- `src/ai/prompts/omak-peak-context.ts`: Menambahkan export type `OmakPeakIntent = 'TOURNAMENT' | 'GAME' | 'CHIT_CHAT' | 'HYBRID' | 'ALL'`.
+- `src/ai/prompts/omak-peak.ts`: Mengganti `JSON.stringify(context, null, 2)` menjadi compact serialization `JSON.stringify(context)`.
+- `src/application/omak-peak.ts`:
+  - Menambahkan fungsi `classifyOmakPeakIntent(userMessage)`.
+  - Mengubah `buildOmakPeakContext(db, options?: BuildContextOptions)` agar melakukan context slicing secara dinamis sesuai intent.
+  - Memperbarui `OmakPeakService.handleAiCommand` untuk mengklasifikasi intent sebelum merakit konteks.
+- `tests/unit/ai_native.test.ts`: Menambahkan unit test intent classification dan dynamic context pruning; memperbarui assertion memory array.
+
+### Verifikasi Empiris
+1. **Unit Test Suite**:
+   - `npx vitest run tests/unit/ai_native.test.ts`: 65 passed (100%).
+   - `npm test`: seluruh 342 tests di 23 test files lulus tanpa kegagalan.
+2. **Project TypeScript Build**:
+   - `npm run build`: kompilasi TypeScript bersih tanpa error.
+3. **Live Dry-Run Benchmark**:
+   - Query `[CHIT_CHAT]` ("halo Omak Peak!"): respons sukses dalam **869ms** (Groq).
+   - Query `[GAME]` ("skill Homer itu apa aja?"): respons mendalam & akurat (Full Vision 280 Energy, Elastico 160 Stamina, Sustained Vision, Aerial Guidance).
+   - Query `[TOURNAMENT]` ("siapa lawan tim Kazekage besok?"): respons sukses dalam **829ms** (Groq) tanpa HTTP 413.
+
+---
+
+## [2026-11-23] Sesi: Investigasi Log AI (!ai / Omak Peak) & Multi-Provider Router Failover Behavior
+
+### Konteks Sesi & Permintaan User
+- User menanyakan: *"Btw untuk ai nya ini kok kadang beda sifat ya? beda beda kah yg jawab? coba cek log 10 menit terakhir"*.
+- Dilakukan investigasi mendalam terhadap log PM2 (`flashpeak-bot`), log `inbound_messages`, log `provider_usage`, dan kode AI Router pada VM.
+
+### Temuan Investigasi Log 10 Menit Terakhir (21:35 - 21:45 WIB)
+1. **Konfirmasi: Benar, yang Menjawab Berganti-Ganti Model (Failover)**:
+   - Sistem TMS menggunakan Multi-Provider AI Router dengan rantai prioritas task `CHAT_OMAK_PEAK`:
+     `GROQ (Qwen 3.8-27B)` ➔ `GEMINI (Gemini Flash)` ➔ `NVIDIA NIM (Nemotron 3.5 Bolt 4B)` ➔ `MISTRAL` ➔ `DEEPSEEK`.
+2. **Pemicu Failover**:
+   - Di chat grup WA, beberapa anggota mengirimkan perintah `!ai` beruntun dalam waktu sangat singkat.
+   - Konteks `CHAT_OMAK_PEAK` yang dikirim ke AI sangat besar (berisi seluruh 16 roster, jadwal lengkap, database mekanik game, dsb), berukuran **87.199 karakter (~27.500 token)**.
+   - **GROQ Gagal (HTTP 413)**: Batas rate limit free-tier Groq adalah 7.000 input tokens per minute (ITPM). Permintaan 27.485 token langsung ditolak oleh API Groq dengan status 413 (`Rate limit exceeded`). Circuit breaker Groq membuka (cooldown).
+   - **GEMINI Gagal (Quota Exceeded)**: Rute mengalihkan ke Gemini Flash, namun rentetan request dalam satu menit menyebabkan kuota free-tier RPM Gemini terlampaui (`QUOTA_EXCEEDED`).
+   - **NVIDIA NIM Mengambil Alih**: Rute otomatis failover ke NVIDIA NIM yang menggunakan model **`nvidia/nemotron-3.5-bolt-e4b`**.
+3. **Mengapa Sifat/Kepribadian Terasa Berbeda?**:
+   - `Qwen 3.8-27B` (Groq) dan `Gemini Flash` adalah model besar (27B+ parameter) yang sangat luwes berbahasa Indonesia tongkrongan dan pintar menyortir data.
+   - `Nemotron-3.5-bolt-e4b` (NVIDIA) adalah model kecil **4B parameter**. Saat diberi prompt 27.500 token, model 4B kewalahan memproses instruksi analitik kompleks (seperti menyortir top scorer), sehingga jawabannya menjadi pendek, kaku, dan tidak terurut rapi.
+   - Pergantian otomatis inilah yang dirasakan pengguna sebagai AI yang "gonta-ganti sifat / kepribadian".
+
+### Rekomendasi Solusi
+1. Memadatkan (minify/pruning) konteks JSON `CHAT_OMAK_PEAK` dari 87.000 karakter ke bawah 15.000 karakter (menghilangkan pretty-print `null, 2` dan menyaring `game_knowledge` jika pertanyaannya murni soal turnamen) agar muat dalam batas 7.000 ITPM Groq.
+2. Mengganti model fallback teks NVIDIA NIM dari `bolt-e4b` (4B) ke model yang lebih mumpuni.
+
+---
+
 ## [2026-11-23] Sesi: Relaksasi Aturan Kiper (Lineup 4 Outfield) & Pembaruan Langsung Data Pertandingan Kazekage vs Team Zodiac di Server
 
 ### Konteks Sesi & Permintaan User

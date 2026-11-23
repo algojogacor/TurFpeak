@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { runMigrations } from '../../src/db/migrate.js';
-import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, ConversationMemory, smartTruncate } from '../../src/application/omak-peak.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, classifyOmakPeakIntent, ConversationMemory, smartTruncate } from '../../src/application/omak-peak.js';
 import { buildOmakPeakPrompt } from '../../src/ai/prompts/omak-peak.js';
 import {
   AgentActionCatalog,
@@ -293,8 +293,8 @@ describe('OmakPeakService (D-037)', () => {
     expect(seen[1].system).toContain('siapa juara grup B');
     expect(seen[1].system).toContain('arya');
     // Sanity: the JSON array marker for populated memory only appears in turn 2.
-    expect(seen[1].system).toContain('"recent_ai_turns": [');
-    expect(seen[0].system).not.toContain('"recent_ai_turns": [');
+    expect(seen[1].system).toMatch(/"recent_ai_turns":\s*\[/);
+    expect(seen[0].system).not.toMatch(/"recent_ai_turns":\s*\[/);
   });
 
   it('!ai does NOT share memory across different group chats', async () => {
@@ -311,7 +311,63 @@ describe('OmakPeakService (D-037)', () => {
     // Group B's prompt must not leak group A's secret question (no populated
     // memory array, and the secret question text must be absent).
     expect(seen[1]).not.toContain('rahasia grup A');
-    expect(seen[1]).not.toContain('"recent_ai_turns": [');
+    expect(seen[1]).not.toMatch(/"recent_ai_turns":\s*\[/);
+  });
+
+  it('classifyOmakPeakIntent correctly identifies intent domains', () => {
+    // CHIT_CHAT
+    expect(classifyOmakPeakIntent('halo Omak Peak')).toBe('CHIT_CHAT');
+    expect(classifyOmakPeakIntent('pagi omak')).toBe('CHIT_CHAT');
+    expect(classifyOmakPeakIntent('siapa kamu?')).toBe('CHIT_CHAT');
+    expect(classifyOmakPeakIntent('makasih ya infonya')).toBe('CHIT_CHAT');
+    expect(classifyOmakPeakIntent('')).toBe('CHIT_CHAT');
+
+    // GAME
+    expect(classifyOmakPeakIntent('skill Homer itu apa aja ya?')).toBe('GAME');
+    expect(classifyOmakPeakIntent('cara counter Andrew gimana?')).toBe('GAME');
+    expect(classifyOmakPeakIntent('karakter apa yang paling gacor buat ST?')).toBe('GAME');
+    expect(classifyOmakPeakIntent('apa itu Catastrophic Knockdown?')).toBe('GAME');
+
+    // TOURNAMENT
+    expect(classifyOmakPeakIntent('siapa lawan tim Kazekage besok?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('jadwal ronde 2 kapan?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('klasemen grup B siapa yang lolos?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('roster pemain Astra Lumina siapa aja?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('siapa top skor turnamen?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('aturan walkover gimana?')).toBe('TOURNAMENT');
+
+    // HYBRID
+    expect(classifyOmakPeakIntent('apakah ada pemain Kazekage yang sering pakai Homer?')).toBe('HYBRID');
+    expect(classifyOmakPeakIntent('taktik Zodiac kalau lawan Kazekage gimana?')).toBe('HYBRID');
+  });
+
+  it('buildOmakPeakContext dynamically prunes context based on intent', async () => {
+    await seedTournamentFixture(db);
+
+    // 1. CHIT_CHAT: minimal context, no fixtures, no standings, no game knowledge
+    const chitChatCtx = await buildOmakPeakContext(db, { intent: 'CHIT_CHAT' });
+    expect(chitChatCtx.today_fixtures).toEqual([]);
+    expect(chitChatCtx.standings_by_group).toEqual([]);
+    expect(chitChatCtx.team_rosters).toEqual([]);
+    expect(chitChatCtx.game_knowledge).toBeUndefined();
+
+    // 2. GAME: carries game knowledge, no fixtures or standings
+    const gameCtx = await buildOmakPeakContext(db, { intent: 'GAME' });
+    expect(gameCtx.game_knowledge).toBeDefined();
+    expect(gameCtx.game_knowledge?.characters.length).toBeGreaterThan(0);
+    expect(gameCtx.today_fixtures).toEqual([]);
+    expect(gameCtx.standings_by_group).toEqual([]);
+
+    // 3. TOURNAMENT: carries fixtures and teams, no game knowledge
+    const tournCtx = await buildOmakPeakContext(db, { intent: 'TOURNAMENT' });
+    expect(tournCtx.today_fixtures.length).toBeGreaterThan(0);
+    expect(tournCtx.teams_and_delegates.length).toBeGreaterThan(0);
+    expect(tournCtx.game_knowledge).toBeUndefined();
+
+    // 4. ALL (default): carries everything for backward compatibility
+    const allCtx = await buildOmakPeakContext(db);
+    expect(allCtx.today_fixtures.length).toBeGreaterThan(0);
+    expect(allCtx.game_knowledge).toBeDefined();
   });
 });
 

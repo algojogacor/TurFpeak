@@ -109,7 +109,8 @@ export function buildOmakPeakPrompt(
   context: OmakPeakContext,
   userMessage: string
 ): { system_prompt: string; prompt: string } {
-  const contextJson = JSON.stringify(context, null, 2);
+  // Use compact JSON serialization to eliminate whitespace and newline overhead
+  const contextJson = JSON.stringify(context);
   const system_prompt = OMAK_PEAK_SYSTEM_TEMPLATE.replace(
     '{{TRUSTED_CONTEXT_JSON}}',
     contextJson
