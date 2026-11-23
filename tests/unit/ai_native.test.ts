@@ -1229,6 +1229,29 @@ describe('TriviaService (D-040)', () => {
     expect(res.question).toBeTruthy();
     expect(res.answer).toBeTruthy();
   });
+
+  it('includes Oscar easter egg and unpacked gameplay mechanics in trivia and quiz', async () => {
+    const svc = new TriviaService({});
+    const facts = (svc as any).data.facts as Array<{ id: string; category: string; fact: string }>;
+    const quiz = (svc as any).data.quiz as Array<{ id: string; category: string; question: string; answer: string }>;
+
+    expect(facts.length).toBeGreaterThanOrEqual(35);
+    expect(quiz.length).toBeGreaterThanOrEqual(20);
+
+    const oscarFact = facts.find((f) => f.id === 'fp-easteregg-oscar');
+    expect(oscarFact).toBeDefined();
+    expect(oscarFact?.fact).toContain('OSCAR');
+    expect(oscarFact?.fact).toContain('Savage Dash');
+
+    const oscarQuiz = quiz.find((q) => q.id === 'fp-quiz-oscar-hidden');
+    expect(oscarQuiz).toBeDefined();
+    expect(oscarQuiz?.answer).toContain('Oscar');
+    expect(oscarQuiz?.answer).toContain('Savage Dash');
+
+    const bargeFact = facts.find((f) => f.id === 'fp-combat-shoulder-barge');
+    expect(bargeFact).toBeDefined();
+    expect(bargeFact?.fact).toContain('Catastrophic Knockdown');
+  });
 });
 
 // =============================================================================
