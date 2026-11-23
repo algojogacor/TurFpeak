@@ -29,13 +29,60 @@ import { AllProvidersFailedError } from '../ai/router.js';
 import { AIError } from '../ai/adapter.js';
 import { buildOmakPeakPrompt } from '../ai/prompts/omak-peak.js';
 import type { OmakPeakContext, OmakPeakIntent } from '../ai/prompts/omak-peak-context.js';
-import { FLASH_PEAK_GAME_KNOWLEDGE } from '../ai/prompts/flashpeak-game-knowledge.js';
+import { FLASH_PEAK_GAME_KNOWLEDGE, type FlashPeakGameKnowledge } from '../ai/prompts/flashpeak-game-knowledge.js';
+import { matchTeams, matchCharacters, TEAMS } from './omak-peak-fuzzy.js';
 
 export type { OmakPeakIntent };
+
+export type OmakPeakRoutingMode = 'ENTITY_PRUNED' | 'DOMAIN_MODULAR' | 'MONOLITHIC';
+
+export function getOmakPeakRoutingMode(): OmakPeakRoutingMode {
+  const envMode = process.env.OMAK_PEAK_ROUTING_MODE?.toUpperCase().trim();
+  if (envMode === 'MONOLITHIC') return 'MONOLITHIC';
+  if (envMode === 'DOMAIN_MODULAR') return 'DOMAIN_MODULAR';
+  return 'ENTITY_PRUNED';
+}
 
 export interface BuildContextOptions {
   intent?: OmakPeakIntent;
   userMessage?: string;
+}
+
+function isTeamMatch(teamName: string, matchedTeamSet: Set<string>): boolean {
+  const norm = teamName.toLowerCase().trim();
+  if (matchedTeamSet.has(norm)) return true;
+  for (const mt of matchedTeamSet) {
+    if (norm === mt || norm.includes(mt) || mt.includes(norm)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function pruneGameKnowledge(
+  gameKnowledge: FlashPeakGameKnowledge,
+  userMessage?: string
+): FlashPeakGameKnowledge {
+  const matchedChars = matchCharacters(userMessage || '');
+  if (matchedChars.length === 0) {
+    return gameKnowledge;
+  }
+  const charSet = new Set(matchedChars.map((c) => c.toLowerCase()));
+  const filteredCharacters = gameKnowledge.characters.filter((c) =>
+    charSet.has(c.name.toLowerCase())
+  );
+  const filteredPlaybook: Record<string, string> = {};
+  for (const [key, value] of Object.entries(gameKnowledge.tactical_matchup_playbook)) {
+    const isRelevant = Array.from(charSet).some((c) => key.toLowerCase().includes(c));
+    if (isRelevant) {
+      filteredPlaybook[key] = value;
+    }
+  }
+  return {
+    ...gameKnowledge,
+    characters: filteredCharacters.length > 0 ? filteredCharacters : gameKnowledge.characters,
+    tactical_matchup_playbook: filteredPlaybook,
+  };
 }
 
 /**
@@ -82,21 +129,28 @@ export function classifyOmakPeakIntent(userMessage: string): OmakPeakIntent {
     'haha', 'hehe', 'canda', 'tes', 'test', 'ping', 'p'
   ];
 
-  let hasGame = false;
-  for (const kw of gameKeywords) {
-    const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
-    if (regex.test(text)) {
-      hasGame = true;
-      break;
+  const matchedTeams = matchTeams(userMessage);
+  const matchedChars = matchCharacters(userMessage);
+
+  let hasGame = matchedChars.length > 0;
+  if (!hasGame) {
+    for (const kw of gameKeywords) {
+      const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
+      if (regex.test(text)) {
+        hasGame = true;
+        break;
+      }
     }
   }
 
-  let hasTournament = false;
-  for (const kw of tournamentKeywords) {
-    const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
-    if (regex.test(text)) {
-      hasTournament = true;
-      break;
+  let hasTournament = matchedTeams.length > 0;
+  if (!hasTournament) {
+    for (const kw of tournamentKeywords) {
+      const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
+      if (regex.test(text)) {
+        hasTournament = true;
+        break;
+      }
     }
   }
 
@@ -333,6 +387,11 @@ export class OmakPeakService {
     } catch {
       // Context build failure is non-fatal: proceed with an empty context so the
       // user still gets a response (the AI will hedge about tournament specifics).
+      let fallbackGameKnowledge: FlashPeakGameKnowledge | undefined =
+        intent === 'TOURNAMENT' || intent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE;
+      if (fallbackGameKnowledge && getOmakPeakRoutingMode() === 'ENTITY_PRUNED' && (intent === 'GAME' || intent === 'HYBRID')) {
+        fallbackGameKnowledge = pruneGameKnowledge(fallbackGameKnowledge, trimmed);
+      }
       context = {
         today_fixtures: [],
         standings_by_group: [],
@@ -341,7 +400,7 @@ export class OmakPeakService {
         quiz_leaderboard: [],
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
-        game_knowledge: intent === 'TOURNAMENT' || intent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
+        game_knowledge: fallbackGameKnowledge,
       };
     }
     if (recentTurns.length > 0) {
@@ -478,14 +537,20 @@ export async function buildOmakPeakContext(
   db: Client,
   options?: BuildContextOptions
 ): Promise<OmakPeakContext> {
-  const intent = options?.intent ?? 'ALL';
+  const mode = getOmakPeakRoutingMode();
+  const effectiveIntent: OmakPeakIntent = mode === 'MONOLITHIC' ? 'ALL' : (options?.intent ?? 'ALL');
 
   // Active tournament (any non-terminal status).
   const tRes = await db.execute({
     sql: "SELECT id, name, status, config_json FROM tournaments WHERE status NOT IN ('COMPLETED','ARCHIVED') ORDER BY created_at DESC LIMIT 1",
   });
   if (tRes.rows.length === 0) {
-    const quiz_leaderboard = intent === 'CHIT_CHAT' || intent === 'GAME' ? [] : await fetchQuizLeaderboard(db);
+    const quiz_leaderboard = effectiveIntent === 'CHIT_CHAT' || effectiveIntent === 'GAME' ? [] : await fetchQuizLeaderboard(db);
+    let game_knowledge: FlashPeakGameKnowledge | undefined =
+      effectiveIntent === 'TOURNAMENT' || effectiveIntent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE;
+    if (game_knowledge && mode === 'ENTITY_PRUNED' && (effectiveIntent === 'GAME' || effectiveIntent === 'HYBRID')) {
+      game_knowledge = pruneGameKnowledge(game_knowledge, options?.userMessage);
+    }
     return {
       today_fixtures: [],
       standings_by_group: [],
@@ -494,7 +559,7 @@ export async function buildOmakPeakContext(
       quiz_leaderboard,
       qna_entries: [],
       rules_summary: RULES_SUMMARY,
-      game_knowledge: intent === 'TOURNAMENT' || intent === 'CHIT_CHAT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
+      game_knowledge,
     };
   }
   const tRow = tRes.rows[0] as unknown as Record<string, unknown>;
@@ -568,7 +633,7 @@ export async function buildOmakPeakContext(
   };
 
   // Fast-path 1: CHIT_CHAT needs zero tournament records and zero game knowledge
-  if (intent === 'CHIT_CHAT') {
+  if (effectiveIntent === 'CHIT_CHAT') {
     return {
       tournament: baseTournament,
       today_fixtures: [],
@@ -585,7 +650,11 @@ export async function buildOmakPeakContext(
   }
 
   // Fast-path 2: GAME needs deep game knowledge and rules, but no tournament database records
-  if (intent === 'GAME') {
+  if (effectiveIntent === 'GAME') {
+    let gameKnowledge = FLASH_PEAK_GAME_KNOWLEDGE;
+    if (mode === 'ENTITY_PRUNED') {
+      gameKnowledge = pruneGameKnowledge(gameKnowledge, options?.userMessage);
+    }
     return {
       tournament: baseTournament,
       today_fixtures: [],
@@ -598,7 +667,7 @@ export async function buildOmakPeakContext(
       quiz_leaderboard: [],
       qna_entries: [],
       rules_summary: RULES_SUMMARY,
-      game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
+      game_knowledge: gameKnowledge,
     };
   }
 
@@ -863,10 +932,57 @@ export async function buildOmakPeakContext(
   // Quiz Leaderboard (community trivia mini-game, separate from tournament)
   const quiz_leaderboard = await fetchQuizLeaderboard(db);
 
+  let finalFixtures = today_fixtures;
+  let finalStandings = standings_by_group;
+  let finalRosters = team_rosters;
+  let finalDelegates = teams_and_delegates;
+
+  if (mode === 'ENTITY_PRUNED' && (effectiveIntent === 'TOURNAMENT' || effectiveIntent === 'HYBRID')) {
+    const matchedTeams = matchTeams(options?.userMessage || '');
+    if (matchedTeams.length > 0) {
+      const matchedTeamSet = new Set(matchedTeams.map((t) => t.toLowerCase()));
+      finalFixtures = today_fixtures.filter(
+        (f) =>
+          isTeamMatch(f.team_a_name, matchedTeamSet) ||
+          isTeamMatch(f.team_b_name, matchedTeamSet)
+      );
+
+      const matchedGroups = new Set<string>();
+      for (const t of TEAMS) {
+        if (isTeamMatch(t.name, matchedTeamSet)) {
+          matchedGroups.add(t.group);
+        }
+      }
+      for (const td of teams_and_delegates) {
+        if (isTeamMatch(td.team_name, matchedTeamSet) && td.group_code) {
+          matchedGroups.add(td.group_code);
+        }
+      }
+      for (const grp of standings_by_group) {
+        if (grp.rows.some((r) => isTeamMatch(r.team_name, matchedTeamSet))) {
+          matchedGroups.add(grp.group_code);
+        }
+      }
+
+      if (matchedGroups.size > 0) {
+        finalStandings = standings_by_group.filter((g) => matchedGroups.has(g.group_code));
+      }
+      finalRosters = team_rosters.filter((r) => isTeamMatch(r.team_name, matchedTeamSet));
+      finalDelegates = teams_and_delegates.filter((t) => isTeamMatch(t.team_name, matchedTeamSet));
+    }
+  }
+
+  let finalGameKnowledge: FlashPeakGameKnowledge | undefined =
+    effectiveIntent === 'TOURNAMENT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE;
+
+  if (finalGameKnowledge && mode === 'ENTITY_PRUNED' && effectiveIntent === 'HYBRID') {
+    finalGameKnowledge = pruneGameKnowledge(finalGameKnowledge, options?.userMessage);
+  }
+
   return {
     tournament: baseTournament,
-    today_fixtures,
-    standings_by_group,
+    today_fixtures: finalFixtures,
+    standings_by_group: finalStandings,
     top_scorers,
     top_assists,
     top_defenders,
@@ -875,11 +991,11 @@ export async function buildOmakPeakContext(
       active_awards: ['GOLDEN_BOOT (Top Scorer)', 'TOP_ASSIST', 'BEST_DEFENDER'],
       notes: 'Penghargaan kiper (Best Goalkeeper) ditangguhkan sementara selama season ini. Penghargaan individu aktif: Golden Boot, Top Assist, Best Defender.',
     },
-    teams_and_delegates,
-    team_rosters,
+    teams_and_delegates: finalDelegates,
+    team_rosters: finalRosters,
     quiz_leaderboard,
     qna_entries,
     rules_summary: RULES_SUMMARY,
-    game_knowledge: intent === 'TOURNAMENT' ? undefined : FLASH_PEAK_GAME_KNOWLEDGE,
+    game_knowledge: finalGameKnowledge,
   };
 }

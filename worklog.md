@@ -1,5 +1,114 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Entity-Level Context Pruning & Rollback Routing Configuration (Omak Peak Pruner)
+
+### Konteks Sesi & Tujuan Tugas
+- Roster / Swarm Agent: `@pruner`
+- Purpose: Mengimplementasikan Entity-Level Context Pruning dan konfigurasi rollback `OMAK_PEAK_ROUTING_MODE` pada `src/application/omak-peak.ts`.
+- Spesifikasi & Batasan:
+  1. Mendukung environment variable `OMAK_PEAK_ROUTING_MODE`:
+     - `ENTITY_PRUNED` (default): Melakukan perunutan konteks hingga level entitas tim & karakter.
+     - `DOMAIN_MODULAR`: Melakukan pemecahan domain (CHIT_CHAT / GAME / TOURNAMENT), namun mempertahankan seluruh entitas di dalam domain terkait.
+     - `MONOLITHIC`: Fallback darurat (rollback path) yang mengembalikan konteks monolitik penuh tanpa pemangkasan intent atau entitas.
+  2. Ketika mode `ENTITY_PRUNED`:
+     - Mengimpor `matchTeams, matchCharacters` dari `./omak-peak-fuzzy.js`.
+     - Dalam `buildOmakPeakContext(db, options)`:
+       - Jika intent === 'TOURNAMENT' atau 'HYBRID':
+         - Gunakan `matchTeams(options?.userMessage || '')`.
+         - Jika tim terdeteksi:
+           * filter `today_fixtures` ke jadwal pertandingan yang melibatkan tim yang cocok.
+           * filter `standings_by_group` ke grup dari tim-tim yang cocok.
+           * filter `team_rosters` hanya ke tim-tim yang cocok.
+           * filter `teams_and_delegates` hanya ke tim-tim yang cocok.
+         - Jika tidak ada tim yang cocok: pertahankan data turnamen lengkap.
+       - Jika intent === 'GAME' atau 'HYBRID':
+         - Gunakan `matchCharacters(options?.userMessage || '')`.
+         - Jika karakter terdeteksi:
+           * filter `game_knowledge.characters` hanya ke karakter yang cocok.
+           * filter `game_knowledge.tactical_matchup_playbook` ke taktik counter relevan (berdasarkan kecocokan key skenario).
+         - Jika tidak ada karakter yang cocok: pertahankan seluruh karakter dan taktik.
+  3. Memastikan backward compatibility dengan `tests/unit/ai_native.test.ts` (ketika dipanggil tanpa intent atau dengan ALL, mengembalikan konteks penuh).
+
+### Perubahan File Konkret
+1. `src/application/omak-peak.ts`:
+   - Mengimpor `matchTeams, matchCharacters, TEAMS` dari `./omak-peak-fuzzy.js`.
+   - Menambahkan tipe `OmakPeakRoutingMode = 'ENTITY_PRUNED' | 'DOMAIN_MODULAR' | 'MONOLITHIC'` dan helper fungsi `getOmakPeakRoutingMode()`.
+   - Mengimplementasikan helper `isTeamMatch(teamName, matchedTeamSet)` yang mencocokkan nama tim dan alias secara case-insensitive.
+   - Mengimplementasikan helper `pruneGameKnowledge(gameKnowledge, userMessage)` yang memfilter karakter dan entri playbook taktis sesuai karakter yang disebutkan dalam query.
+   - Memperbarui `buildOmakPeakContext(db, options)`:
+     - Mengambil routing mode dari `getOmakPeakRoutingMode()`.
+     - Jika mode `MONOLITHIC`, `effectiveIntent` dipaksa ke `'ALL'`, mem-bypass semua pruning fast-path.
+     - Pada fast-path GAME (intent === 'GAME'): memfilter `game_knowledge` jika mode `ENTITY_PRUNED` dan karakter cocok.
+     - Pada intent 'TOURNAMENT' dan 'HYBRID': memfilter `today_fixtures`, `standings_by_group`, `team_rosters`, dan `teams_and_delegates` jika tim cocok.
+     - Pada intent 'GAME' dan 'HYBRID': memfilter `game_knowledge.characters` dan `game_knowledge.tactical_matchup_playbook`.
+     - Memperbarui fallback error handler `handleAiCommand` agar konsisten menyertakan pruning jika error terjadi saat query DB.
+2. `tests/unit/ai_native.test.ts`:
+   - Menambahkan helper `seedMultiGroupTournament(db)` dengan 4 tim di 2 grup (Kazekage & Team Zodiac di Grup D, Jestre & The Apostles Dominion di Grup B) lengkap dengan fixtures, standings, delegates, dan players.
+   - Menambahkan 8 skenario pengujian baru:
+     - Pruning turnamen ke tim & grup yang cocok pada query TOURNAMENT ("siapa lawan tim Kazekage besok?").
+     - Resolusi dan filtering entitas berbasis singkatan/abbreviation ("apstl" -> The Apostles Dominion di Grup B).
+     - Pelestarian data turnamen lengkap ketika tidak ada tim yang cocok dalam query ("jadwal ronde 1 kapan dimulai?").
+     - Pruning game knowledge ke karakter & counter playbook yang relevan ("skill Andrew apa aja?").
+     - Pelestarian seluruh karakter ketika query GAME bersifat konseptual ("apa itu Catastrophic Knockdown?").
+     - Pruning ganda pada query HYBRID ("apakah tim Kazekage sering pick Homer?").
+     - Rollback configuration `OMAK_PEAK_ROUTING_MODE=DOMAIN_MODULAR` (menonaktifkan pruning entitas, mempertahankan domain routing).
+     - Rollback configuration `OMAK_PEAK_ROUTING_MODE=MONOLITHIC` (menonaktifkan seluruh pruning, mengembalikan konteks monolitik penuh).
+
+### Verifikasi Empiris
+1. **Unit Test AI Native**:
+   - Perintah: `npx vitest run tests/unit/ai_native.test.ts`
+   - Hasil: 73 passed (100%), durasi 1.72s.
+2. **Unit Test Omak Peak Fuzzy**:
+   - Perintah: `npx vitest run tests/unit/omak_peak_fuzzy.test.ts`
+   - Hasil: 67 passed (100%), durasi 33ms.
+3. **Regresi Seluruh Test Suite Repository**:
+   - Perintah: `npm test` (`vitest run`)
+   - Hasil: 24 test files passed, 417 tests passed (100%), durasi 11.41s.
+
+## [2026-11-23] Sesi: High-Performance Fuzzy Matching & Alias Dictionary Module (Omak Peak Fuzzy)
+
+### Konteks Sesi & Tujuan Tugas
+- Roster / Swarm Agent: `@matcher`
+- Purpose: Membangun modul performa tinggi untuk pencocokan fuzzy (fuzzy matching) dan kamus alias (alias dictionary) seluruh entitas turnamen Flash Peak (16 tim turnamen dan 21 karakter).
+- Spesifikasi & Batasan:
+  - Mendukung seluruh singkatan/abbreviation utama (e.g. `kge`, `kzkge`, `zdc`, `tz`, `apstl`, `yaki`, `jstr`, `atl nova`, `inf`, `vnm`, `ap`, `ai`, `e8`, `hkg`, `rkg`, `hmb`, `hmr`, `ndrw`).
+  - Mendukung toleransi typo dengan Levenshtein distance <= 2 untuk kata dengan panjang >= 4 karakter.
+  - Menolak toleransi typo pada kata pendek (< 4 karakter) untuk mencegah false positives/ambiguitas.
+  - Mengekspor `matchTeams(query: string): string[]` dan `matchCharacters(query: string): string[]`.
+  - Mengimplementasikan zero-allocation DP buffers dan fast-path ASCII normalization dengan performa sub-milidetik.
+
+### Perubahan File Konkret
+1. `src/application/omak-peak-fuzzy.ts`:
+   - Dibuat baru dari awal.
+   - Mendefinisikan katalog otoritatif 16 tim turnamen Flash Peak beserta seluruh varian singkatan, nama latin, dan umbrella alias (`7sins`, `bluelock`, `avoid`, `kage`).
+   - Mendefinisikan katalog otoritatif 21 karakter game Flash Peak (Orion, Hayato, Andrew, Kelly, Maxim, Shirou, Rafael, Moco, Ford, Homer, Oscar, Steffie, Tatsuya, Alvaro, Template, Hassan, Shuki, Kuroko, Kurona, Charlie, Yuki) beserta seluruh alias dan karakternya.
+   - Algoritma Levenshtein distance cepat dengan zero memory allocations (`Int32Array` static row buffers), early-exit delta length > 2, dan string normalization berkecepatan tinggi.
+   - Phase-based matcher: whole-query exact & compact match -> Levenshtein <= 2 (words >= 4 chars) -> token & n-gram phrase matching -> LRU cache lookup.
+   - Ekspor fungsi publik: `matchTeams`, `matchCharacters`, `findBestTeamMatch`, `findBestCharacterMatch`, `levenshteinDistance`, `normalizeText`, `TEAMS`, `CHARACTERS`.
+2. `tests/unit/omak_peak_fuzzy.test.ts`:
+   - Dibuat baru dari awal.
+   - Mencakup 67 unit tests komprehensif:
+     - Algoritma Levenshtein & early-exit.
+     - Normalisasi teks dan tanda baca.
+     - Resolusi presisi seluruh 16 tim turnamen & seluruh 21 karakter.
+     - Resolusi seluruh singkatan wajib (`kge`, `kzkge`, `zdc`, `tz`, `apstl`, `yaki`, `jstr`, `atl nova`, `inf`, `vnm`, `ap`, `ai`, `e8`, `hkg`, `rkg`, `hmb`, `hmr`, `ndrw`, dsb).
+     - Pengujian typo tolerance Levenshtein distance <= 2 pada tim dan karakter.
+     - Pengujian penolakan typo pada kata pendek < 4 karakter (`ax`, `e9`, `mx`, dsb).
+     - Pengujian kalimat natural multi-entitas ("jadwal kzkge vs zdc", "cara counter andrew dan ford", dsb).
+     - Pengujian benchmark performa: 10.000 fuzzy lookups selesai dalam 14ms (< 0.002ms per query).
+
+### Verifikasi Empiris
+1. **Unit Test Omak Peak Fuzzy**:
+   - Perintah: `npx vitest run tests/unit/omak_peak_fuzzy.test.ts`
+   - Hasil: 67 passed (100%), durasi 14ms.
+2. **Typecheck Kompiler TypeScript**:
+   - Perintah: `npx tsc --noEmit`
+   - Hasil: Exit code 0, 0 error.
+3. **Regresi Seluruh Unit Test Repository**:
+   - Perintah: `npx vitest run tests/unit/`
+   - Hasil: 15 test files passed, 327 tests passed (100%), durasi 9.09s.
+
+
 ## [2026-11-23] Sesi: Upgrade Model NVIDIA NIM (Nemotron 550B Ultra) & Modular Context Dispatcher (Just-In-Time Context Routing) untuk Omak Peak (!ai)
 
 ### Konteks Sesi & Permintaan User

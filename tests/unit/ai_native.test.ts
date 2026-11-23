@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { runMigrations } from '../../src/db/migrate.js';
-import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, classifyOmakPeakIntent, ConversationMemory, smartTruncate } from '../../src/application/omak-peak.js';
+import { RollingRateLimiter, OmakPeakService, OMAK_PEAK_INTRO, buildOmakPeakContext, classifyOmakPeakIntent, ConversationMemory, smartTruncate, getOmakPeakRoutingMode } from '../../src/application/omak-peak.js';
 import { buildOmakPeakPrompt } from '../../src/ai/prompts/omak-peak.js';
 import {
   AgentActionCatalog,
@@ -91,6 +91,68 @@ async function seedTournamentFixture(db: Client): Promise<{
     args: [now, now, now],
   });
   return { tournamentId: 'tourn-1', teamAId: 'team-a', teamBId: 'team-b', fixtureId: 'fix-1' };
+}
+
+async function seedMultiGroupTournament(db: Client): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO tournaments (id, name, status, timezone, rules_version, config_json, created_at, updated_at)
+          VALUES ('tourn-mg', 'Flash Peak Championship', 'ACTIVE', 'Asia/Jakarta', '1.0', '{}', ?, ?)`,
+    args: [now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO delegates (id, display_name, status, created_at, updated_at) VALUES 
+          ('del-kze', 'Delegate Kazekage', 'ACTIVE', ?, ?),
+          ('del-zdc', 'Delegate Zodiac', 'ACTIVE', ?, ?),
+          ('del-jst', 'Delegate Jestre', 'ACTIVE', ?, ?),
+          ('del-aps', 'Delegate Apostles', 'ACTIVE', ?, ?)`,
+    args: [now, now, now, now, now, now, now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO teams (id, tournament_id, team_name, team_code, delegate_id, registration_status, created_at, updated_at) VALUES
+          ('team-kze', 'tourn-mg', 'Kazekage', 'KZE', 'del-kze', 'VERIFIED', ?, ?),
+          ('team-zdc', 'tourn-mg', 'Team Zodiac', 'ZDC', 'del-zdc', 'VERIFIED', ?, ?),
+          ('team-jst', 'tourn-mg', 'Jestre', 'JST', 'del-jst', 'VERIFIED', ?, ?),
+          ('team-aps', 'tourn-mg', 'The Apostles Dominion', 'APS', 'del-aps', 'VERIFIED', ?, ?)`,
+    args: [now, now, now, now, now, now, now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at) VALUES
+          ('p-1', 'tourn-mg', 'team-kze', 'Gaara', 'Gaara', 'gaara', 'OUTFIELD', 1, 'STARTER', 'ACTIVE', ?, ?),
+          ('p-2', 'tourn-mg', 'team-jst', 'Joker', 'Joker', 'joker', 'OUTFIELD', 1, 'STARTER', 'ACTIVE', ?, ?)`,
+    args: [now, now, now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO group_draws (id, tournament_id, status, group_config_json, eligible_team_snapshot_json,
+                                    algorithm, algorithm_version, next_reveal_index, created_at)
+          VALUES ('draw-mg', 'tourn-mg', 'COMPLETED', '{}', '[]', 'fisher-yates', '1.0', 0, ?)`,
+    args: [now],
+  });
+  await db.execute({
+    sql: `INSERT INTO groups (id, draw_id, group_code, display_order) VALUES 
+          ('grp-d', 'draw-mg', 'D', 4),
+          ('grp-b', 'draw-mg', 'B', 2)`,
+  });
+  await db.execute({
+    sql: `INSERT INTO group_members (group_id, team_id, draw_position) VALUES 
+          ('grp-d', 'team-kze', 1), ('grp-d', 'team-zdc', 2),
+          ('grp-b', 'team-jst', 1), ('grp-b', 'team-aps', 2)`,
+  });
+  await db.execute({
+    sql: `INSERT INTO standings (tournament_id, group_id, team_id, played, wins, draws, losses, goals_for, goals_against, goal_difference, points, head_to_head_points, computed_at, source_revision) VALUES
+          ('tourn-mg', 'grp-d', 'team-kze', 1, 1, 0, 0, 3, 0, 3, 3, 0, ?, 'rev1'),
+          ('tourn-mg', 'grp-d', 'team-zdc', 1, 0, 0, 1, 0, 3, -3, 0, 0, ?, 'rev1'),
+          ('tourn-mg', 'grp-b', 'team-jst', 1, 1, 0, 0, 2, 1, 1, 3, 0, ?, 'rev1'),
+          ('tourn-mg', 'grp-b', 'team-aps', 1, 0, 0, 1, 1, 2, -1, 0, 0, ?, 'rev1')`,
+    args: [now, now, now, now],
+  });
+  await db.execute({
+    sql: `INSERT INTO fixtures (id, tournament_id, stage, group_id, round_code, team_a_id, team_b_id,
+                                left_side_team_id, scheduled_at, timezone, status, created_at, updated_at) VALUES
+          ('fix-d1', 'tourn-mg', 'GROUP', 'grp-d', 'MD1', 'team-kze', 'team-zdc', 'team-kze', ?, 'Asia/Jakarta', 'SCHEDULED', ?, ?),
+          ('fix-b1', 'tourn-mg', 'GROUP', 'grp-b', 'MD1', 'team-jst', 'team-aps', 'team-jst', ?, 'Asia/Jakarta', 'SCHEDULED', ?, ?)`,
+    args: [now, now, now, now, now, now],
+  });
 }
 
 // =============================================================================
@@ -368,6 +430,168 @@ describe('OmakPeakService (D-037)', () => {
     const allCtx = await buildOmakPeakContext(db);
     expect(allCtx.today_fixtures.length).toBeGreaterThan(0);
     expect(allCtx.game_knowledge).toBeDefined();
+  });
+
+  it('buildOmakPeakContext with ENTITY_PRUNED (default) prunes tournament data to matched teams and groups', async () => {
+    await seedMultiGroupTournament(db);
+
+    // Query mentioning Kazekage -> fixtures should only include Kazekage vs Team Zodiac, standings only Group D
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'TOURNAMENT',
+      userMessage: 'siapa lawan tim Kazekage besok?',
+    });
+
+    // 1. Fixtures: only fix-d1 (Kazekage vs Team Zodiac)
+    expect(ctx.today_fixtures).toHaveLength(1);
+    expect(ctx.today_fixtures[0].fixture_id).toBe('fix-d1');
+    expect(ctx.today_fixtures[0].team_a_name).toBe('Kazekage');
+
+    // 2. Standings: only group D
+    expect(ctx.standings_by_group).toHaveLength(1);
+    expect(ctx.standings_by_group[0].group_code).toBe('D');
+    expect(ctx.standings_by_group[0].rows.map((r) => r.team_name)).toContain('Kazekage');
+
+    // 3. Rosters: only Kazekage
+    expect(ctx.team_rosters).toHaveLength(1);
+    expect(ctx.team_rosters[0].team_name).toBe('Kazekage');
+
+    // 4. Delegates: only Kazekage
+    expect(ctx.teams_and_delegates).toHaveLength(1);
+    expect(ctx.teams_and_delegates[0].team_name).toBe('Kazekage');
+
+    // 5. Game knowledge is undefined for TOURNAMENT intent
+    expect(ctx.game_knowledge).toBeUndefined();
+  });
+
+  it('buildOmakPeakContext with abbreviation entity resolution filters correctly', async () => {
+    await seedMultiGroupTournament(db);
+
+    // Abbreviation "apstl" -> "The Apostles Dominion" in Group B
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'TOURNAMENT',
+      userMessage: 'jadwal apstl kapan ya?',
+    });
+
+    expect(ctx.today_fixtures).toHaveLength(1);
+    expect(ctx.today_fixtures[0].fixture_id).toBe('fix-b1');
+    expect(ctx.standings_by_group).toHaveLength(1);
+    expect(ctx.standings_by_group[0].group_code).toBe('B');
+    expect(ctx.teams_and_delegates).toHaveLength(1);
+    expect(ctx.teams_and_delegates[0].team_name).toBe('The Apostles Dominion');
+  });
+
+  it('buildOmakPeakContext preserves all tournament data when no teams are matched in query', async () => {
+    await seedMultiGroupTournament(db);
+
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'TOURNAMENT',
+      userMessage: 'jadwal ronde 1 kapan dimulai?',
+    });
+
+    // All fixtures (2) and all groups (2) preserved
+    expect(ctx.today_fixtures).toHaveLength(2);
+    expect(ctx.standings_by_group).toHaveLength(2);
+    expect(ctx.teams_and_delegates).toHaveLength(4);
+  });
+
+  it('buildOmakPeakContext with ENTITY_PRUNED prunes game knowledge to matched characters and counters', async () => {
+    await seedMultiGroupTournament(db);
+
+    // Query mentioning Andrew
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'GAME',
+      userMessage: 'skill Andrew apa aja?',
+    });
+
+    expect(ctx.game_knowledge).toBeDefined();
+    expect(ctx.game_knowledge?.characters).toHaveLength(1);
+    expect(ctx.game_knowledge?.characters[0].name).toBe('Andrew');
+
+    // Playbook filtered to relevant Andrew entries
+    const playbook = ctx.game_knowledge?.tactical_matchup_playbook || {};
+    expect(Object.keys(playbook)).toContain('dikepung_andrew_dan_ford');
+    expect(Object.keys(playbook)).not.toContain('counter_orion');
+
+    // Fast-path GAME keeps tournament data empty
+    expect(ctx.today_fixtures).toEqual([]);
+    expect(ctx.standings_by_group).toEqual([]);
+  });
+
+  it('buildOmakPeakContext preserves all characters when no character is matched in GAME intent', async () => {
+    await seedMultiGroupTournament(db);
+
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'GAME',
+      userMessage: 'apa itu Catastrophic Knockdown?',
+    });
+
+    expect(ctx.game_knowledge).toBeDefined();
+    expect(ctx.game_knowledge?.characters.length).toBeGreaterThanOrEqual(13);
+    expect(Object.keys(ctx.game_knowledge?.tactical_matchup_playbook || {})).toContain('counter_orion');
+  });
+
+  it('buildOmakPeakContext with HYBRID intent prunes both tournament teams and game characters', async () => {
+    await seedMultiGroupTournament(db);
+
+    const ctx = await buildOmakPeakContext(db, {
+      intent: 'HYBRID',
+      userMessage: 'apakah tim Kazekage sering pick Homer?',
+    });
+
+    // Tournament pruned to Kazekage
+    expect(ctx.today_fixtures).toHaveLength(1);
+    expect(ctx.today_fixtures[0].fixture_id).toBe('fix-d1');
+    expect(ctx.standings_by_group).toHaveLength(1);
+    expect(ctx.standings_by_group[0].group_code).toBe('D');
+
+    // Game knowledge pruned to Homer
+    expect(ctx.game_knowledge).toBeDefined();
+    expect(ctx.game_knowledge?.characters).toHaveLength(1);
+    expect(ctx.game_knowledge?.characters[0].name).toBe('Homer');
+  });
+
+  it('OMAK_PEAK_ROUTING_MODE=DOMAIN_MODULAR disables entity pruning but keeps domain routing', async () => {
+    await seedMultiGroupTournament(db);
+    const origMode = process.env.OMAK_PEAK_ROUTING_MODE;
+    try {
+      process.env.OMAK_PEAK_ROUTING_MODE = 'DOMAIN_MODULAR';
+      expect(getOmakPeakRoutingMode()).toBe('DOMAIN_MODULAR');
+
+      const ctx = await buildOmakPeakContext(db, {
+        intent: 'TOURNAMENT',
+        userMessage: 'siapa lawan Kazekage besok?',
+      });
+
+      // Domain routing: game_knowledge undefined
+      expect(ctx.game_knowledge).toBeUndefined();
+      // Entity pruning skipped: all fixtures (2) and all groups (2) returned
+      expect(ctx.today_fixtures).toHaveLength(2);
+      expect(ctx.standings_by_group).toHaveLength(2);
+    } finally {
+      process.env.OMAK_PEAK_ROUTING_MODE = origMode;
+    }
+  });
+
+  it('OMAK_PEAK_ROUTING_MODE=MONOLITHIC disables all pruning and returns full context', async () => {
+    await seedMultiGroupTournament(db);
+    const origMode = process.env.OMAK_PEAK_ROUTING_MODE;
+    try {
+      process.env.OMAK_PEAK_ROUTING_MODE = 'MONOLITHIC';
+      expect(getOmakPeakRoutingMode()).toBe('MONOLITHIC');
+
+      // Even with CHIT_CHAT or GAME intent, returns full monolithic context
+      const ctx = await buildOmakPeakContext(db, {
+        intent: 'CHIT_CHAT',
+        userMessage: 'halo',
+      });
+
+      expect(ctx.today_fixtures.length).toBeGreaterThan(0);
+      expect(ctx.standings_by_group.length).toBeGreaterThan(0);
+      expect(ctx.game_knowledge).toBeDefined();
+      expect(ctx.game_knowledge?.characters.length).toBeGreaterThanOrEqual(13);
+    } finally {
+      process.env.OMAK_PEAK_ROUTING_MODE = origMode;
+    }
   });
 });
 
