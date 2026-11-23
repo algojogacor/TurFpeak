@@ -2482,3 +2482,54 @@ Melakukan dekonstruksi mendalam terhadap sistem fisika, mekanik taktis AI, geome
 - Ekstraksi 33 file TextAsset CSV dari bundle `bundle_to_modify\10ee363dd89953d507c7b97d19d20485\__data`.
 - Pembongkaran biner Q32.32 FixedPoint64 dari ScriptableObjects di bundle `extracted_base\assets\yoo\Default\default_assets_gameres_config_scriptable_game_crgamemode_*.bundle` dan `default_assets_gameres_config_scriptable_entity_player_*.bundle`.
 - Analisis IL disassembly menggunakan Mono.Cecil terhadap runtime gameplay assembly `ProjectCR.Runtime.dll` dan `ProjectCR.CoreUnity.Runtime.dll`.
+
+
+---
+
+## 2026-11-23 — TASK-FIX-OMAK-SCHEDULE-MATCHDAY-D037
+**Tujuan**: Memperbaiki kegagalan Omak Peak (`!ai`) saat menjawab pertanyaan jadwal pertandingan (kasus konkret: `!ai nnti malam avoid prime lawan siapa`), di mana bot sebelumnya menjawab bahwa jadwal belum dirilis dan membocorkan istilah teknis database (`"semua fixture di Round 2-3-nya masih scheduled_at null"`), padahal jadwal pertandingan per ronde sudah resmi dibuat saat `!draw` dan dapat dilihat via `!schedule`.
+
+### 1. Akar Masalah (Root Cause Analysis)
+1. **Instruksi Prompt yang Keliru (`src/ai/prompts/omak-peak.ts`)**:
+   - Terdapat aturan: `"Kalau semua fixture scheduled_at null, berarti matchday belum dijadwalkan — bilang 'jadwal belum dirilis'."`
+   - Di Flash Peak TMS, pertandingan babak grup tidak menyimpan timestamp jam kickoff spesifik (`scheduled_at` sengaja bernilai `NULL`) karena sistem turnamen menganut sistem **Matchday 24 jam dengan batas cutoff pukul 19:59 WIB**. Kedua tim bebas menyepakati jam main fleksibel sebelum batas cutoff tersebut.
+   - Akibatnya, LLM menganggap jadwal belum terbit dan bahkan mengutip mentah nama kolom database `scheduled_at null` ke pengguna WhatsApp.
+2. **Ketiadaan Konteks Ronde Aktif & Kebijakan Waktu di `buildOmakPeakContext`**:
+   - `buildOmakPeakContext` sebelumnya hanya melempar array fixture mentah tanpa menandai ronde mana yang sedang aktif berjalan (`current_round`), siapa tim host (`left_side_team_id`), atau sisa waktu menuju batas akhir 19:59 WIB.
+3. **Ambiguitas Tim Saudara (Sister Team)**:
+   - Pada pengujian awal, LLM sempat tertukar antara `AVOID Prime` dan `AVOID Impact` (keduanya tim berbeda di Grup C). Diperlukan panduan eksplisit untuk mencocokkan nama tim secara presisi.
+
+### 2. Perubahan Konkret
+- **`src/ai/prompts/omak-peak-context.ts`**:
+  - Menambahkan field opsional pada interface `OmakPeakContext`:
+    - `tournament.current_round_code`, `tournament.current_round_label`, `tournament.wib_now`, `tournament.cutoff_time`, `tournament.time_remaining_to_cutoff`, `tournament.matchday_policy`.
+    - `today_fixtures`: menambahkan `round_label`, `host_team_name`, `is_current_round`.
+- **`src/application/omak-peak.ts`**:
+  - Mengimplementasikan deteksi ronde aktif tercepat yang belum selesai (menggunakan logika progresi yang sama dengan `MatchdayService`).
+  - Menambahkan helper `formatRoundLabel` dan `getWibInfo` untuk menghitung waktu server WIB dan sisa waktu menuju batas cutoff 19:59 WIB.
+  - Memperbarui query fixture dengan `LEFT JOIN teams tl ON tl.id = f.left_side_team_id` untuk menyertakan `host_team_name`.
+  - Memperbarui `RULES_SUMMARY` dengan penjelasan bahwa jadwal pertandingan telah terbit per ronde sejak undian (!draw), berdurasi 24 jam hingga cutoff 19:59 WIB, dan jam kickoff fleksibel disepakati antar delegasi kedua tim.
+- **`src/ai/prompts/omak-peak.ts`**:
+  - Mengrombak total seksi `KETEPATAN WAKTU & JADWAL (MATCHDAY & FIXTURES)`:
+    - Melarang keras membocorkan nama kolom database teknis (`scheduled_at`, `null`, `foreign key`, dll).
+    - Melarang mengatakan "jadwal belum dirilis" jika fixture sudah tercatat di sistem.
+    - Menjelaskan tata cara menjawab jadwal tanding: cari tim, cek ronde yang selesai (sebutkan skor), cek ronde aktif/mendatang (sebutkan lawan dan host room), serta ingatkan batas waktu cutoff 19:59 WIB.
+    - Menambahkan peringatan khusus pemisahan sister team (contoh: `AVOID Prime` vs `AVOID Impact`, `7Sins Venom` vs `7Sins Inferno`).
+- **`tests/unit/ai_native.test.ts`**:
+  - Menambahkan unit test untuk memverifikasi context builder menyertakan jadwal ronde aktif, label ronde, host tim, waktu WIB, dan bahwa prompt memuat instruksi jadwal matchday serta tidak memuat aturan usang `scheduled_at null`.
+
+### 3. Verifikasi Empiris
+1. **Unit Testing (`vitest`)**:
+   - Command: `npx vitest run tests/unit/ai_native.test.ts` -> 60 passed (60).
+   - Command: `npm test` -> 23 test files passed, 334 passed (334).
+2. **TypeScript Typecheck**:
+   - Command: `npx tsc --noEmit` -> Exit code 0 (tanpa error).
+3. **Live VM Deployment & Runtime Dry-run**:
+   - Commit & push: `62c5cca` dan `ea063fa`.
+   - Build dan reload pada VM `forfh` via PM2 (`flashpeak-bot` PID 3313431).
+   - Eksekusi script pengujian langsung terhadap database dan router AI produksi dengan input user: `"nnti malam avoid prime lawan siapa"`.
+   - Output Omak Peak:
+     ```text
+     Nanti malam AVOID Prime lawan Elite 8, hostnya AVOID Prime. Ronde 2, jadwalnya fleksibel disepakati sama delegasi kedua tim sebelum cutoff pukul 19:59 WIB.
+     ```
+   - Hasil akurat, menyebut lawan yang benar di Ronde 2 (`Elite 8`), host room yang benar (`AVOID Prime`), regulasi cutoff 19:59 WIB yang tepat, serta tanpa kebocoran istilah database.
