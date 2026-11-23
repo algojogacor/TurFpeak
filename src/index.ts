@@ -1399,7 +1399,53 @@ export class FlashPeakApp {
           console.error('[FlashPeakApp] Error in matchday scheduler:', mErr);
         }
       }
+
+      // Check and send pending outbox messages (asynchronous outbound broadcasts)
+      if (this.sender) {
+        try {
+          await this.processOutboxMessages();
+        } catch (oErr) {
+          console.error('[FlashPeakApp] Error processing outbox messages:', oErr);
+        }
+      }
     }, this.pollIntervalMs);
+  }
+
+  /**
+   * Processes pending outbound broadcast messages from outbox_messages table.
+   */
+  public async processOutboxMessages(): Promise<number> {
+    if (!this.sender) return 0;
+    let sentCount = 0;
+    try {
+      const res = await this.db.execute({
+        sql: `SELECT id, chat_id, message_text FROM outbox_messages WHERE status = 'PENDING' ORDER BY created_at ASC LIMIT 5`,
+      });
+      for (const row of res.rows) {
+        const id = String(row.id);
+        const chatId = String(row.chat_id) || this.centralGroupJid;
+        const text = String(row.message_text);
+        if (!chatId) continue;
+        try {
+          await this.sender.sendText(chatId, text);
+          await this.db.execute({
+            sql: `UPDATE outbox_messages SET status = 'SENT', sent_at = ? WHERE id = ?`,
+            args: [new Date().toISOString(), id],
+          });
+          sentCount++;
+          this.logger.info({ id, chatId }, '[FlashPeakApp] Outbox message sent successfully');
+        } catch (sendErr) {
+          console.error(`[FlashPeakApp] Failed to send outbox message ${id}:`, sendErr);
+          await this.db.execute({
+            sql: `UPDATE outbox_messages SET status = 'FAILED', error = ? WHERE id = ?`,
+            args: [sendErr instanceof Error ? sendErr.message : String(sendErr), id],
+          });
+        }
+      }
+    } catch {
+      // Table might not exist yet before migration
+    }
+    return sentCount;
   }
 
   /**
