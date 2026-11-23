@@ -1,5 +1,42 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Refine Tampilan Klasemen WhatsApp (Mobile-Friendly Layout & Penamaan Roster Penuh)
+
+### Konteks Sesi & Permasalahan User
+1. **Nama Tim Terpotong (Ambiguitas Divisi 7Sins)**:
+   - Pada format tabel monospace lama, kolom nama tim dipotong menjadi maksimal 14 karakter (`7Sins•BlueLoc...`).
+   - Akibatnya, user/peserta tidak dapat membedakan tim `7Sins•BlueLock Venom` (Grup A) dan `7Sins•BlueLock Inferno` (Grup D).
+2. **Tampilan Rusak di Layar HP (Wrapping Monospace WhatsApp)**:
+   - Format tabel monospace 46 karakter (`POS TIM P W D L GF GA GD PTS`) melebihi batas lebar layar HP (~32-35 karakter).
+   - Akibatnya, baris statistik patah ke bawah menjadi 2-3 baris yang tidak beraturan, angka-angka tersambung menjadi hyperlink hijau nomor telepon/tanggal otomatis WhatsApp, dan batas tabel menjadi berantakan.
+
+### Perubahan Kode (Surgical Changes)
+1. `src/whatsapp/formatters.ts`:
+   - Mengubah `formatStandingsTable` dari tabel monospace 46-karakter menjadi **Mobile-Optimized Multi-Line Card**:
+     - Baris 1: Nomor ranking/badge (`1️⃣`, `2️⃣`, dst.), **Nama Lengkap Tim Tanpa Dipotong**, dan **Poin** tebal (`— *X Poin*`).
+     - Baris 2: Rangkuman ringkas pertandingan (`X Main | WM DS LK | SG ±X (GF-GA)`).
+     - Garis penanda kelolosan (`┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ ⬆️ _Top 2 Lolos_`) disisipkan setelah peringkat 2.
+     - Mendukung parameter opsional `options?: { showFooter?: boolean }` untuk mode gabungan semua grup agar keterangan tidak berulang-ulang di setiap grup.
+2. `src/index.ts`:
+   - Meneruskan `options?: { showFooter?: boolean }` pada `getStandingsTable`.
+3. `src/application/tournament-commands.ts`:
+   - Mengupdate perintah `!standings` (all-groups mode):
+     - Memanggil `getStandingsTable` dengan `{ showFooter: false }`.
+     - Memisahkan antar grup dengan garis pembatas rapi `──────────────────────────────`.
+     - Menaruh satu baris keterangan di akhir pesan: `💡 _Keterangan: Top 2 tim tiap grup lolos ke Babak Knockout._`.
+4. `tests/unit/formatters.test.ts`:
+   - Menyesuaikan pengujian unit test format tabel klasemen baru (seluruh 12 test formatters lolos).
+
+### Verifikasi Empiris
+1. **Lokal**: `npx tsc --noEmit` lolos 0 error; `npx vitest run` lolos 327/327 tests.
+2. **Server VM (`forfh`)**: Commit `b586b69` dipull, build, dan PM2 `flashpeak-bot` di-restart (PID 3298654).
+3. **Simulasi Output Resmi di VM**:
+   - Grup A jelas menampilkan: `2️⃣ *7Sins•BlueLock Venom* — *3 Poin*`.
+   - Grup D jelas menampilkan: `4️⃣ *7Sins•BlueLock Inferno* — *0 Poin*`.
+   - Panjang baris stat maksimal 34-36 karakter, tidak wrapping di smartphone, dan tidak ada glitch auto-link WhatsApp.
+
+---
+
 ## [2026-11-23] Sesi: Implementasi Regulasi Pemain Tidak Terdaftar (Rule 2.12, D-035) & Pengesahan Kemenangan 7Sins (7-1)
 
 ### Konteks Sesi & Instruksi User
