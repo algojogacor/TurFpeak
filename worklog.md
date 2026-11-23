@@ -1,5 +1,67 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Investigasi Approval 7Sins vs Mizukage & Penanganan Screenshot Kiper (Ditangguhkan)
+
+### Konteks Sesi & Pertanyaan User
+1. **Investigasi Laporan 7Sins•BlueLock Venom vs Mizukage**:
+   - User menanyakan mengapa match `7sins bluelock vs mizukage` yang sudah di-`!approve` oleh pemenang dan organizer (Arya) masih belum terkunci dan diminta lagi, serta memeriksa apakah ada kesalahan interpretasi pemenang (apakah salah anggap Mizukage menang) atau ada kegagalan sistem.
+2. **Penanganan Screenshot Kiper**:
+   - Jika terdeteksi screenshot kiper yang dikirim oleh peserta, bot tidak boleh lagi mengirim pesan error `📸 Screenshot Tidak Dapat Dibaca / data pertandingan tidak dapat diambil`.
+   - Bot harus memberikan pemberitahuan yang sopan dan jelas bahwa statistik kiper saat ini telah **DITANGGUHKAN** oleh panitia turnamen untuk season ini (karena keterbatasan game Flash Peak & kesulitan verifikasi statistik save kiper), sehingga peserta tidak perlu mengirim screenshot kiper lagi dan hanya perlu mengirim screenshot skor akhir (scoreboard 4v4).
+
+### Temuan Investigasi (Root Cause Analysis)
+1. **AI Sama Sekali Tidak Salah Tafsir Pemenang**:
+   - Pada sesi draf `de7516a8-9935-4978-a801-5eedcddee86f` (07:02 WIB), ekstraksi AI 100% akurat:
+     - Skor: `7Sins•BlueLock Venom 7 - 1 Mizukage`.
+     - Gol 7Sins: `7SB_NAGIII` (2), `7SB_AL`z` (5) = total 7.
+     - Gol Mizukage: `KGE.Jairo` (1) = total 1.
+2. **Akar Masalah Kegagalan Lock (!approve Tidak Efektif)**:
+   - **Penyebab Utama:** Pada pertandingan tersebut, tim Mizukage menurunkan pemain bernama `KGE.Tron`. Namun di data registrasi roster tim Mizukage di database, hanya terdaftar 7 pemain (`KGE.Rimex∆`, `KGE.Atreus`, `KGE.Jairo`, `KGE.bitzz!!?`, `KGE.GOGI`, `KGE.Kyoto969`, `KGE.AUDRIC№²`), tanpa `KGE.Tron`.
+   - **Validator Menolak:** `validateMatchReport` menghasilkan error `Team B player #5 "KGE.Tron" is not a registered active player on Team B`, sehingga status draf menjadi `NEEDS_CORRECTION` dan `validated_data_json` disimpan kosong (`{}`).
+   - **Error Tidak Tampil di WhatsApp:** Pada `evidence-batch-processor.ts`, parameter `uncertainties` hanya mengambil `validation.warnings` dan mengabaikan `validation.errors`. Akibatnya, pesan draf di grup hanya bertuliskan `[NEEDS CORRECTION]` tanpa memberi tahu alasan errornya, sehingga Arya dan peserta mengira draf sudah benar dan langsung mengetik `!approve`.
+   - **Bug Fallback di `getRequiredApprovers`:** Pada `approval.ts`, kode membaca `version.validated_data_json || version.extraction_json`. Karena `validated_data_json` bernilai string `"{}"` (truthy), sistem tidak membaca `extraction_json`. Karena `{}` tidak memiliki data skor, sistem menganggap pertandingan berakhir SERI (DRAW). Pada pertandingan seri, sistem membutuhkan persetujuan kedua tim + organizer (`TEAM_A`, `TEAM_B`, `ORGANIZER`). Akibatnya, sistem terus menunggu persetujuan dari Mizukage (`TEAM_B`), dan jika Mizukage pun menyetujui, locking akan crash karena `validated_data_json` kosong.
+3. **Penyebab Respon "Screenshot Tidak Dapat Dibaca" untuk Kiper**:
+   - Pada pukul 07:05 WIB, 7SB Venom FP mengirimkan screenshot kiper Maxim dengan caption `"GK 7Sins•BlueLock Venom"` (sesi `a58f11e0`).
+   - Karena hanya foto detail kiper yang dikirim tanpa foto scoreboard utama (`!mainMatchBase64`), sistem debounce menganggap sesi tersebut sebagai kiriman draf baru yang rusak/tidak lengkap, lalu membalas dengan `📸 Screenshot Tidak Dapat Dibaca... Screenshot skor akhir pertandingan (main match summary) tidak terdeteksi di laporan ini`. Peserta pun mengira bot mengalami error.
+
+### Perubahan Kode (Surgical)
+1. **`src/whatsapp/failure.ts`**:
+   - Menambahkan formatter baru `formatGoalkeeperSuspendedMessage`:
+     - Judul: `🧤 *Statistik Kiper Tidak Perlu Dikirim (Ditangguhkan)*`.
+     - Menjelaskan bahwa penghargaan Best Goalkeeper ditangguhkan oleh panitia untuk season ini karena keterbatasan tampilan teknis game & verifikasi save kiper.
+     - Mengingatkan peserta bahwa foto kiper tidak perlu dikirim lagi dan hanya butuh foto scoreboard akhir 4v4, atau jika sudah dikirim tinggal ketik `!approve`.
+2. **`src/application/evidence-batch-processor.ts`**:
+   - Jika foto utama skor akhir tidak terdeteksi (`!mainMatchBase64`), memeriksa apakah kiriman terdeteksi sebagai foto kiper/detail pemain (`gkDetailAssets.length > 0` atau caption menyebutkan `gk`/`kiper`/`keeper`).
+   - Jika terdeteksi kiper, membalas dengan `formatGoalkeeperSuspendedMessage` alih-alih pesan error generik `formatUnreadableEvidenceMessage`.
+   - Jika foto kiper dikirim bersamaan dengan scoreboard utama, foto kiper diabaikan dan ditambahkan catatan ramah pada draf: `ℹ️ Foto kiper diabaikan karena penghargaan Best Goalkeeper ditangguhkan oleh panitia untuk season ini.`
+   - Menyertakan seluruh `validation.errors` ke dalam `uncertainties` dan `rejectionReason` pada draf ringkasan WhatsApp sehingga alasan penolakan/koreksi (mis. pemain ilegal/tidak terdaftar) tampil transparan.
+3. **`src/reports/approval.ts`**:
+   - Memperbaiki `getRequiredApprovers`: memeriksa ketersediaan skor pada `validated_data_json`, dan jika kosong `{}` atau invalid, otomatis mengekstrak skor dari `extraction_json`.
+4. **`tests/unit/formatters.test.ts`**:
+   - Menambahkan unit test untuk `formatGoalkeeperSuspendedMessage` memastikan teks tidak mengandung "Tidak Dapat Dibaca" dan memuat penjelasan penangguhan kiper.
+
+### Remediasi Data Database di Server VM
+1. Mendaftarkan `KGE.Tron` sebagai pemain cadangan slot 8 di tim Mizukage (`players` table).
+2. Menjalankan revalidasi deterministik pada sesi `de7516a8-9935-4978-a801-5eedcddee86f` (versi `6433632f-64a4-457f-8dc0-8213be983376`):
+   - Validasi: `isValid = true` (0 error).
+   - Menyimpan `validated_data_json` lengkap (skor 7 - 1, player IDs, gol, assist, passes, defense).
+3. Mengeksekusi approval konsensus:
+   - Persetujuan dari `TEAM_A` (7Sins) dan `ORGANIZER` (Arya) terpenuhi.
+   - Status report version: resmi `LOCKED`.
+   - Status game: `COMPLETED` (Skor 7 - 1, Pemenang: 7Sins•BlueLock Venom).
+   - Status fixture: `COMPLETED`.
+   - Klasemen Grup A otomatis terupdate:
+     - 7Sins•BlueLock Venom: Main 1, Menang 1, Gol 7, Kebobolan 1, Selisih Gol +6, Poin 3 (Peringkat 2).
+     - Mizukage: Main 2, Kalah 2, Poin 0.
+
+### Verifikasi Empiris
+- `npx tsc --noEmit`: 0 error.
+- `npx vitest run`: 325/325 tests passed across all 23 test suites.
+- `ssh forfh "pm2 status flashpeak-bot"`: Status `online`, memory ~61MB, Baileys WhatsApp connected.
+- Query verifikasi standings dan fixture di VM: Fixture `COMPLETED`, Game `COMPLETED` 7-1, 7Sins 3 poin di klasemen Grup A.
+
+---
+
 ## [2026-11-23] Sesi: Polish Omak Peak Persona & Tone to Eliminate AI Spec-Sheet Dumping
 
 ### Konteks Sesi
