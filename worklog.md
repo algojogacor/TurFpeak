@@ -1,5 +1,56 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Implementasi Regulasi Pemain Tidak Terdaftar (Rule 2.12, D-035) & Pengesahan Kemenangan 7Sins (7-1)
+
+### Konteks Sesi & Instruksi User
+1. **Regulasi Pemain Tidak Terdaftar / Pemain Gelap (Rule 2.12, Decision D-035)**:
+   - Jika tim yang **MENANG** atau **SERI** memainkan pemain tidak terdaftar: Kemenangan/hasil seri langsung dibatalkan dan dinyatakan kalah Walkover (**WO 0–3**) untuk tim pelanggar (kemenangan WO 3–0 untuk tim lawan yang sah), dengan persetujuan 2 pihak (Panitia dan Tim Lawan) melalui `!approve`.
+   - Jika tim yang **KALAH** memainkan pemain tidak terdaftar: Skor asli pertandingan di lapangan **TETAP BERLAKU** (misalnya 7–1 tetap dicatat 7–1, tidak dipotong menjadi WO 3–0) demi menjamin keadilan tim pemenang yang sah agar selisih gol (GD) dan jumlah gol (GF) mereka tidak dirugikan.
+   - Pemain tidak terdaftar pada tim yang kalah dicatat dengan status `INELIGIBLE` (`is_award_eligible = 0` pada `player_game_stats`), dilarang bermain di match berikutnya, dan tim yang melanggar mendapatkan peringatan/teguran resmi panitia.
+2. **Pengesahan Pertandingan 7Sins vs Mizukage**:
+   - Tim Mizukage (kalah 1–7) mengakui memainkan pemain belum terdaftar (`KGE.Tron`) karena kekurangan orang.
+   - Sesuai regulasi baru, kemenangan 7–1 untuk 7Sins disahkan penuh di database, `KGE.Tron` berstatus `INELIGIBLE`, dan klasemen Grup A diperbarui.
+
+### Perubahan Kode (Surgical Changes)
+1. `src/reports/validation.ts`:
+   - Menambahkan fungsi `resolveOrRegisterIneligiblePlayer(db, tournamentId, teamId, nicknameRaw, position)`.
+   - Mengupdate `validateMatchReport`:
+     - Menghitung `isTeamAWinner`, `isTeamBWinner`, dan `isDraw`.
+     - Jika pemain tidak terdaftar berada di tim pemenang/seri: push fatal error pembatalan kemenangan & tuntutan WO 3–0 (`isValid: false`).
+     - Jika pemain tidak terdaftar berada di tim yang kalah: izinkan dengan peringatan resmi (`isValid: true`), daftarkan pemain sebagai `INELIGIBLE`, dan petakan ke lineup tervalidasi.
+2. `src/reports/stats.ts`:
+   - Pada `onReportLocked`:
+     - Membaca kolom `status` dari tabel `players`. Jika pemain berstatus `INELIGIBLE`, tetapkan `is_award_eligible = 0` pada `player_game_stats`.
+     - Pada cabang `isWalkover`, pastikan finalisasi fixture dan rekalkulasi klasemen grup tetap dieksekusi.
+3. `src/stats/aggregator.ts`:
+   - Menambahkan filter `AND p.status = 'ACTIVE'` agar pemain tidak eligible tidak pernah masuk nominasi penghargaan top scorer/assist/defense.
+4. `flash-peak-tms/COMPETITION_RULES.md` & `docs/ARCHITECTURE_DECISIONS.md`:
+   - Menambahkan Pasal 2 Ayat 12 dan Keputusan D-035 yang mendokumentasikan aturan ini secara resmi.
+5. `tests/unit/reports.test.ts`:
+   - Menambahkan unit test untuk Rule 2.12 dan D-035 (26 tests pass).
+
+### Verifikasi Empiris & Eksekusi di VM Server
+1. **Testing Lokal**:
+   - `npx tsc --noEmit`: 0 error.
+   - `npx vitest run`: 327 tests passed across 23 test suites.
+2. **Deployment ke VM Server (`forfh`)**:
+   - `git push origin master` (commit `4e3d679`).
+   - `git pull`, `npm run build`, `pm2 restart flashpeak-bot` (PID 3296579).
+3. **Pengesahan Match 7Sins vs Mizukage di VM**:
+   - `report_version` `6433632f-64a4-457f-8dc0-8213be983376` divalidasi sukses (`isValid: true`).
+   - Warning tercatat: *"⚠️ Peringatan Pelanggaran Roster: Pemain #5 'KGE.Tron' tidak terdaftar di roster aktif Tim B. Karena Tim B kalah (1 - 7), skor asli tetap berlaku demi keadilan tim pemenang, namun pemain ini berstatus INELIGIBLE (tidak berhak atas penghargaan individu)."*
+   - Approval consensus: Team A (7Sins) + Organizer -> status transisi ke `LOCKED`.
+   - `fixtures` (`5093fee9-11fa-4544-a5b0-02830b1314fa`): `COMPLETED`.
+   - `games` (`2db4d0df-1b8f-4eff-845e-8c78d2b97c9b`): `COMPLETED`, Team A 7, Team B 1.
+   - `player_game_stats`: `KGE.Tron` tercatat dengan `status = 'INELIGIBLE'` dan `is_award_eligible = 0`.
+   - Klasemen Grup A resmi terupdate:
+     - 1. Helix Moonbreaker: 2 Main, 2 Menang, 12 GF, 4 GA, +8 GD, 6 Poin
+     - 2. 7Sins•BlueLock Venom: 1 Main, 1 Menang, 7 GF, 1 GA, +6 GD, 3 Poin
+     - 3. Agility Starlight: 1 Main, 0 Menang, 2 GF, 6 GA, -4 GD, 0 Poin
+     - 4. Mizukage: 2 Main, 0 Menang, 3 GF, 13 GA, -10 GD, 0 Poin
+
+---
+
 ## [2026-11-23] Sesi: Rollback Pendaftaran KGE.Tron & Penundaan Status Match 7Sins vs Mizukage Menunggu Keputusan Panitia
 
 ### Konteks Sesi & Instruksi User
