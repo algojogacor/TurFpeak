@@ -237,3 +237,46 @@ export function formatUnreadableEvidenceMessage(options: UnreadableEvidenceMessa
 
   return lines.join('\n');
 }
+
+export interface GoalkeeperSuspendedMessageOptions {
+  sessionId?: string;
+  fixtureCode?: string;
+}
+
+/**
+ * Notification when participant submits a goalkeeper / player detail screenshot.
+ * Explains that goalkeeper statistics & awards are currently suspended by tournament
+ * regulations, so goalkeeper screenshots do not need to be submitted.
+ */
+export function formatGoalkeeperSuspendedMessage(options: GoalkeeperSuspendedMessageOptions = {}): string {
+  const lines: string[] = [];
+
+  lines.push('🧤 *Statistik Kiper Tidak Perlu Dikirim (Ditangguhkan)*');
+  lines.push('');
+  lines.push(
+    'Halo! Screenshot skor akhir pertandingan (main match summary) tidak terdeteksi di laporan ini, melainkan terdeteksi sebagai statistik Kiper / detail pemain.'
+  );
+  lines.push('');
+  lines.push(
+    '📌 *Pemberitahuan Panitia:* Penghargaan *Best Goalkeeper* saat ini telah *DITANGGUHKAN* untuk season ini (karena keterbatasan tampilan game Flash Peak & kesulitan verifikasi statistik save kiper).'
+  );
+  lines.push('');
+  lines.push('Oleh karena itu:');
+  lines.push('• Foto/screenshot statistik kiper *sudah tidak perlu dikirimkan lagi*.');
+  lines.push('• Mohon kirim ulang screenshot skor akhir pertandingan (tampilan akhir 4v4 lengkap) jika kamu belum melapor.');
+  lines.push('• Jika skor akhir sudah dilaporkan sebelumnya, silakan cek draf di grup dan ketik *!approve* untuk menyetujui.');
+
+  const refs: string[] = [];
+  if (options.fixtureCode) {
+    refs.push(`Pertandingan: *${options.fixtureCode}*`);
+  }
+  if (options.sessionId) {
+    refs.push(`Sesi: \`${options.sessionId.slice(0, 8)}\``);
+  }
+  if (refs.length > 0) {
+    lines.push('');
+    lines.push(`📌 ${refs.join(' | ')}`);
+  }
+
+  return lines.join('\n');
+}

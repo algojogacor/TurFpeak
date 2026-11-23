@@ -38,6 +38,7 @@ import {
   formatAIRetryPendingMessage,
   formatAIRetriesExhaustedMessage,
   formatUnreadableEvidenceMessage,
+  formatGoalkeeperSuspendedMessage,
 } from '../whatsapp/failure.js';
 import type { UUID, ReportVersion } from '../shared/types/index.js';
 
@@ -153,6 +154,21 @@ export async function processClaimedBatch(
         const caption = linkedMsg?.caption || linkedMsg?.text_body || undefined;
         gkDetailAssets.push({ base64, mime_type: asset.mime_type, caption });
       } else if (classification.screen_type === 'UNREADABLE') {
+        const linkedMsg = batch.messages.find((m) => m.id === asset.source_message_id);
+        const caption = `${linkedMsg?.caption || ''} ${linkedMsg?.text_body || ''}`.toLowerCase();
+        const mentionsGk = caption.includes('gk') || caption.includes('kiper') || caption.includes('keeper');
+        if (mentionsGk) {
+          await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
+          return {
+            sessionId,
+            fixtureId,
+            targetChatId,
+            status: 'NEEDS_CORRECTION',
+            whatsappSummary: formatGoalkeeperSuspendedMessage({ sessionId }),
+            error: 'Goalkeeper statistics submission suspended by tournament regulations',
+          };
+        }
+
         // AI responded but could not read the image: participant-side fix needed.
         // Terminal for this attempt (no provider-outage retry): ask for a clearer photo.
         await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
@@ -200,6 +216,25 @@ export async function processClaimedBatch(
 
     if (!mainMatchBase64) {
       await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
+
+      const isGoalkeeperDetected =
+        gkDetailAssets.length > 0 ||
+        batch.messages.some((m) => {
+          const text = `${m.caption || ''} ${m.text_body || ''}`.toLowerCase();
+          return text.includes('gk') || text.includes('kiper') || text.includes('keeper');
+        });
+
+      if (isGoalkeeperDetected) {
+        return {
+          sessionId,
+          fixtureId,
+          targetChatId,
+          status: 'NEEDS_CORRECTION',
+          whatsappSummary: formatGoalkeeperSuspendedMessage({ sessionId }),
+          error: 'Goalkeeper statistics submission suspended by tournament regulations',
+        };
+      }
+
       return {
         sessionId,
         fixtureId,
@@ -551,6 +586,11 @@ export async function processClaimedBatch(
     if (gkWarnings.length > 0) {
       validation.warnings.push(...gkWarnings);
     }
+    if (gkDetailAssets.length > 0) {
+      validation.warnings.push(
+        'ℹ️ Foto kiper diabaikan karena penghargaan Best Goalkeeper ditangguhkan oleh panitia untuk season ini.'
+      );
+    }
 
     // If Knockout BO3/BO5 GK screenshot count is deficient, flag as NEEDS_CORRECTION
     if (isKnockoutSeries && !isGkCountValid) {
@@ -610,7 +650,14 @@ export async function processClaimedBatch(
           rating: r,
         };
       }),
-      uncertainties: validation.warnings,
+      uncertainties: [
+        ...validation.errors.map((e) => `❌ ${e}`),
+        ...validation.warnings,
+      ],
+      rejectionReason:
+        validation.errors.length > 0
+          ? validation.errors.join('\n')
+          : undefined,
       pendingApprovers:
         draftStatus !== 'PENDING_APPROVAL'
           ? []

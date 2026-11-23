@@ -159,18 +159,29 @@ export function getRequiredApprovers(version: ReportVersion): ApproverType[] {
   let scoreA: number | null = null;
   let scoreB: number | null = null;
 
-  try {
-    const jsonStr = version.validated_data_json || version.extraction_json;
-    if (jsonStr) {
+  const tryExtractScores = (jsonStr?: string | null) => {
+    if (!jsonStr) return;
+    try {
       const parsed = JSON.parse(jsonStr);
       const data = parsed.validatedData || parsed.raw_extraction || parsed.summary_data || parsed;
-      if (data.team_a_score !== undefined && data.team_b_score !== undefined && data.team_a_score !== null && data.team_b_score !== null) {
+      if (
+        data &&
+        data.team_a_score !== undefined &&
+        data.team_b_score !== undefined &&
+        data.team_a_score !== null &&
+        data.team_b_score !== null
+      ) {
         scoreA = Number(data.team_a_score);
         scoreB = Number(data.team_b_score);
       }
+    } catch {
+      // ignore parse error
     }
-  } catch {
-    // fallback below
+  };
+
+  tryExtractScores(version.validated_data_json);
+  if (scoreA === null || scoreB === null || isNaN(scoreA) || isNaN(scoreB)) {
+    tryExtractScores(version.extraction_json);
   }
 
   if (scoreA !== null && scoreB !== null && !isNaN(scoreA) && !isNaN(scoreB)) {

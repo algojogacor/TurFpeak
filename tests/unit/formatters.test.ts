@@ -9,6 +9,7 @@ import {
 } from '../../src/whatsapp/formatters.js';
 import {
   formatAIFailureMessage,
+  formatGoalkeeperSuspendedMessage,
   STANDARD_FAILURE_TEXT_EN,
   STANDARD_FAILURE_TEXT_ID,
 } from '../../src/whatsapp/failure.js';
@@ -332,6 +333,22 @@ describe('Fase 6: WhatsApp Message Formatters & Failure Handlers', () => {
       expect(schedule).toContain('✅ *Singa FC*  3 - 0  *Kucing FC* _(WO)_');
       expect(schedule).toContain('⏳ *Harimau FC* vs *Singa FC* (Host: Harimau FC)');
       expect(schedule).toContain('👤 @62812345678 vs @62898765432');
+    });
+  });
+
+  describe('formatGoalkeeperSuspendedMessage', () => {
+    it('formats a polite notification that goalkeeper statistics are suspended and not unreadable', () => {
+      const msg = formatGoalkeeperSuspendedMessage({
+        sessionId: 'a58f11e0-8364-43c7-b6d7-f4e09ac5b205',
+        fixtureCode: 'ROUND_1 - GRUP A',
+      });
+
+      expect(msg).toContain('🧤 *Statistik Kiper Tidak Perlu Dikirim (Ditangguhkan)*');
+      expect(msg).toContain('DITANGGUHKAN');
+      expect(msg).toContain('tidak perlu dikirimkan lagi');
+      expect(msg).toContain('!approve');
+      expect(msg).toContain('Sesi: `a58f11e0`');
+      expect(msg).not.toContain('Tidak Dapat Dibaca');
     });
   });
 });
