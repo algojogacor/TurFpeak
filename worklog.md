@@ -1,5 +1,57 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Relaksasi Aturan Kiper (Lineup 4 Outfield) & Pembaruan Langsung Data Pertandingan Kazekage vs Team Zodiac di Server
+
+### Konteks Sesi & Permintaan User
+1. **Penghapusan Penegakan Ketat Kiper (Goalkeeper Requirement Removal)**:
+   - User menegaskan bahwa statistik dan penghargaan Best Goalkeeper telah ditangguhkan (SUSPEND_GOALKEEPER=true / cek !awards).
+   - Tampilan ringkasan akhir pertandingan (in-game scoreboard) Flash Peak hanya menampilkan 4 baris pemain outfield per tim (kiper tidak ditampilkan).
+   - Penegakan sebelumnya yang mewajibkan 5 pemain (1 GK + 4 Outfield) menyebabkan kegagalan validasi:
+     - AI mengabaikan baris asli atau menambahkan kiper bayangan (phantom player).
+     - Pertandingan Kazekage vs Team Zodiac ditolak dengan 'Team B must have exactly 5 players in the lineup (1 GK, 4 outfield), got 4'.
+   - Instruksi user: Suruh AI melupakan pemisahan kiper pada parsing dan semua validasi, serta dukung lineup 4 outfield secara native.
+2. **Pembaruan Data Kazekage vs Team Zodiac Langsung di Server**:
+   - Update langsung data pertandingan via server ke database VM (local.sqlite):
+     - Skor: Kazekage 1 - 2 Team Zodiac
+     - Pemenang: Team Zodiac
+     - Statistik Pemain Kazekage (Score: 1):
+       - KGE.Xieman (Rating: 10.0, Gol: 0, Ast: 0, Pass: 11, Def: 20)
+       - KGE.F9 (Rating: 9.9, Gol: 0, Ast: 0, Pass: 8, Def: 19)
+       - KGE.Floww (Rating: 7.8, Gol: 1, Ast: 0, Pass: 8, Def: 2)
+       - KGE.Vnskie (Rating: 6.9, Gol: 0, Ast: 0, Pass: 5, Def: 1)
+     - Statistik Pemain Team Zodiac (Score: 2):
+       - TZ・Ҡurøko✦ (Rating: 10.0 MVP, Gol: 0, Ast: 0, Pass: 14, Def: 19)
+       - TZ・Տhυki✦ (Rating: 8.7, Gol: 1, Ast: 1, Pass: 5, Def: 5)
+       - TZ・Ҡurøna✦ (Rating: 8.4, Gol: 0, Ast: 0, Pass: 8, Def: 8)
+       - TZ・ϻartysυpp (Rating: 7.4, Gol: 1, Ast: 1, Pass: 3, Def: 0)
+     - Membuat report version v3 dengan status PENDING_APPROVAL.
+     - Mengirimkan draf ringkasan ke grup WhatsApp turnamen via antrean outbox_messages.
+
+### Perubahan Kode (Surgical)
+1. **src/reports/validation.ts**:
+   - Memperbarui validasi jumlah pemain per sisi: menerima 4 hingga 5 pemain (length >= 4 && length <= 5).
+   - Merelaksasi aturan komposisi posisi: tidak lagi memaksa wajib 1 GK + 4 Outfield saat kiper ditangguhkan, cukup memastikan tidak lebih dari 1 GK (teamAGkCount <= 1 dan teamBGkCount <= 1). Lineup 4 pemain outfield langsung dinyatakan valid (0 GK, 4 Outfield).
+2. **src/application/evidence-batch-processor.ts**:
+   - Pada buildFullLineup: jika isGkSuspended && players.length >= 4, sistem langsung mempertahankan 4 pemain hasil ekstraksi layar tanpa menyuntikkan kiper bayangan (phantom GK) ke draf laporan.
+3. **src/ai/prompts/match.ts**:
+   - Memperbarui MAIN_MATCH_PROMPT dan buildUserPrompt: memberikan arahan jelas bahwa layar scoreboard Flash Peak hanya menampilkan tepat 4 baris pemain outfield per sisi. AI dilarang menyubstitusi, mengarang, atau menukar baris pemain outfield dengan kiper roster.
+4. **tests/unit/reports.test.ts & tests/integration/evidence_media_guards.test.ts**:
+   - Memperbarui tes unit validasi: memastikan lineup 4 pemain outfield diterima dengan isValid: true dan lineup < 4 pemain (3 pemain) ditolak dengan jelas.
+   - Menambahkan tes integrasi untuk SUSPEND_GOALKEEPER=true: membuktikan bahwa 4 pemain outfield diproses tanpa penambahan kiper bayangan.
+
+### Verifikasi Empiris & Hasil Nyata
+1. **Pengujian Unit & Integrasi Lokal (Vitest)**:
+   - Menjalankan npm test: 340 tests passed across 23 test files (100% lulus tanpa kegagalan).
+2. **Deployment ke Azure VM Korea (forfh)**:
+   - Git commit e4d4175 dipush ke master, ditarik di VM via git pull, dibuild (npm run build), dan proses PM2 flashpeak-bot di-restart dengan sukses.
+3. **Eksekusi Pembaruan Data di Server**:
+   - Validasi data Kazekage 1 - 2 Team Zodiac di server: isValid: true, errors: [], warnings: [].
+   - Report version baru v3 dibuat dengan status: PENDING_APPROVAL, provenance: MANUAL_ENTRY.
+   - Ringkasan draf berformat resmi di-enqueue ke outbox_messages dan langsung terkirim oleh bot ke grup WhatsApp (120363412423738009@g.us).
+   - Log PM2 membuktikan pengiriman sukses ([FlashPeakApp] Outbox message sent successfully), dan delegasi langsung merespons di grup ('gas approve').
+
+---
+
 ## [2026-11-23] Sesi: Penambahan Aksi adjust_quiz_score pada AI Agent Panitia (!agent)
 
 ### Konteks Sesi & Permintaan User
@@ -2675,7 +2727,7 @@ Melakukan dekonstruksi mendalam terhadap sistem fisika, mekanik taktis AI, geome
   - Untuk Round 2 (20:30 WIB), status fixture masih `SCHEDULED`, sehingga AI Vision bot akan memproses screenshot secara 100% otomatis seperti biasa.
 
 
-## 2026-11-23 � Session 12: Multi-Tier LLM Architecture & Cutoff Dispensation Execution
+## 2026-11-23 � Session 12: Multi-Tier LLM Architecture & Cutoff Dispensation Execution
 ### 1. Perubahan Konkret
 - **Multi-Provider Priority Router**:
   - src/ai/router.ts: Menerapkan 3-tier priority routing (Kuis: Mistral -> NIM -> Gemini -> Groq -> DeepSeek; Omak Peak: Groq -> Gemini -> NIM -> Mistral -> DeepSeek; Vision: Groq -> Gemini -> NIM -> DeepSeek).
@@ -2689,17 +2741,19 @@ vidia/nemotron-3.5-bolt-e4b, sanitasi 3 key invalid Mistral (di-##).
   - Kasus Zodiac vs Hokage: Panduan dispensasi pertandingan tunda via !manualreport 38f2b9c9-4671-4019-9685-d1973d87c740 disiapkan.
 
 
-## 2026-11-23 � Session 13: Ineligible Player Roster Slot Collision Fix & Session 472b062c Resolution
+## 2026-11-23 � Session 13: Ineligible Player Roster Slot Collision Fix & Session 472b062c Resolution
 ### 1. Root Cause Analysis
-- Pada pertandingan **Helix Moonbreaker vs 7Sins�BlueLock Venom** (Sesi 472b062c), tim Venom memainkan pemain 7SB_Nesta yang tidak terdaftar di roster resmi mereka.
+- Pada pertandingan **Helix Moonbreaker vs 7Sins�BlueLock Venom** (Sesi 472b062c), tim Venom memainkan pemain 7SB_Nesta yang tidak terdaftar di roster resmi mereka.
 - Sesuai regulasi (Rule 2.12), karena Venom kalah (4-5), kemenangan Helix tetap disahkan dan 7SB_Nesta didaftarkan dengan status INELIGIBLE.
 - Namun, tim Venom sudah memiliki 10 slot pemain terisi di tabel players (slot 1..8 pemain aktif, slot 9..10 pemain ineligible sisa uji coba sebelumnya).
-- Fungsi esolveOrRegisterIneligiblePlayer sebelumnya melakukan 	argetSlot = 10 jika slot > 10, sehingga mencoba meng-INSERT slot 10 ganda dan menabrak database constraint UNIQUE(team_id, roster_slot).
+- Fungsi 
+esolveOrRegisterIneligiblePlayer sebelumnya melakukan 	argetSlot = 10 jika slot > 10, sehingga mencoba meng-INSERT slot 10 ganda dan menabrak database constraint UNIQUE(team_id, roster_slot).
 - Crash tak terduga ini memicu fallback darurat ormatAIFailureMessage (" Pemrosesan Tangkapan Layar Otomatis Sementara Tidak Tersedia\).
 
 ### 2. Perubahan Konkret
 - **src/reports/validation.ts**:
- - Memperbarui esolveOrRegisterIneligiblePlayer: jika argetSlot > 10, sistem memeriksa apakah terdapat pemain INELIGIBLE yang belum memiliki relasi pada player_game_stats.
+ - Memperbarui 
+esolveOrRegisterIneligiblePlayer: jika argetSlot > 10, sistem memeriksa apakah terdapat pemain INELIGIBLE yang belum memiliki relasi pada player_game_stats.
  - Jika ada, slot tersebut diperbarui (reuse) secara non-destruktif dengan nama pemain baru, sehingga tidak melanggar UNIQUE(team_id, roster_slot) maupun foreign key referensial.
  - Meneruskan seenPlayerIdsA dan seenPlayerIdsB ke parameter excludeIds agar jika terdapat lebih dari satu pemain tidak terdaftar, mereka tidak memakai ID pemain yang sama.
 - ** ests/unit/reports.test.ts**:
@@ -2712,10 +2766,10 @@ px vitest run tests/unit/reports.test.ts -> 27/27 passed.
 pm test -> 338/338 passed across 23 test files.
 - Commit & push: e05241.
 - VM build & PM2 reload: Berhasil online.
-- Verifikasi langsung pada sesi 472b062c: Berhasil diproses ulang secara otomatis, draf pertandingan Versi 1 (Helix Moonbreaker 5 - 4 7Sins�BlueLock Venom) telah terbit di grup WhatsApp turnamen dan berstatus PENDING_APPROVAL.
+- Verifikasi langsung pada sesi 472b062c: Berhasil diproses ulang secara otomatis, draf pertandingan Versi 1 (Helix Moonbreaker 5 - 4 7Sins�BlueLock Venom) telah terbit di grup WhatsApp turnamen dan berstatus PENDING_APPROVAL.
 
 
-## 2026-11-23 � Session 14: Roster Player Nickname Update (AVO|ROMENY -> YGC|ROMENY)
+## 2026-11-23 � Session 14: Roster Player Nickname Update (AVO|ROMENY -> YGC|ROMENY)
 ### 1. Tujuan
 - Memeriksa keberadaan pemain dengan nama AVO|ROMENY.
 - Mengubah nickname pemain tersebut menjadi YGC|ROMENY atas instruksi Organizer.
@@ -2736,8 +2790,10 @@ ickname_search_key: ygcromeny.
 1. **Fitur !agent untuk Klaim WO**:
    - Aksi orfeit_winner sudah terdaftar di AgentActionCatalog (src/application/agent-actions.ts).
    - Namun, terdapat 3 hambatan kritis yang menyebabkannya gagal saat dipicu (misal: !agent team zodiac menang wo atas hokage):
-     - **Context ID Missing**: uildPlannerContext pada src/application/agent-planner.ts hanya memilih nama tim (	eam_a_name, 	eam_b_name) tanpa menyertakan UUID tim (	eam_a_id, 	eam_b_id) pada ecent_fixtures. Akibatnya, model AI tidak mengetahui UUID tim pemenang.
-     - **Validasi String vs UUID**: Model AI mengembalikan nama tim (mis. "Team Zodiac") ke winning_team_id. Fungsi preview membandingkannya dengan string UUID ow.team_a_id (d4d92be0...), sehingga langsung ditolak dengan pesan: ❌ winning_team_id "Team Zodiac" bukan peserta fixture ini.
+     - **Context ID Missing**: uildPlannerContext pada src/application/agent-planner.ts hanya memilih nama tim (	eam_a_name, 	eam_b_name) tanpa menyertakan UUID tim (	eam_a_id, 	eam_b_id) pada 
+ecent_fixtures. Akibatnya, model AI tidak mengetahui UUID tim pemenang.
+     - **Validasi String vs UUID**: Model AI mengembalikan nama tim (mis. "Team Zodiac") ke winning_team_id. Fungsi preview membandingkannya dengan string UUID 
+ow.team_a_id (d4d92be0...), sehingga langsung ditolak dengan pesan: ❌ winning_team_id "Team Zodiac" bukan peserta fixture ini.
      - **Query Kolom Non-Existent**: Pada tahap execute, kode mencoba menjalankan SELECT status, winner_team_id FROM fixtures WHERE id = ?. Kolom winner_team_id tidak ada di tabel ixtures (hanya ada di tabel games), yang akan menyebabkan runtime SQL error jika dieksekusi.
      - **Hak Akses (RBAC)**: !agent dibatasi khusus untuk role ORGANIZER. Delegasi tim biasa tidak dapat menggunakan !agent (delegasi diarahkan memakai !claimwo / !wo / !klaimwo).
 2. **Klaim WO Delegasi (!claimwo / !klaimwo)**:
