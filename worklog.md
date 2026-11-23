@@ -1,5 +1,66 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Perbaikan Sistem Kuis (Keyword Enrichment, Normalisasi Koma Desimal, Two-Tier Evaluation & LLM Fallback)
+
+### Konteks Sesi & Permintaan User
+1. **Masalah Akurasi Deteksi Jawaban Kuis**:
+   - User mengamati di log WhatsApp dan grup bahwa banyak jawaban benar dari peserta yang tidak terdeteksi oleh bot saat sesi `!quiz`.
+   - Contoh nyata di log VM:
+     - Pertanyaan batas waktu backpass kiper (jawaban `0.3 detik`): Peserta mengetik `0.3` dan `0,3`, tetapi bot membalas `❌ Kurang tepat`.
+     - Pertanyaan jumlah karakter yang dikontrol pemain (jawaban `1 karakter`): Peserta mengetik `1` atau `satu`, tetapi bot menolak karena daftar keyword hanya memiliki variasi frasa panjang (`"1 karakter"`, `"satu pemain"`).
+   - Selama durasi kuis 15 detik, obrolan/tawa santai peserta (`wkwk`, `anj`, `capek gw`) salah dideteksi sebagai jawaban kuis dan disampahi notifikasi `❌ Kurang tepat`.
+2. **Arsitektur yang Diinginkan**:
+   - **Tier 1 (Keyword Match Pertama)**: Wajib memprioritaskan keyword matching terlebih dahulu (instan 0ms, hemat token/bebas biaya, respon selebrasi langsung).
+   - **Tier 2 (Filter Obrolan & Fallback LLM Semantic)**: Jika keyword tidak match, filter kata-kata ketawa/basa-basi agar bot tidak spam. Jika dicurigai sebagai tebakan jawaban sungguhan, evaluasi secara semantik menggunakan LLM berkecepatan tinggi dengan timeout ketat (3.5 detik).
+
+### Investigasi & Root Cause
+1. **Bug Penghapusan Karakter Koma/Titik Desimal**:
+   Pada `isQuizAnswerMatch`, pembersihan teks menggunakan `.replace(/[^\w\s%]/g, ' ')`. Karakter titik (`.`) dan koma (`,`) dihapus dan diganti spasi, sehingga `0.3` dan `0,3` berubah menjadi `"0 3"`. Akibatnya, perbandingan substring `"0 3".includes("0.3")` selalu bernilai `false`.
+2. **Kekurangan Token Sinonim Angka Tunggal di JSON**:
+   File `src/data/flashpeak-trivia.json` memiliki 22 soal kuis, namun banyak soal angka hanya mendaftarkan kata majemuk, bukan token angka tunggal yang biasa diketik cepat oleh pengguna (`"1"`, `"satu"`, `"5"`, `"lima"`, `"10"`, `"ff"`, `"tidak"`, dll).
+3. **Ketiadaan Evaluator Semantik Fleksibel**:
+   Jawaban peserta yang benar secara makna tetapi menggunakan susunan kata berbeda (misalnya `"cuma pegang satu jagoan doang min"`) langsung ditolak tanpa evaluasi semantik.
+
+### Perubahan Kode (Surgical)
+1. **`src/data/flashpeak-trivia.json`**:
+   - Memperkaya dan melengkapi keyword pada seluruh 22 soal kuis:
+     - Soal angka & desimal: ditambahkan token tunggal `["1", "satu", "5", "lima", "10", "sepuluh", "0.3", "0,3", "0.3 detik", "0,3 detik", "nol koma tiga detik"]`.
+     - Soal Free Fire: ditambahkan `["ff", "epep", "freefire"]`.
+     - Soal jawaban negatif: ditambahkan `["tidak", "ngga", "nggak", "gaada", "gak", "ga", "tdk", "no"]`.
+     - Soal ukuran lapangan: ditambahkan variasi angka `["66x103", "103x66", "66 103"]`.
+2. **`src/application/quiz-session.ts`**:
+   - Memperbaiki normalisasi angka desimal:
+     - Mengubah format koma desimal menjadi titik (`replace(/(\d+),(\d+)/g, '$1.$2')`).
+     - Mempertahankan karakter titik (`.`) dan persen (`%`) pada regex pembersihan teks (`replace(/[^\w\s.%]/g, ' ')`).
+   - Mengimplementasikan `QuizSessionManagerDeps` dengan `providerRouter?: ProviderRouter`.
+   - Mengubah `evaluateAnswer` menjadi fungsi `async`:
+     - **Tahap 1**: Deterministic keyword matching via `isQuizAnswerMatch` (0ms, 0 token, respon instan).
+     - **Tahap 2**: Casual banter / laughter regex filter (menolak `wkwk`, `anj`, `capek`, dll agar tidak spam `❌ Kurang tepat`).
+     - **Tahap 3**: Fallback semantik LLM via `providerRouter.chatCompletion` (timeout 3.5s). LLM diminta menilai secara ketat apakah jawaban adalah `BENAR`, `SALAH`, atau `BUKAN_JAWABAN`.
+3. **`src/application/ai-native-commands.ts` & `src/index.ts`**:
+   - Meneruskan `providerRouter` ke instance `QuizSessionManager`.
+   - Memperbarui pemanggilan `evaluateAnswer` menjadi `await` pada penanganan pesan masuk Baileys di `src/index.ts`.
+4. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan unit test mendalam untuk:
+     - Matching angka desimal (`0.3` dan `0,3`).
+     - Pengenalan variasi angka (`1`, `satu`).
+     - Filter obrolan santai (`wkwkwk`, `capek gw min`).
+     - Fallback semantik ke LLM ketika keyword tidak cocok namun makna benar.
+
+### Verifikasi Empiris
+1. **Unit Test Lokal (Vitest)**:
+   - `npx vitest run tests/unit/ai_native.test.ts`: 61/61 tests passed.
+   - `npx vitest run`: Seluruh 335 tests pada 23 test suites passed 100% tanpa regresi.
+2. **Build Lokal & Git Commit**:
+   - `npm run build` sukses (`tsc` dan penyalinan data JSON).
+   - Commit `2d1efe9` di-push ke remote `master`.
+3. **Deploy & Verifikasi di Azure VM (`forfh`)**:
+   - `git pull origin master` & `npm run build` berhasil pada VM.
+   - PM2 restart `flashpeak-bot` (PID 3315251) berhasil online.
+   - Log PM2 membuktikan koneksi Baileys aktif dan pesan masuk real-time berhasil diterima (`tidak`, `Aku admin kau member`, dll).
+
+---
+
 ## [2026-11-23] Sesi: Penyesuaian Prioritas Provider AI Berdasarkan Biaya (Cost-Aware Routing)
 
 ### Konteks Sesi & Instruksi User
