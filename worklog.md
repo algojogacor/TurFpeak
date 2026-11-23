@@ -1,5 +1,49 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Model Matrix Audit, Provider Live Endpoint Benchmark & Baseline Confirmation
+
+### Konteks Sesi & Tujuan Tugas
+- Roster / Swarm Agent: Coordinator / Solo Senior Engineer
+- Purpose:
+  1. Melakukan audit komprehensif terhadap seluruh LLM yang aktif di sistem Flash Peak TMS di semua provider (Groq, Gemini, NVIDIA NIM, Mistral, DeepSeek, Cohere) dan 3 pipeline (Chat Omak Peak, Vision OCR Bukti Skor, Structured Data & Quiz).
+  2. Menguji ketersediaan live endpoint dan respon inferensi untuk model-model flagship via API key di environment server (`forfh`).
+  3. Mengonfirmasi status baseline model matrix sesuai instruksi eksplisit user: mempertahankan arsitektur dan model aktif yang ada tanpa perubahan spekulatif.
+
+### Hasil Audit & Benchmark Model Matrix
+1. **Pipeline Chat Komunitas Omak Peak (`!ai`)**:
+   - `Tier 1`: `qwen/qwen3.8-27b` (Groq) — 27B parameter, latensi 300–500ms, natural Indonesian slang.
+   - `Tier 2`: `gemini-3-flash-preview` (Google Gemini) — fast multimodal reasoning.
+   - `Tier 3`: `nvidia/nemotron-3-ultra-550b-a55b` (NVIDIA NIM) — 550B parameter, live benchmark berhasil: *"Wassup, apa kabar? Gas ke TKP aja! 😎🤙"*.
+   - `Tier 4`: `codestral-latest` (Mistral AI).
+   - `Tier 5`: `deepseek-flash` (DeepSeek).
+   - `Tier 6`: `command-a-reasoning-08-2025` (Cohere).
+2. **Pipeline Vision OCR Bukti Pertandingan (Screenshot Scoreboard)**:
+   - `Tier 1`: `qwen/qwen3.8-27b` (Groq Vision).
+   - `Tier 2`: `gemini-3-flash-preview` (Google Gemini) — high clarity game scoreboard OCR.
+   - `Tier 3`: `nvidia/nemotron-3.5-super-vl-120b-a12b` (NVIDIA NIM) — 120B VLM model.
+   - `Tier 4`: `ministral-14b-latest` (Mistral AI Vision).
+3. **Pipeline Structured Data & Logika Admin (`!quiz`, `!trivia`, Roster Parser)**:
+   - `Tier 1`: `codestral-latest` (Mistral AI) — dedicated code & JSON schema adherence.
+   - `Tier 2`: `nvidia/nemotron-3-ultra-550b-a55b` (NVIDIA NIM) — 550B parameter.
+   - `Tier 3`: `gemini-3-flash-preview` (Google Gemini).
+   - `Tier 4`: `qwen/qwen3.8-27b` (Groq).
+
+### Bukti Verifikasi Empiris
+- **Live Endpoint Verification**:
+  - Groq `/v1/models`: Terverifikasi 11 model aktif (termasuk `qwen/qwen3.8-27b` dan `openai/gpt-oss-120b`).
+  - NVIDIA NIM `/v1/models`: Terverifikasi 32 model aktif (termasuk `nemotron-3-ultra-550b-a55b`, `nemotron-3.5-super-vl-120b-a12b`, `mistral-large-4-1t-a52b`).
+  - DeepSeek `/models`: Terverifikasi `deepseek-flash` dan `deepseek-v4-pro`.
+  - Mistral `/v1/models`: Terverifikasi `codestral-latest` dan `ministral-14b-latest`.
+  - Gemini `/v1beta/models`: Terverifikasi `gemini-3-flash-preview`.
+- **Database Status**:
+  - Skor walkover `Yakigami 0 - 3 Astra Lumina Nova` dan klasemen Grup B di `local.sqlite` pada server terverifikasi valid dan konsisten.
+- **Test Suite**:
+  - `npm test`: 417 passing tests across 24 test files (0 failures).
+- **Service Status**:
+  - PM2 app 10 (`flashpeak-bot`) online, memory 57.8MB, aktif memproses pesan masuk dan media WhatsApp grup secara real-time.
+
+---
+
 ## [2026-11-23] Sesi: Entity-Level Context Pruning & Rollback Routing Configuration (Omak Peak Pruner)
 
 ### Konteks Sesi & Tujuan Tugas
