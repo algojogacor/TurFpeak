@@ -332,5 +332,80 @@ export function registerAiNativeCommands(
     },
   });
 
+  // -------------------------------------------------------------------------
+  // !aistatus  —  statistics of AI providers usage (any role, group + DM)
+  // -------------------------------------------------------------------------
+  router.registerCommand({
+    command: 'aistatus',
+    requiredRole: 'ANY',
+    description: 'Lihat statistik & rekap penggunaan AI / LLM multi-provider turnamen.',
+    allowedInDm: true,
+    allowedInGroup: true,
+    handler: async () => {
+      try {
+        const res = await deps.db.execute(`
+          SELECT 
+            provider,
+            COUNT(*) as total_calls,
+            SUM(CASE WHEN request_status = 'SUCCESS' THEN 1 ELSE 0 END) as success_calls,
+            ROUND(AVG(latency_ms)) as avg_latency,
+            SUM(COALESCE(input_units, 0)) as total_input_tokens,
+            SUM(COALESCE(output_units, 0)) as total_output_tokens
+          FROM provider_usage
+          GROUP BY provider
+          ORDER BY total_calls DESC
+        `);
+
+        if (res.rows.length === 0) {
+          const breakers = deps.providerRouter ? deps.providerRouter.getCircuitBreakerStatuses() : {};
+          const activeList = Object.entries(breakers)
+            .map(([p, s]) => `• *${p}*: ${s.state === 'CLOSED' ? '🟢 Aktif (CLOSED)' : `🔴 Gangguan (${s.state})`}`)
+            .join('\n');
+
+          return {
+            success: true,
+            responseText: [
+              '📊 *STATISTIK PENGGUNAAN AI / LLM TURNAMEN* 🤖',
+              '──────────────────────────────',
+              'Belum ada riwayat request tercatat di database.',
+              '',
+              '🔌 *Status Health Provider:*',
+              activeList || '• Multi-provider router standby.',
+              '──────────────────────────────',
+              '💡 _Prioritas utama: Mistral & Cohere. Fallback: Nvidia NIM, DeepSeek, Groq, Gemini._',
+            ].join('\n'),
+          };
+        }
+
+        const lines = [
+          '📊 *STATISTIK PENGGUNAAN AI / LLM TURNAMEN* 🤖',
+          '──────────────────────────────',
+        ];
+
+        for (const row of res.rows) {
+          const p = String(row.provider);
+          const total = Number(row.total_calls);
+          const success = Number(row.success_calls);
+          const avgLat = Number(row.avg_latency);
+          const inTok = Number(row.total_input_tokens);
+          const outTok = Number(row.total_output_tokens);
+          lines.push(`• *${p}*: ${total} calls (✅ ${success} sukses) | Avg: ${avgLat}ms | Tokens: ${inTok + outTok}`);
+        }
+
+        lines.push('──────────────────────────────');
+        lines.push('💡 _Sistem multi-provider aktif dengan prioritas Mistral & fallback otomatis._');
+        return {
+          success: true,
+          responseText: lines.join('\n'),
+        };
+      } catch {
+        return {
+          success: false,
+          responseText: '⚠️ Gagal membaca statistik penggunaan AI.',
+        };
+      }
+    },
+  });
+
   return { omakPeak, agent, qna, engagement, trivia, quizSessionManager };
 }

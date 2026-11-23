@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import { downloadMediaWithLimits } from '../whatsapp/media-download.js';
@@ -189,6 +190,38 @@ async function main() {
   const providerRouter = new ProviderRouter({
     adapters,
     prioritizeByTask: true,
+    onTelemetry: async (t) => {
+      const tokenInfo =
+        t.input_tokens !== null && t.input_tokens !== undefined
+          ? `in=${t.input_tokens}, out=${t.output_tokens ?? 0}`
+          : 'tokens: N/A';
+      console.log(
+        `[LLM] 🤖 ${t.provider} (${t.model}) | Task: ${t.task_type} | ${t.status} (${t.latency_ms}ms) | ${tokenInfo}${t.error_code ? ` | Error: ${t.error_code}` : ''}`
+      );
+      try {
+        await db.execute({
+          sql: `INSERT INTO provider_usage (
+                  id, provider, model, task_type, request_status,
+                  input_units, output_units, latency_ms, error_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            randomUUID(),
+            t.provider,
+            t.model,
+            t.task_type,
+            t.status,
+            t.input_tokens ?? null,
+            t.output_tokens ?? null,
+            t.latency_ms,
+            t.error_code ?? null,
+            new Date().toISOString(),
+          ],
+        });
+      } catch (dbErr) {
+        // Fire-and-forget telemetry: DB write failures must never crash the bot
+        console.error('[AI Telemetry DB Error]', dbErr);
+      }
+    },
   });
 
   // 4. Initialize WhatsApp Connection
