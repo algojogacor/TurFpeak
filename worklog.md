@@ -1,5 +1,24 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Pengiriman Broadcast Pengumuman Resmi Kuis ke Grup Turnamen via Omak Peak
+
+### Konteks Sesi & Instruksi User
+1. **Instruksi Pengiriman ("Gas")**:
+   - Panitia Arya menyetujui draf final pengumuman kuis dan meminta pesan segera diluncurkan ke grup turnamen resmi Gojiha Cup S1 via nomor WhatsApp resmi bot Omak Peak.
+2. **Eksekusi Pengiriman**:
+   - Target Chat: `120363412423738009@g.us` (Grup resmi turnamen).
+   - Jalur Pengiriman: Transactional Outbox queue (`outbox_messages`).
+   - Message ID: `d4388383-54cf-4de7-9dff-5acafd7348d2`.
+
+### Verifikasi Empiris & Bukti Live Server
+1. **Outbox State Transition**:
+   - Status awal: `PENDING`.
+   - Status akhir: `SENT` pada `2026-11-23T03:45:27.364Z` (`error: null`).
+2. **Log Running Bot (PM2 PID 3308072)**:
+   - `{"level":30,"time":1795405527378,"pid":3308072,"hostname":"forfh-korea-vm","id":"d4388383-54cf-4de7-9dff-5acafd7348d2","chatId":"120363412423738009@g.us","msg":"[FlashPeakApp] Outbox message sent successfully"}`
+   - Pesan resmi panitia terkirim secara instan ke grup turnamen Gojiha Cup S1 tanpa kendala jaringan atau enkripsi Baileys.
+
+
 ## [2026-11-23] Sesi: Sinkronisasi Regulasi Resmi (!rule) & Pendaftaran Alias Kuis (!kuis) ke !help
 
 ### Konteks Sesi & Permintaan User
