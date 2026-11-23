@@ -2645,3 +2645,32 @@ Melakukan dekonstruksi mendalam terhadap sistem fisika, mekanik taktis AI, geome
      Nanti malam AVOID Prime lawan Elite 8, hostnya AVOID Prime. Ronde 2, jadwalnya fleksibel disepakati sama delegasi kedua tim sebelum cutoff pukul 19:59 WIB.
      ```
    - Hasil akurat, menyebut lawan yang benar di Ronde 2 (`Elite 8`), host room yang benar (`AVOID Prime`), regulasi cutoff 19:59 WIB yang tepat, serta tanpa kebocoran istilah database.
+
+---
+
+## 2026-11-23 — Session 11: Matchday Cutoff & Late Match Dispensation Analysis (Zodiac vs Hokage)
+### 1. Tujuan Sesi
+- Menganalisis skenario penjadwalan khusus di mana delegasi **Hokage FP** dan **Team Zodiac** (Grup D) meminta dispensasi tanding:
+  - Pertandingan tunda Round 1 (Team Zodiac vs Hokage) dimainkan malam ini pukul **20:00 WIB**.
+  - Dilanjutkan pertandingan Round 2 mereka pada pukul **20:30 WIB**.
+- Menjawab pertanyaan krusial Panitia:
+  1. Apakah sistem otomatis memberikan draw 0-0 pada saat cutoff?
+  2. Apakah perlu mengedit manual SQLite database di server?
+  3. Di mana screenshot harus dikirim (ke DM Panitia atau ke Grup Resmi Turnamen)?
+
+### 2. Temuan & Analisis Arsitektur
+- **Mekanisme Cutoff Harian (`src/application/matchday-service.ts`)**:
+  - Scheduler bot memeriksa waktu setiap 30 detik. Pukul **19:59 WIB**, fungsi `processDailyCutoff()` dieksekusi untuk ronde aktif (`ROUND_1`).
+  - Pertandingan `Team Zodiac vs Hokage` yang masih berstatus `SCHEDULED` pada 19:59 WIB otomatis dinyatakan **Double Walkover (D-031)** dengan skor 0-0 dan **0 poin** untuk kedua tim (bukan hasil seri normal 1 poin).
+  - Ronde 2 kemudian diumumkan secara otomatis.
+- **Batasan Pipeline AI Vision pada Fixture Walkover (`src/application/fixture-resolver.ts`)**:
+  - `resolveFixtureForMessage` hanya mencocokkan fixture dengan status `SCHEDULED` atau `IN_PROGRESS`.
+  - Jika match Round 1 dimainkan setelah 19:59 WIB (statusnya sudah `WALKOVER`), bot AI Vision di grup tidak akan otomatis mengekstrak foto Round 1 tersebut.
+- **Solusi Tanpa Edit Database Manual**:
+  - Panitia **tidak perlu** menyentuh SQL/SQLite server secara manual.
+  - Panitia cukup menggunakan perintah resmi `!manualreport <fixture_id> <skorA>-<skorB>` (ID Fixture Zodiac vs Hokage: `38f2b9c9-4671-4019-9685-d1973d87c740`).
+  - Perintah ini secara aman menimpa status `WALKOVER` menjadi draf resmi, memicu rekalkulasi klasemen Grup D, dan tercatat di audit log.
+- **Lokasi Pengiriman Screenshot**:
+  - **Wajib ke Grup Resmi Turnamen** (`WA_CENTRAL_GROUP_JID`), bukan ke DM bot atau DM Panitia. Bot hanya mengonsumsi media di grup resmi, dan pengiriman di grup menjamin transparansi serta konsensus persetujuan (`!approve`).
+  - Untuk Round 2 (20:30 WIB), status fixture masih `SCHEDULED`, sehingga AI Vision bot akan memproses screenshot secara 100% otomatis seperti biasa.
+
