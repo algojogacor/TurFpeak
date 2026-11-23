@@ -24,6 +24,7 @@ import {
   reopenReportParams,
   forfeitWinnerParams,
   setTournamentStatusParams,
+  adjustQuizScoreParams,
 } from '../../src/application/agent-actions.js';
 import { AgentPlannerService } from '../../src/application/agent-planner.js';
 import { QnaService } from '../../src/application/qna.js';
@@ -384,6 +385,53 @@ describe('AgentActionCatalog preview validation (D-038)', () => {
     expect(ids).toContain('set_tournament_status');
     expect(ids).toContain('record_ko_game_score');
     expect(ids).toContain('announce');
+    expect(ids).toContain('adjust_quiz_score');
+  });
+
+  it('adjust_quiz_score: preview calculates old score and formatted diff', async () => {
+    const def = catalog.get('adjust_quiz_score')!;
+    const p1 = await def.preview(db, adjustQuizScoreParams.parse({
+      chat_id: 'chat-1',
+      target_address: 'user-1@lid',
+      participant_name: 'Arya',
+      new_score: 100,
+      reason: 'test',
+    }));
+    expect(p1.validation_errors).toEqual([]);
+    expect(p1.summary).toContain('0 poin');
+    expect(p1.summary).toContain('100 poin');
+  });
+
+  it('adjust_quiz_score: execute updates or inserts quiz_scores record atomically', async () => {
+    const def = catalog.get('adjust_quiz_score')!;
+    const res1 = await def.execute(db as any, adjustQuizScoreParams.parse({
+      chat_id: 'chat-1',
+      target_address: 'user-1@lid',
+      participant_name: 'Arya',
+      new_score: 100,
+      reason: 'test',
+    }));
+    expect(res1.ok).toBe(true);
+    expect((res1.after as any).score).toBe(100);
+
+    // Update again to 150
+    const res2 = await def.execute(db as any, adjustQuizScoreParams.parse({
+      chat_id: 'chat-1',
+      target_address: 'user-1@lid',
+      participant_name: 'Arya Pro',
+      new_score: 150,
+      reason: 'bonus',
+    }));
+    expect(res2.ok).toBe(true);
+    expect((res2.before as any).score).toBe(100);
+    expect((res2.after as any).score).toBe(150);
+
+    const row = await db.execute({
+      sql: 'SELECT score, participant_name FROM quiz_scores WHERE chat_id = ? AND sender_raw_address = ?',
+      args: ['chat-1', 'user-1@lid'],
+    });
+    expect(Number(row.rows[0].score)).toBe(150);
+    expect(String(row.rows[0].participant_name)).toBe('Arya Pro');
   });
 });
 

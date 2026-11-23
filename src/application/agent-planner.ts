@@ -125,7 +125,7 @@ export class AgentPlannerService {
       return {
         success: false,
         responseText:
-          '🤖 *AI AGENT PANITIA*\n\nKetik instruksi bahasa natural, contoh:\n• *!agent reopen laporan fixture abc123, alasan: skor salah*\n• *!agent pause turnamen sampai besok*\n• *!agent tim X menang WO lawan Y, lawan ga hadir*\n\nSetelah aku susun rencana, kamu konfirmasi pakai *!agentconfirm <kode>* baru aku eksekusi.',
+          '🤖 *AI AGENT PANITIA*\n\nKetik instruksi bahasa natural, contoh:\n• *!agent reopen laporan fixture abc123, alasan: skor salah*\n• *!agent pause turnamen sampai besok*\n• *!agent tim X menang WO lawan Y, lawan ga hadir*\n• *!agent ubah top leaderboard kuis jadi milikku*\n\nSetelah aku susun rencana, kamu konfirmasi pakai *!agentconfirm <kode>* baru aku eksekusi.',
       };
     }
 
@@ -138,7 +138,7 @@ export class AgentPlannerService {
     }
 
     // Build planner context: active tournament + recent fixtures + catalog.
-    const context = await buildPlannerContext(this.deps.db, this.deps.actionCatalog, instruction);
+    const context = await buildPlannerContext(this.deps.db, this.deps.actionCatalog, req);
 
     let planJson: { actions: Array<{ action_id: string; params: Record<string, unknown>; rationale?: string }> };
     try {
@@ -162,7 +162,7 @@ export class AgentPlannerService {
       return {
         success: false,
         responseText:
-          '🤔 Aku nggak bisa petakan instruksi kamu ke aksi yang tersedia. Aksi yang aku bisa lakukan: reopen laporan, override-lock, forfeit/WO, reschedule, cancel fixture, ubah status turnamen, catat skor KO, atau kirim pengumuman. Coba kata kunci yang lebih spesifik ya.',
+          '🤔 Aku nggak bisa petakan instruksi kamu ke aksi yang tersedia. Aksi yang aku bisa lakukan: reopen laporan, override-lock, forfeit/WO, reschedule, cancel fixture, ubah status turnamen, catat skor KO, kirim pengumuman, atau atur skor kuis. Coba kata kunci yang lebih spesifik ya.',
       };
     }
 
@@ -666,10 +666,17 @@ async function allocatePlanCode(db: Client): Promise<string> {
 
 interface PlannerContext {
   instruction: string;
+  chat_id?: string;
+  organizer_address?: string;
   active_tournament: { id: string; name: string; status: string } | null;
   recent_fixtures: Array<{
     id: string; stage: string; status: string; group_code: string | null; round_code: string | null;
     team_a_name: string; team_b_name: string; scheduled_at: string | null;
+  }>;
+  top_quiz_scores?: Array<{
+    participant_name: string;
+    sender_raw_address: string;
+    score: number;
   }>;
   available_actions: string; // catalog.toPromptJson()
 }
@@ -677,7 +684,7 @@ interface PlannerContext {
 async function buildPlannerContext(
   db: Client,
   catalog: AgentActionCatalog,
-  instruction: string
+  req: PlanRequest
 ): Promise<PlannerContext> {
   let activeTournament: { id: string; name: string; status: string } | null = null;
   try {
@@ -722,10 +729,31 @@ async function buildPlannerContext(
     } catch { /* tolerate */ }
   }
 
+  let topQuizScores: PlannerContext['top_quiz_scores'] = [];
+  if (req.chatId) {
+    try {
+      const qRes = await db.execute({
+        sql: `SELECT participant_name, sender_raw_address, score FROM quiz_scores WHERE chat_id = ? ORDER BY score DESC, updated_at ASC LIMIT 5`,
+        args: [req.chatId],
+      });
+      topQuizScores = qRes.rows.map((r) => {
+        const row = r as unknown as Record<string, unknown>;
+        return {
+          participant_name: String(row.participant_name),
+          sender_raw_address: String(row.sender_raw_address),
+          score: Number(row.score),
+        };
+      });
+    } catch { /* tolerate */ }
+  }
+
   return {
-    instruction,
+    instruction: req.instruction.trim(),
+    chat_id: req.chatId,
+    organizer_address: req.organizerAddress,
     active_tournament: activeTournament,
     recent_fixtures: recentFixtures,
+    top_quiz_scores: topQuizScores,
     available_actions: catalog.toPromptJson(),
   };
 }
@@ -738,7 +766,12 @@ ATURAN MUTLAK
 3. Kalau instruksi tidak bisa dipetakan ke aksi yang tersedia, return { "actions": [] } dan isi "note" dengan penjelasan singkat.
 4. Jangan eksekusi apa pun — kamu hanya menyusun rencana. Backend akan memvalidasi, menampilkan preview, dan menunggu konfirmasi eksplisit organizer sebelum eksekusi.
 5. Untuk aksi yang butuh ID (fixture_id, tournament_id, winning_team_id), ambil dari <recent_fixtures> / <active_tournament> yang sesuai. Kalau tidak yakin ID mana yang dimaksud (mis. "tim X" ambigu), return empty actions + note.
-6. Maksimum 5 aksi per plan. Kalau instruksi butuh lebih, prioritas yang paling penting dulu.
+6. Untuk aksi kuis (adjust_quiz_score):
+   - Gunakan chat_id dari <context>.chat_id.
+   - Jika panitia menyebut "milikku", "aku", "saya", gunakan target_address: <context>.organizer_address dan participant_name: "Panitia Arya" (atau nama yang disebut panitia).
+   - Jika panitia ingin jadi top 1 / peringkat 1 / skor tertinggi di leaderboard kuis, pilih "new_score" yang lebih tinggi dari skor tertinggi saat ini di <context>.top_quiz_scores (misal: jika tertinggi 25, jadikan 26 atau 100, atau sesuai angka yang diminta).
+   - Aksi ini hanya untuk leaderboard kuis komunitas dan terpisah dari klasemen turnamen.
+7. Maksimum 5 aksi per plan. Kalau instruksi butuh lebih, prioritas yang paling penting dulu.
 
 OUTPUT (JSON saja, tanpa teks lain):
 {

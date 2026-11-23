@@ -22,6 +22,7 @@
  * write path. This guarantees behavior parity with existing audit-trailed flows.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { z } from 'zod';
 import { organizerOverrideLock, organizerReopenReport } from '../reports/approval.js';
@@ -95,6 +96,15 @@ export const announceParams = z.object({
   message: z.string().min(1).max(1500).describe('Isi pengumuman yang akan dikirim ke grup turnamen resmi'),
 });
 export type AnnounceParams = z.infer<typeof announceParams>;
+
+export const adjustQuizScoreParams = z.object({
+  chat_id: z.string().describe('ID chat WhatsApp / grup tempat leaderboard kuis berlaku (misal 120363412423738009@g.us)'),
+  target_address: z.string().describe('Alamat WhatsApp (JID/LID) peserta yang skornya ingin diubah. Jika panitia merujuk dirinya sendiri ("milikku", "aku", "saya"), gunakan organizer_address.'),
+  participant_name: z.string().min(1).max(50).describe('Nama tampilan peserta kuis'),
+  new_score: z.number().int().min(0).max(9999).describe('Nilai skor kuis baru yang diinginkan (integer >= 0)'),
+  reason: z.string().min(1).max(300).describe('Alasan penyesuaian skor kuis (untuk audit trail)'),
+});
+export type AdjustQuizScoreParams = z.infer<typeof adjustQuizScoreParams>;
 
 // =============================================================================
 // Action definition interface
@@ -605,6 +615,65 @@ export function buildDefaultAgentActionCatalog(_db: Client): AgentActionCatalog 
     async execute(_tx, params) {
       const r = announceParams.parse(params);
       return { ok: true, before: undefined, after: { message_length: r.message.length } };
+    },
+  });
+
+  // --- adjust_quiz_score ---------------------------------------------------
+  // Adjusts a participant's score on the community quiz leaderboard.
+  // Dedicated to organizer for fun engagement and leaderboard management.
+  catalog.register({
+    action_id: 'adjust_quiz_score',
+    description: 'Ubah atau set nilai skor kuis/trivia peserta di grup (fun leaderboard komunitas, terpisah dari klasemen turnamen). Hanya bisa ditrigger oleh organizer.',
+    parameters_schema: adjustQuizScoreParams,
+    async preview(d, params) {
+      const r = adjustQuizScoreParams.parse(params);
+      if (r.new_score < 0 || r.new_score > 9999) {
+        return { summary: '', validation_errors: ['new_score harus bernilai antara 0 dan 9999'] };
+      }
+      const scoreRes = await d.execute({
+        sql: 'SELECT score, participant_name FROM quiz_scores WHERE chat_id = ? AND sender_raw_address = ?',
+        args: [r.chat_id, r.target_address],
+      });
+      const oldScore = scoreRes.rows.length > 0 ? Number((scoreRes.rows[0] as unknown as Record<string, unknown>).score) : 0;
+      const oldName = scoreRes.rows.length > 0 ? String((scoreRes.rows[0] as unknown as Record<string, unknown>).participant_name) : r.participant_name;
+      return {
+        summary: `Set skor kuis untuk *${r.participant_name}* (${r.target_address}) di grup dari ${oldScore} poin → *${r.new_score} poin*. Alasan: "${r.reason}".`,
+        validation_errors: [],
+        before: { score: oldScore, participant_name: oldName },
+      };
+    },
+    async execute(tx, params) {
+      const r = adjustQuizScoreParams.parse(params);
+      const scoreRes = await tx.execute({
+        sql: 'SELECT score, participant_name FROM quiz_scores WHERE chat_id = ? AND sender_raw_address = ?',
+        args: [r.chat_id, r.target_address],
+      });
+      const oldScore = scoreRes.rows.length > 0 ? Number((scoreRes.rows[0] as unknown as Record<string, unknown>).score) : 0;
+      const oldName = scoreRes.rows.length > 0 ? String((scoreRes.rows[0] as unknown as Record<string, unknown>).participant_name) : r.participant_name;
+      const before = { score: oldScore, participant_name: oldName };
+
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      try {
+        await tx.execute({
+          sql: `
+            INSERT INTO quiz_scores (id, chat_id, sender_raw_address, participant_name, score, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, sender_raw_address) DO UPDATE SET
+              score = excluded.score,
+              participant_name = excluded.participant_name,
+              updated_at = excluded.updated_at
+          `,
+          args: [id, r.chat_id, r.target_address, r.participant_name, r.new_score, now, now],
+        });
+        return {
+          ok: true,
+          before,
+          after: { score: r.new_score, participant_name: r.participant_name },
+        };
+      } catch (e) {
+        return { ok: false, before, error: e instanceof Error ? e.message : String(e) };
+      }
     },
   });
 
