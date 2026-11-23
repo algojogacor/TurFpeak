@@ -204,12 +204,71 @@ export async function resolveOrRegisterIneligiblePlayer(
   while (occupiedSlots.has(targetSlot) && targetSlot <= 10) {
     targetSlot++;
   }
+
+  const now = new Date().toISOString();
+
+  // If all 10 slots are occupied, do not violate UNIQUE(team_id, roster_slot)
   if (targetSlot > 10) {
-    targetSlot = 10;
+    // 2a. Check if there is an unused INELIGIBLE player row for this team with no recorded game stats
+    const reusableIneligible = await db.execute({
+      sql: `SELECT id, roster_slot FROM players 
+            WHERE team_id = ? AND status = 'INELIGIBLE' 
+              AND id NOT IN (SELECT player_id FROM player_game_stats)
+            ORDER BY roster_slot ASC LIMIT 1`,
+      args: [teamId],
+    });
+
+    if (reusableIneligible.rows.length > 0) {
+      const reuseRow = reusableIneligible.rows[0];
+      const reuseId = String(reuseRow[0]);
+      const reuseSlot = Number(reuseRow[1]);
+      await db.execute({
+        sql: `UPDATE players 
+              SET nickname_raw = ?, nickname_nfc = ?, nickname_search_key = ?, position = ?, updated_at = ?
+              WHERE id = ?`,
+        args: [nicknameRaw, normNfc, cleanKey, position, now, reuseId],
+      });
+      return {
+        id: reuseId,
+        tournament_id: tournamentId,
+        team_id: teamId,
+        nickname_raw: nicknameRaw,
+        nickname_nfc: normNfc,
+        nickname_search_key: cleanKey,
+        position,
+        roster_slot: reuseSlot,
+        roster_type: 'SUBSTITUTE',
+        status: 'INELIGIBLE',
+        created_at: now,
+        updated_at: now,
+      };
+    }
+
+    // 2b. If all ineligible players have stats or all 10 are active, reuse existing slot 10 player to preserve FK
+    const slot10Res = await db.execute({
+      sql: `SELECT id, roster_slot, nickname_raw, position, status FROM players WHERE team_id = ? ORDER BY roster_slot DESC LIMIT 1`,
+      args: [teamId],
+    });
+    if (slot10Res.rows.length > 0) {
+      const sRow = slot10Res.rows[0];
+      return {
+        id: String(sRow[0]),
+        tournament_id: tournamentId,
+        team_id: teamId,
+        nickname_raw: nicknameRaw,
+        nickname_nfc: normNfc,
+        nickname_search_key: cleanKey,
+        position,
+        roster_slot: Number(sRow[1]),
+        roster_type: 'SUBSTITUTE',
+        status: 'INELIGIBLE',
+        created_at: now,
+        updated_at: now,
+      };
+    }
   }
 
   const id = randomUUID();
-  const now = new Date().toISOString();
 
   await db.execute({
     sql: `

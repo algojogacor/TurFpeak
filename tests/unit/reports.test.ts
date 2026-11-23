@@ -35,6 +35,7 @@ import {
   matchPlayerToRoster,
   cleanSearchKey,
   computeSimilarity,
+  resolveOrRegisterIneligiblePlayer,
   type RawPlayerMatchStat,
 } from '../../src/reports/validation.js';
 import {
@@ -1172,6 +1173,60 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
 
       const matchStranger = matchPlayerToRoster({ nickname_raw: 'EVOS JOKO' }, mockRoster);
       expect(matchStranger).toBeNull();
+    });
+
+    it('safely resolves ineligible player when team slots 1..10 are completely full', async () => {
+      const fullTeamId = 'team-full-slots';
+      await db.execute({
+        sql: `INSERT INTO teams (id, tournament_id, team_name, registration_status, created_at, updated_at)
+              VALUES (?, ?, 'Full Slots Team', 'VERIFIED', datetime('now'), datetime('now'))`,
+        args: [fullTeamId, tournamentId],
+      });
+
+      // Fill slots 1 through 8 with ACTIVE players
+      for (let slot = 1; slot <= 8; slot++) {
+        await db.execute({
+          sql: `INSERT INTO players (
+                  id, tournament_id, team_id, nickname_raw, nickname_nfc,
+                  nickname_search_key, position, roster_slot, roster_type,
+                  status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'OUTFIELD', ?, 'STARTER', 'ACTIVE', datetime('now'), datetime('now'))`,
+          args: [`p-full-${slot}`, tournamentId, fullTeamId, `Player ${slot}`, `Player ${slot}`, `player${slot}`, slot],
+        });
+      }
+
+      // Fill slots 9 and 10 with INELIGIBLE players (e.g. from previous games)
+      await db.execute({
+        sql: `INSERT INTO players (
+                id, tournament_id, team_id, nickname_raw, nickname_nfc,
+                nickname_search_key, position, roster_slot, roster_type,
+                status, created_at, updated_at
+              ) VALUES (?, ?, ?, 'Old Ineligible 1', 'Old Ineligible 1', 'oldinel1', 'OUTFIELD', 9, 'SUBSTITUTE', 'INELIGIBLE', datetime('now'), datetime('now'))`,
+        args: [`p-full-9`, tournamentId, fullTeamId],
+      });
+      await db.execute({
+        sql: `INSERT INTO players (
+                id, tournament_id, team_id, nickname_raw, nickname_nfc,
+                nickname_search_key, position, roster_slot, roster_type,
+                status, created_at, updated_at
+              ) VALUES (?, ?, ?, 'Old Ineligible 2', 'Old Ineligible 2', 'oldinel2', 'OUTFIELD', 10, 'SUBSTITUTE', 'INELIGIBLE', datetime('now'), datetime('now'))`,
+        args: [`p-full-10`, tournamentId, fullTeamId],
+      });
+
+      // Calling resolveOrRegisterIneligiblePlayer for an 11th player should NOT crash with UNIQUE constraint
+      const resolved = await resolveOrRegisterIneligiblePlayer(
+        db,
+        tournamentId,
+        fullTeamId,
+        'Guest 11',
+        'OUTFIELD'
+      );
+
+      expect(resolved).toBeDefined();
+      expect(resolved.status).toBe('INELIGIBLE');
+      expect(resolved.nickname_raw).toBe('Guest 11');
+      // Should reuse slot 9 without breaking unique constraint
+      expect([9, 10]).toContain(resolved.roster_slot);
     });
   });
 });
