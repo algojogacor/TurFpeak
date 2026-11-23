@@ -1,5 +1,31 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Rollback Pendaftaran KGE.Tron & Penundaan Status Match 7Sins vs Mizukage Menunggu Keputusan Panitia
+
+### Konteks Sesi & Instruksi User
+- User menegur: *"eh jangan didaftarkan. berarti pemain gelap dong? kalau baru didaftarkan sekarang?"*.
+- Poin user 100% benar secara integritas kompetisi (Pasal 2 Ayat 6 & 8: *"Only registered roster members may play"* dan *"Nickname changes during the tournament are prohibited"*). Sistem tidak boleh diam-diam mendaftarkan pemain yang bermain di lapangan ke dalam roster resmi jika pemain tersebut belum terdaftar sebelum match dimulai.
+
+### Tindakan Remediasi Database (Surgical Rollback)
+1. **Menghapus `KGE.Tron` dari tabel `players`**:
+   - Data `KGE.Tron` langsung dihapus total dari database `local.sqlite` di server VM.
+   - Roster tim Mizukage kembali murni 7 orang terdaftar resmi (`KGE.Rimex∆`, `KGE.Atreus`, `KGE.Jairo`, `KGE.bitzz!!?`, `KGE.GOGI`, `KGE.Kyoto969`, `KGE.AUDRIC№²`).
+2. **Menghapus statistik `player_game_stats` sementara**:
+   - Seluruh baris statistik untuk `game_id: 2db4d0df-1b8f-4eff-845e-8c78d2b97c9b` dihapus bersih.
+3. **Mengembalikan status Fixture & Game ke `SCHEDULED`**:
+   - `fixtures` (ID: `5093fee9-11fa-4544-a5b0-02830b1314fa`): status kembali `SCHEDULED`.
+   - `games` (ID: `2db4d0df-1b8f-4eff-845e-8c78d2b97c9b`): status kembali `SCHEDULED`, skor dikosongkan (`NULL`), pemenang dikosongkan (`NULL`).
+   - `report_versions` (ID: `6433632f-64a4-457f-8dc0-8213be983376`): status kembali `NEEDS_CORRECTION`, `validated_data_json = '{}'`.
+4. **Menghitung ulang klasemen Grup A**:
+   - Fungsi `recalculateAndPersistGroupStandings` dijalankan kembali untuk Grup A.
+   - Klasemen Grup A bersih kembali: 7Sins bermain 0 kali (0 poin), Mizukage bermain 1 kali (0 poin).
+
+### Verifikasi Empiris
+- Query verifikasi di VM: `KGE.Tron` 0 baris di `players`, `player_game_stats` 0 baris, fixture status `SCHEDULED`.
+- Klasemen Grup A terverifikasi akurat: Helix (6 poin, 2 main), 7Sins (0 poin, 0 main), Agility (0 poin, 1 main), Mizukage (0 poin, 1 main).
+
+---
+
 ## [2026-11-23] Sesi: Investigasi Approval 7Sins vs Mizukage & Penanganan Screenshot Kiper (Ditangguhkan)
 
 ### Konteks Sesi & Pertanyaan User
