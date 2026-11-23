@@ -1,5 +1,53 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Injeksi Konteks Roster Tim Resmi ke Omak Peak (!ai)
+
+### Konteks Sesi & Investigasi User
+1. **Omak Peak Buta Roster Tim ("Roster lengkapnya nggak ada di tanganku sekarang")**:
+   - Peserta bertanya via `!ai roster 7Sins•Bluelock Venom` dan `!ai roster HELIX Moonbreaker lelouch`.
+   - Bot merespons bahwa sistem hanya menyimpan statistik pertandingan yang sudah berjalan, bukan daftar nama resmi per tim, lalu menyarankan menggunakan `!roster`.
+   - User Arya bertanya: *"Kok ga paham? dia ga dikasi konteks roster? ga dikasi konteks lengkap tur kah?"*
+2. **Akar Masalah (Root Cause)**:
+   - Pada `src/application/omak-peak.ts` fungsi `buildOmakPeakContext`, bot hanya menginjeksi fixtures, standings per grup, top scorer/assist/defender, kontak delegasi, FAQ QnA, ringkasan aturan, dan game knowledge.
+   - Database `players` yang menyimpan 122 pemain resmi terdaftar (16 tim lengkap dengan posisi GK/Outfield dan Starter/Substitute) sama sekali **tidak pernah di-query maupun diinjeksi** ke dalam `trusted_context` Omak Peak.
+   - Akibatnya, Omak Peak hanya mengetahui pemain yang kebetulan mencetak gol/assist/defense di match sebelumnya, dan jujur mengaku tidak memiliki daftar roster.
+
+### Perubahan Kode (Surgical Changes)
+1. `src/ai/prompts/omak-peak-context.ts`:
+   - Menambahkan field `team_rosters` pada interface `OmakPeakContext`:
+     ```typescript
+     team_rosters?: Array<{
+       team_name: string;
+       group_code: string | null;
+       players: Array<{
+         nickname: string;
+         position: 'GOALKEEPER' | 'OUTFIELD';
+         roster_type: 'STARTER' | 'SUBSTITUTE';
+       }>;
+     }>;
+     ```
+2. `src/application/omak-peak.ts`:
+   - Pada `buildOmakPeakContext`, menambahkan query ke tabel `players` yang di-join dengan `teams` dan `groups` untuk `p.tournament_id = ? AND p.status = 'ACTIVE'`.
+   - Mengelompokkan data pemain berdasarkan tim, posisi, dan tipe roster, lalu memasukkannya ke dalam `team_rosters`.
+   - Menyediakan fallback `team_rosters: []` pada error handling context.
+3. `src/ai/prompts/omak-peak.ts`:
+   - Menambahkan instruksi eksplisit di bawah `JAWAB BERDASARKAN KONTEKS` bahwa field `team_rosters` berisi daftar resmi pemain seluruh tim (posisi & status), sehingga bot dapat langsung menjawab pertanyaan roster, komposisi pemain, maupun posisi spesifik pemain secara akurat dan meyakinkan.
+4. `tests/unit/ai_native.test.ts`:
+   - Menambahkan test `populates team_rosters with active players grouped by team and includes it in prompt`.
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `npx tsc --noEmit` lolos 0 error.
+   - `npx vitest run` lolos 328/328 tests di 23 file pengujian.
+2. **Server VM (`forfh`)**:
+   - Commit `6c0577d` dipull, build tsc sukses, dan PM2 `flashpeak-bot` di-restart (PID 3300510, status online).
+   - Dry-run `buildOmakPeakContext` langsung pada `local.sqlite` di VM:
+     - Total teams in roster context: 16 tim.
+     - `7Sins•BlueLock Venom`: 8 pemain lengkap (GK: 7SB_ALIEF, Outfield: 7SB_7+#3K+$;, 7SB_AL`z, 7SB_Ronaldo, 7SB_Lorenzo, Subs: 7SB_Yudabest, 7SB_Leo, 7SB_NAGIII).
+     - `Helix Moonbreaker`: 8 pemain lengkap (GK: HX • Mazino, Outfield: HX • Kaiyzo, HX • Akewww, HX • Steelix, HX • Zeref, Subs: HX • Lelouch, HX • Damengg~, HX • Ifenn).
+
+---
+
 ## [2026-11-23] Sesi: Refine Tampilan Klasemen WhatsApp (Mobile-Friendly Layout & Penamaan Roster Penuh)
 
 ### Konteks Sesi & Permasalahan User
