@@ -159,7 +159,8 @@ export async function resolveOrRegisterIneligiblePlayer(
   tournamentId: string,
   teamId: string,
   nicknameRaw: string,
-  position: 'GOALKEEPER' | 'OUTFIELD'
+  position: 'GOALKEEPER' | 'OUTFIELD',
+  excludeIds?: Set<string>
 ): Promise<Player> {
   const normNfc = normalizeNickname(nicknameRaw);
   const cleanKey = cleanSearchKey(nicknameRaw);
@@ -178,20 +179,23 @@ export async function resolveOrRegisterIneligiblePlayer(
 
   if (existing.rows.length > 0) {
     const row = existing.rows[0];
-    return {
-      id: String(row[0]),
-      tournament_id: String(row[1]),
-      team_id: String(row[2]),
-      nickname_raw: String(row[3]),
-      nickname_nfc: String(row[4]),
-      nickname_search_key: String(row[5]),
-      position: String(row[6]) as Player['position'],
-      roster_slot: Number(row[7]),
-      roster_type: String(row[8]) as Player['roster_type'],
-      status: String(row[9]) as Player['status'],
-      created_at: '',
-      updated_at: '',
-    };
+    const existingId = String(row[0]);
+    if (!excludeIds || !excludeIds.has(existingId)) {
+      return {
+        id: existingId,
+        tournament_id: String(row[1]),
+        team_id: String(row[2]),
+        nickname_raw: String(row[3]),
+        nickname_nfc: String(row[4]),
+        nickname_search_key: String(row[5]),
+        position: String(row[6]) as Player['position'],
+        roster_slot: Number(row[7]),
+        roster_type: String(row[8]) as Player['roster_type'],
+        status: String(row[9]) as Player['status'],
+        created_at: '',
+        updated_at: '',
+      };
+    }
   }
 
   // 2. Find first free roster slot 1..10
@@ -214,14 +218,14 @@ export async function resolveOrRegisterIneligiblePlayer(
       sql: `SELECT id, roster_slot FROM players 
             WHERE team_id = ? AND status = 'INELIGIBLE' 
               AND id NOT IN (SELECT player_id FROM player_game_stats)
-            ORDER BY roster_slot ASC LIMIT 1`,
+            ORDER BY roster_slot ASC`,
       args: [teamId],
     });
 
-    if (reusableIneligible.rows.length > 0) {
-      const reuseRow = reusableIneligible.rows[0];
-      const reuseId = String(reuseRow[0]);
-      const reuseSlot = Number(reuseRow[1]);
+    const candidate = reusableIneligible.rows.find((r) => !excludeIds || !excludeIds.has(String(r[0])));
+    if (candidate) {
+      const reuseId = String(candidate[0]);
+      const reuseSlot = Number(candidate[1]);
       await db.execute({
         sql: `UPDATE players 
               SET nickname_raw = ?, nickname_nfc = ?, nickname_search_key = ?, position = ?, updated_at = ?
@@ -246,20 +250,20 @@ export async function resolveOrRegisterIneligiblePlayer(
 
     // 2b. If all ineligible players have stats or all 10 are active, reuse existing slot 10 player to preserve FK
     const slot10Res = await db.execute({
-      sql: `SELECT id, roster_slot, nickname_raw, position, status FROM players WHERE team_id = ? ORDER BY roster_slot DESC LIMIT 1`,
+      sql: `SELECT id, roster_slot, nickname_raw, position, status FROM players WHERE team_id = ? ORDER BY roster_slot DESC`,
       args: [teamId],
     });
-    if (slot10Res.rows.length > 0) {
-      const sRow = slot10Res.rows[0];
+    const sCandidate = slot10Res.rows.find((r) => !excludeIds || !excludeIds.has(String(r[0])));
+    if (sCandidate) {
       return {
-        id: String(sRow[0]),
+        id: String(sCandidate[0]),
         tournament_id: tournamentId,
         team_id: teamId,
         nickname_raw: nicknameRaw,
         nickname_nfc: normNfc,
         nickname_search_key: cleanKey,
         position,
-        roster_slot: Number(sRow[1]),
+        roster_slot: Number(sCandidate[1]),
         roster_type: 'SUBSTITUTE',
         status: 'INELIGIBLE',
         created_at: now,
@@ -447,7 +451,8 @@ export async function validateMatchReport(
           tournamentId,
           input.team_a_id,
           p.nickname_raw,
-          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD'
+          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD',
+          seenPlayerIdsA
         );
       } else {
         // Team A won or drew with an unregistered player: FATAL VIOLATION
@@ -547,7 +552,8 @@ export async function validateMatchReport(
           tournamentId,
           input.team_b_id,
           p.nickname_raw,
-          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD'
+          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD',
+          seenPlayerIdsB
         );
       } else {
         // Team B won or drew with an unregistered player: FATAL VIOLATION
