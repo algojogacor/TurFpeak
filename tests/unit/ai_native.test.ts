@@ -1174,6 +1174,40 @@ describe('OmakPeak context LID flag (audit polish #7)', () => {
     expect(f1?.score).toBe('5 - 2');
     expect(f1?.status).toBe('COMPLETED');
   });
+
+  it('populates team_rosters with active players grouped by team and includes it in prompt', async () => {
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO players (id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status, created_at, updated_at)
+            VALUES ('p-gk-1', 'tourn-1', 'team-a', 'SingaKeeper', 'SingaKeeper', 'singakeeper', 'GOALKEEPER', 1, 'STARTER', 'ACTIVE', ?, ?),
+                   ('p-sub-1', 'tourn-1', 'team-a', 'SingaSub', 'SingaSub', 'singasub', 'OUTFIELD', 6, 'SUBSTITUTE', 'ACTIVE', ?, ?)`,
+      args: [now, now, now, now],
+    });
+
+    const ctx = await buildOmakPeakContext(db);
+    expect(ctx.team_rosters).toBeDefined();
+    expect(ctx.team_rosters?.length).toBeGreaterThan(0);
+
+    const teamA = ctx.team_rosters?.find((t) => t.team_name === 'Singa FC');
+    expect(teamA).toBeDefined();
+    expect(teamA?.group_code).toBe('A');
+    expect(teamA?.players.length).toBeGreaterThanOrEqual(2);
+
+    const gk = teamA?.players.find((p) => p.nickname === 'SingaKeeper');
+    expect(gk).toBeDefined();
+    expect(gk?.position).toBe('GOALKEEPER');
+    expect(gk?.roster_type).toBe('STARTER');
+
+    const sub = teamA?.players.find((p) => p.nickname === 'SingaSub');
+    expect(sub).toBeDefined();
+    expect(sub?.position).toBe('OUTFIELD');
+    expect(sub?.roster_type).toBe('SUBSTITUTE');
+
+    const { system_prompt } = buildOmakPeakPrompt(ctx, 'roster Singa FC siapa aja');
+    expect(system_prompt).toContain('team_rosters');
+    expect(system_prompt).toContain('SingaKeeper');
+    expect(system_prompt).toContain('SingaSub');
+  });
 });
 
 // =============================================================================

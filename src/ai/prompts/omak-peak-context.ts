@@ -114,6 +114,20 @@ export interface OmakPeakContext {
     group_code: string | null;
   }>;
   /**
+   * Official registered rosters for all teams in the active tournament.
+   * Enables Omak Peak to answer roster queries ("!ai roster X", "siapa pemain tim Y",
+   * "siapa kiper tim Z", player checks) accurately and with complete certainty.
+   */
+  team_rosters?: Array<{
+    team_name: string;
+    group_code: string | null;
+    players: Array<{
+      nickname: string;
+      position: 'GOALKEEPER' | 'OUTFIELD';
+      roster_type: 'STARTER' | 'SUBSTITUTE';
+    }>;
+  }>;
+  /**
    * The living FAQ (!qna). Omak Peak should prefer these for repeated questions.
    */
   qna_entries: Array<{

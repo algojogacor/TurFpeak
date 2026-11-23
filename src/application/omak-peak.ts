@@ -246,6 +246,7 @@ export class OmakPeakService {
         today_fixtures: [],
         standings_by_group: [],
         teams_and_delegates: [],
+        team_rosters: [],
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
         game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
@@ -566,6 +567,49 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     qna_entries = [];
   }
 
+  // Official registered team rosters (all active players per team)
+  let team_rosters: OmakPeakContext['team_rosters'] = [];
+  try {
+    const plRes = await db.execute({
+      sql: `SELECT t.team_name, g.group_code, p.nickname_raw, p.position, p.roster_type
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            LEFT JOIN group_members gm ON gm.team_id = t.id
+            LEFT JOIN groups g ON g.id = gm.group_id
+            WHERE p.tournament_id = ? AND p.status = 'ACTIVE'
+            ORDER BY g.group_code ASC, t.team_name ASC, p.roster_slot ASC`,
+      args: [tournamentId],
+    });
+    const rosterMap = new Map<string, {
+      team_name: string;
+      group_code: string | null;
+      players: Array<{
+        nickname: string;
+        position: 'GOALKEEPER' | 'OUTFIELD';
+        roster_type: 'STARTER' | 'SUBSTITUTE';
+      }>;
+    }>();
+    for (const r of plRes.rows) {
+      const row = r as unknown as Record<string, unknown>;
+      const teamName = String(row.team_name);
+      if (!rosterMap.has(teamName)) {
+        rosterMap.set(teamName, {
+          team_name: teamName,
+          group_code: row.group_code ? String(row.group_code) : null,
+          players: [],
+        });
+      }
+      rosterMap.get(teamName)!.players.push({
+        nickname: String(row.nickname_raw),
+        position: String(row.position) as 'GOALKEEPER' | 'OUTFIELD',
+        roster_type: String(row.roster_type) as 'STARTER' | 'SUBSTITUTE',
+      });
+    }
+    team_rosters = Array.from(rosterMap.values());
+  } catch {
+    team_rosters = [];
+  }
+
   return {
     tournament: {
       name: tournamentName,
@@ -589,6 +633,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
       notes: 'Penghargaan kiper (Best Goalkeeper) ditangguhkan sementara selama season ini. Penghargaan individu aktif: Golden Boot, Top Assist, Best Defender.',
     },
     teams_and_delegates,
+    team_rosters,
     qna_entries,
     rules_summary: RULES_SUMMARY,
     game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
