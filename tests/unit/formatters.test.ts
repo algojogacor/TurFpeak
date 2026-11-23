@@ -128,10 +128,10 @@ describe('Fase 6: WhatsApp Message Formatters & Failure Handlers', () => {
       const formatted = formatStandingsTable('A', mockStandings);
 
       expect(formatted).toContain('📊 *KLASEMEN GRUP A*');
-      expect(formatted).toContain('```');
-      expect(formatted).toContain('POS TIM            P  W  D  L  GF GA  GD PTS');
-      expect(formatted).toContain('1   Astra Lumina    4  3  1  0  9  2  +7  10');
-      expect(formatted).toContain('2   Blaze Titans    4  2  1  1  6  4  +2   7');
+      expect(formatted).toContain('1️⃣ *Astra Lumina* — *10 Poin*');
+      expect(formatted).toContain('4 Main | 3M 1S 0K | SG +7 (9-2)');
+      expect(formatted).toContain('2️⃣ *Blaze Titans* — *7 Poin*');
+      expect(formatted).toContain('4 Main | 2M 1S 1K | SG +2 (6-4)');
       expect(formatted).toContain('Top 2 tim lolos');
     });
   });

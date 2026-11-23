@@ -1239,10 +1239,11 @@ export class FlashPeakApp {
   public async getStandingsTable(
     tournamentId: UUID,
     groupId: UUID,
-    groupCode = 'A'
+    groupCode = 'A',
+    options?: { showFooter?: boolean }
   ): Promise<string> {
     const standings = await recalculateAndPersistGroupStandings(this.db, tournamentId, groupId);
-    return formatStandingsTable(groupCode, standings);
+    return formatStandingsTable(groupCode, standings, options);
   }
 
   /**

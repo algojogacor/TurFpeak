@@ -93,7 +93,12 @@ export interface TournamentCommandDeps {
   classifier?: import('../ai/classifier.js').ImageClassifier;
   matchExtractor?: import('../ai/extractors/match.js').MatchSummaryExtractor;
   mediaClient?: import('../media/client.js').FlashPeakMediaClient;
-  getStandingsTable: (tournamentId: UUID, groupId: UUID, groupCode?: string) => Promise<string>;
+  getStandingsTable: (
+    tournamentId: UUID,
+    groupId: UUID,
+    groupCode?: string,
+    options?: { showFooter?: boolean }
+  ) => Promise<string>;
   submitApproval: (
     reportVersionId: UUID,
     approverType: ApproverType,
@@ -422,13 +427,18 @@ export function registerTournamentCommands(
       const blocks: string[] = [];
       blocks.push(`📊 *KLASEMEN ${tournamentName.toUpperCase()} — SEMUA GRUP*`);
       blocks.push('──────────────────────────────');
-      for (const r of allGroupsRes.rows) {
+      for (let idx = 0; idx < allGroupsRes.rows.length; idx++) {
+        const r = allGroupsRes.rows[idx];
         const gid = String(r.id);
         const gcode = String(r.group_code);
-        const oneBlock = await deps.getStandingsTable(tournamentId, gid, gcode);
+        const oneBlock = await deps.getStandingsTable(tournamentId, gid, gcode, { showFooter: false });
         blocks.push(oneBlock);
-        blocks.push('');
+        if (idx < allGroupsRes.rows.length - 1) {
+          blocks.push('──────────────────────────────');
+        }
       }
+      blocks.push('');
+      blocks.push('💡 _Keterangan: Top 2 tim tiap grup lolos ke Babak Knockout._');
       return { success: true, responseText: blocks.join('\n') };
     },
   });

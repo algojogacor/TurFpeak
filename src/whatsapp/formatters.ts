@@ -206,38 +206,46 @@ function formatPlayerLine(p: PlayerStatDisplayItem): string {
   return `  ${parts.join(' ')}`;
 }
 
+const RANK_BADGES = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
 /**
- * Formats group standings table cleanly with WhatsApp monospaced block (``` ... ```).
+ * Formats group standings cleanly for WhatsApp on both mobile and desktop.
+ * Uses a mobile-optimized multi-line card layout with full team names,
+ * avoiding the 46-character line wrap, phone-number link parsing, and name truncation issues.
  */
 export function formatStandingsTable(
   groupCode: string,
-  standings: StandingWithTeamName[]
+  standings: StandingWithTeamName[],
+  options?: { showFooter?: boolean }
 ): string {
+  const showFooter = options?.showFooter ?? true;
   const lines: string[] = [];
   lines.push(`📊 *KLASEMEN GRUP ${groupCode.toUpperCase()}*`);
-  lines.push('```');
-  lines.push('POS TIM            P  W  D  L  GF GA  GD PTS');
-  lines.push('─── ────────────── ── ── ── ── ── ── ─── ───');
 
-  for (const s of standings) {
-    const pos = String(s.rank).padEnd(3);
-    const rawName = s.team_name || s.team_id;
-    const name = rawName.length > 14 ? rawName.slice(0, 13) + '…' : rawName.padEnd(14);
-    const p = String(s.played).padStart(2);
-    const w = String(s.wins).padStart(2);
-    const d = String(s.draws).padStart(2);
-    const l = String(s.losses).padStart(2);
-    const gf = String(s.goals_for).padStart(2);
-    const ga = String(s.goals_against).padStart(2);
-    const gdNum = s.goal_difference;
-    const gdStr = (gdNum >= 0 ? `+${gdNum}` : `${gdNum}`).padStart(3);
-    const pts = String(s.points).padStart(3);
-
-    lines.push(`${pos} ${name} ${p} ${w} ${d} ${l} ${gf} ${ga} ${gdStr} ${pts}`);
+  if (standings.length === 0) {
+    lines.push('_Belum ada data klasemen untuk grup ini._');
+    return lines.join('\n');
   }
 
-  lines.push('```');
-  lines.push('_Keterangan: Top 2 tim lolos ke Babak Knockout._');
+  for (let i = 0; i < standings.length; i++) {
+    const s = standings[i];
+    const badge = RANK_BADGES[s.rank - 1] || `${s.rank}.`;
+    const teamName = s.team_name || s.team_id;
+    const gdStr = s.goal_difference > 0 ? `+${s.goal_difference}` : String(s.goal_difference);
+
+    lines.push(`${badge} *${teamName}* — *${s.points} Poin*`);
+    lines.push(`   ${s.played} Main | ${s.wins}M ${s.draws}S ${s.losses}K | SG ${gdStr} (${s.goals_for}-${s.goals_against})`);
+
+    // Top 2 qualification divider line
+    if (s.rank === 2 && standings.length > 2) {
+      lines.push(`   ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ ⬆️ _Top 2 Lolos_`);
+    }
+  }
+
+  if (showFooter) {
+    lines.push(`_Keterangan: Top 2 tim lolos ke Babak Knockout._`);
+  }
+
   return lines.join('\n');
 }
 
