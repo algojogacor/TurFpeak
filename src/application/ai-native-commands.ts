@@ -27,12 +27,14 @@ import { buildDefaultAgentActionCatalog } from './agent-actions.js';
 import { QnaService } from './qna.js';
 import { EngagementService } from './engagement.js';
 import { TriviaService } from './trivia.js';
+import { QuizSessionManager } from './quiz-session.js';
 
 export interface AiNativeCommandDeps {
   db: Client;
   providerRouter?: ProviderRouter;
   sender?: WhatsAppSender;
   centralGroupJid?: string;
+  quizSessionManager?: QuizSessionManager;
 }
 
 /**
@@ -49,6 +51,7 @@ export function registerAiNativeCommands(
   qna: QnaService;
   engagement: EngagementService;
   trivia: TriviaService;
+  quizSessionManager: QuizSessionManager;
 } {
   const omakPeak = new OmakPeakService({ db: deps.db, providerRouter: deps.providerRouter });
   const actionCatalog = buildDefaultAgentActionCatalog(deps.db);
@@ -60,6 +63,8 @@ export function registerAiNativeCommands(
   const qna = new QnaService({ db: deps.db, providerRouter: deps.providerRouter });
   const engagement = new EngagementService({ providerRouter: deps.providerRouter });
   const trivia = new TriviaService({ providerRouter: deps.providerRouter });
+  const quizSessionManager =
+    deps.quizSessionManager ?? new QuizSessionManager({ db: deps.db, durationMs: 15_000 });
 
   // -------------------------------------------------------------------------
   // !ai  —  read-only chat with Omak Peak (any role, group + DM)
@@ -203,49 +208,110 @@ export function registerAiNativeCommands(
   });
 
   // -------------------------------------------------------------------------
-  // !quiz  —  quiz question with delayed answer reveal (any role)
+  // !quiz  —  interactive 15-second real-time quiz (any role)
   // -------------------------------------------------------------------------
   router.registerCommand({
     command: 'quiz',
     requiredRole: 'ANY',
-    description: 'Quiz Flash Peak: pertanyaan dulu, jawaban muncul 15 detik kemudian.',
+    description: 'Kuis Flash Peak 15 detik! Tebak langsung di grup, rebutan poin leaderboard.',
     allowedInDm: true,
     allowedInGroup: true,
     handler: async (ctx: CommandContext) => {
-      const res = await trivia.randomQuiz();
-      if (!res.success || !res.question || !res.answer) {
-        return { success: res.success, responseText: res.responseText };
-      }
       const targetChat = ctx.message.chat_id || deps.centralGroupJid;
-      if (!deps.sender || !targetChat) {
-        return { success: false, responseText: '⚠️ Bot belum siap kirim quiz, coba lagi sebentar.' };
+      if (!targetChat) {
+        return { success: false, responseText: '⚠️ Target grup tidak ditemukan.' };
       }
-      // Send the question immediately; schedule the answer reveal after 15s.
-      try {
-        await deps.sender.sendText(
-          targetChat,
-          `❓ *QUIZ FLASH PEAK*\n\n${res.question}\n\n_Jawaban muncul 15 detik lagi..._`
-        );
-      } catch {
-        return { success: false, responseText: '⚠️ Gagal mengirim pertanyaan quiz.' };
+
+      if (quizSessionManager.hasActiveQuiz(targetChat)) {
+        const rem = quizSessionManager.getRemainingSeconds(targetChat);
+        return {
+          success: true,
+          responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${rem} detik*. Ayo jawab sekarang!`,
+        };
       }
-      // Schedule the reveal. Use a detached promise — never blocks the handler.
-      const answer = res.answer;
+
+      const res = await trivia.randomQuiz();
+      if (!res.success || !res.quiz) {
+        return { success: false, responseText: res.responseText || 'ℹ️ Quiz belum tersedia.' };
+      }
+
+      const quizItem = res.quiz;
       const senderRef = deps.sender;
-      setTimeout(async () => {
-        try {
+
+      const startRes = quizSessionManager.startQuiz(targetChat, quizItem, async (active) => {
+        // Timeout callback: called when 15 seconds elapse with no correct answer
+        if (senderRef) {
+          try {
+            await senderRef.sendText(
+              targetChat,
+              [
+                '⏰ *WAKTU HABIS!* (15 detik)',
+                'Belum ada yang berhasil menebak dengan benar.',
+                '',
+                `💡 *Jawaban yang benar:* ${active.quiz.answer}`,
+                '',
+                '_Mau coba lagi? Ketik *!quiz*!_',
+              ].join('\n')
+            );
+          } catch {
+            // best-effort
+          }
+        }
+      });
+
+      if (!startRes.success || !startRes.quiz) {
+        return {
+          success: true,
+          responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${startRes.remainingSeconds} detik*. Ayo tebak dulu!`,
+        };
+      }
+
+      // Send the question immediately
+      try {
+        if (senderRef) {
           await senderRef.sendText(
             targetChat,
-            `✅ *Jawaban:* ${answer}\n\n_Mau quiz lagi? Ketik *!quiz*_`
+            [
+              '❓ *QUIZ FLASH PEAK (15 DETIK!)* ⏱️',
+              '',
+              quizItem.question,
+              '',
+              '👉 *Ketik jawabanmu langsung di grup sekarang!*',
+              '_Jawaban ditutup otomatis dalam 15 detik._',
+            ].join('\n')
           );
-        } catch {
-          // Best-effort; if the send fails the user can retry.
         }
-      }, 15_000);
-      // The handler itself returns no immediate reply (the question was already sent).
+      } catch {
+        quizSessionManager.cancelQuiz(targetChat);
+        return { success: false, responseText: '⚠️ Gagal mengirim pertanyaan kuis.' };
+      }
+
       return { success: true, responseText: '' };
     },
   });
+
+  // -------------------------------------------------------------------------
+  // !topquiz / !quizleaderboard / !kuisleaderboard / !topkuis  —  quiz leaderboard
+  // -------------------------------------------------------------------------
+  const handleTopQuiz = async (ctx: CommandContext) => {
+    const chatId = ctx.message.chat_id || deps.centralGroupJid;
+    const rows = await quizSessionManager.getLeaderboard(chatId, 10);
+    return {
+      success: true,
+      responseText: quizSessionManager.formatLeaderboard(rows),
+    };
+  };
+
+  for (const cmd of ['topquiz', 'quizleaderboard', 'kuisleaderboard', 'topkuis']) {
+    router.registerCommand({
+      command: cmd,
+      requiredRole: 'ANY',
+      description: 'Leaderboard kuis seru-seruan komunitas Flash Peak.',
+      allowedInDm: true,
+      allowedInGroup: true,
+      handler: handleTopQuiz,
+    });
+  }
 
   // -------------------------------------------------------------------------
   // !pantun  —  AI-generated pantun, Flash-Peak/tournament themed (any role)
@@ -262,5 +328,5 @@ export function registerAiNativeCommands(
     },
   });
 
-  return { omakPeak, agent, qna, engagement, trivia };
+  return { omakPeak, agent, qna, engagement, trivia, quizSessionManager };
 }

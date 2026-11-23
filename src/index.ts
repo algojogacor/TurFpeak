@@ -79,6 +79,7 @@ import type { AgentPlannerService } from './application/agent-planner.js';
 import type { OmakPeakService } from './application/omak-peak.js';
 import type { QnaService } from './application/qna.js';
 import type { TriviaService } from './application/trivia.js';
+import type { QuizSessionManager } from './application/quiz-session.js';
 import { MatchdayService } from './application/matchday-service.js';
 import { resolveFixtureForMessage } from './application/fixture-resolver.js';
 import { handleReportCorrection } from './application/report-correction-coordinator.js';
@@ -154,6 +155,7 @@ export class FlashPeakApp {
   public qna?: QnaService;
   public engagement?: EngagementService;
   public trivia?: TriviaService;
+  public quizSessionManager?: QuizSessionManager;
   public centralGroupJid?: string;
   public sender?: WhatsAppSender;
 
@@ -286,6 +288,7 @@ export class FlashPeakApp {
     this.qna = aiNative.qna;
     this.engagement = aiNative.engagement;
     this.trivia = aiNative.trivia;
+    this.quizSessionManager = aiNative.quizSessionManager;
   }
 
   /**
@@ -601,6 +604,61 @@ export class FlashPeakApp {
         commandResult: commandResult || undefined,
         replyText: commandResult?.responseText,
       };
+    }
+
+    // 1.2 Real-Time Interactive Quiz Listener (Community Engagement)
+    if (
+      this.quizSessionManager &&
+      this.quizSessionManager.hasActiveQuiz(message.chat_id) &&
+      message.message_type === 'TEXT'
+    ) {
+      if (rawMsgText.length > 0 && (rawMsgText.length <= 60 || message.reply_to_key)) {
+        const evalRes = this.quizSessionManager.evaluateAnswer(message.chat_id, rawMsgText);
+        if (evalRes.isAnswerToQuiz) {
+          const senderJid = message.sender_raw_address || message.sender_normalized_address;
+          const pushName = message.push_name || (senderJid.split('@')[0]);
+          const mentionJid = senderJid.includes('@s.whatsapp.net') ? senderJid : '';
+          const mentionTag = mentionJid ? `@${senderJid.split('@')[0]}` : `*${pushName}*`;
+          const mentions = mentionJid ? [senderJid] : [];
+
+          if (evalRes.isCorrect && evalRes.active) {
+            const active = evalRes.active;
+            this.quizSessionManager.cancelQuiz(message.chat_id);
+            const totalScore = await this.quizSessionManager.recordWin(
+              message.chat_id,
+              message.sender_raw_address,
+              pushName
+            );
+
+            const lines = [
+              '🎉 *TEBAKAN BENAR!* 👏',
+              '',
+              `Selamat ${mentionTag}! Jawaban kamu tepat:`,
+              `💡 *${active.quiz.answer}*`,
+              '',
+              `⏱️ Waktu tebak: *${evalRes.elapsedSeconds} detik*`,
+              `🏆 Total Skor Kuis Kamu: *${totalScore} poin*`,
+              '',
+              '_Ketik *!quiz* buat main lagi, atau *!topquiz* buat lihat leaderboard!_',
+            ];
+
+            return {
+              handled: true,
+              type: 'COMMAND',
+              replyText: lines.join('\n'),
+              mentions,
+            };
+          } else {
+            // Feedback for incorrect answer during 15s window
+            return {
+              handled: true,
+              type: 'COMMAND',
+              replyText: `❌ Kurang tepat ${mentionTag}! Coba tebak lagi sebelum 15 detik habis!`,
+              mentions,
+            };
+          }
+        }
+      }
     }
 
     // 1.5 Pending Manual Report Confirmation / Correction Check

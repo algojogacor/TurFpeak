@@ -28,6 +28,11 @@ import {
 import { AgentPlannerService } from '../../src/application/agent-planner.js';
 import { QnaService } from '../../src/application/qna.js';
 import { TriviaService } from '../../src/application/trivia.js';
+import {
+  QuizSessionManager,
+  isQuizAnswerMatch,
+  type QuizQuestion,
+} from '../../src/application/quiz-session.js';
 import type { Client } from '@libsql/client';
 
 async function freshDb(): Promise<Client> {
@@ -1311,5 +1316,119 @@ describe('Migration 004 schema (D-037..D-040)', () => {
     expect(system_prompt).toContain('Shoulder Barge');
     expect(system_prompt).toContain('dikepung_andrew_dan_ford');
     expect(system_prompt).toContain('Catastrophic Knockdown');
+  });
+});
+
+// =============================================================================
+// Interactive Quiz & Community Leaderboard tests
+// =============================================================================
+
+describe('Interactive Quiz & Community Leaderboard', () => {
+  let db: Client;
+
+  beforeEach(async () => {
+    db = await freshDb();
+  });
+
+  it('isQuizAnswerMatch correctly identifies matching keywords and phrases', () => {
+    const keywords = ['oscar', 'savage dash', '1011', 'striker'];
+
+    // Single-word matches
+    expect(isQuizAnswerMatch('oscar', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('Oscar!', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('jawabannya oscar min', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('striker', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('karakter 1011', keywords)).toBe(true);
+
+    // Multi-word phrase matches
+    expect(isQuizAnswerMatch('savage dash', keywords)).toBe(true);
+    expect(isQuizAnswerMatch('itu savage dash bukan?', keywords)).toBe(true);
+
+    // Non-matches
+    expect(isQuizAnswerMatch('kelly', keywords)).toBe(false);
+    expect(isQuizAnswerMatch('andrew', keywords)).toBe(false);
+    expect(isQuizAnswerMatch('dash', keywords)).toBe(false); // only "savage dash" is in keywords
+  });
+
+  it('QuizSessionManager manages 15-second lifecycle and answer evaluation', async () => {
+    const manager = new QuizSessionManager({ db, durationMs: 15_000 });
+    const chatId = '12345@g.us';
+
+    const testQuestion: QuizQuestion = {
+      id: 'test-1',
+      category: 'Combat Mechanics',
+      question: 'Berapa meter jangkauan ultimate Super Tackle Andrew?',
+      answer: '18 meter',
+      keywords: ['18', '18 meter', '18m'],
+    };
+
+    let timeoutFired = false;
+    const startRes = manager.startQuiz(chatId, testQuestion, async () => {
+      timeoutFired = true;
+    });
+
+    expect(startRes.success).toBe(true);
+    expect(manager.hasActiveQuiz(chatId)).toBe(true);
+    expect(manager.getRemainingSeconds(chatId)).toBeGreaterThanOrEqual(14);
+
+    // Concurrent quiz attempt is rejected
+    const dupRes = manager.startQuiz(chatId, testQuestion, async () => {});
+    expect(dupRes.success).toBe(false);
+
+    // Incorrect answer evaluation
+    const wrongEval = manager.evaluateAnswer(chatId, '12 meter');
+    expect(wrongEval.isAnswerToQuiz).toBe(true);
+    expect(wrongEval.isCorrect).toBe(false);
+
+    // Correct answer evaluation
+    const correctEval = manager.evaluateAnswer(chatId, '18 meter');
+    expect(correctEval.isAnswerToQuiz).toBe(true);
+    expect(correctEval.isCorrect).toBe(true);
+
+    // Cancel quiz on correct answer
+    manager.cancelQuiz(chatId);
+    expect(manager.hasActiveQuiz(chatId)).toBe(false);
+    expect(timeoutFired).toBe(false);
+  });
+
+  it('records quiz wins and retrieves community leaderboard', async () => {
+    const manager = new QuizSessionManager({ db, durationMs: 15_000 });
+    const chatId = 'group-1@g.us';
+
+    const score1 = await manager.recordWin(chatId, 'user1@s.whatsapp.net', 'Habibi');
+    expect(score1).toBe(1);
+
+    const score2 = await manager.recordWin(chatId, 'user1@s.whatsapp.net', 'Habibi');
+    expect(score2).toBe(2);
+
+    const scoreOther = await manager.recordWin(chatId, 'user2@s.whatsapp.net', 'Arya');
+    expect(scoreOther).toBe(1);
+
+    const leaderboard = await manager.getLeaderboard(chatId);
+    expect(leaderboard.length).toBe(2);
+    expect(leaderboard[0].participant_name).toBe('Habibi');
+    expect(leaderboard[0].score).toBe(2);
+    expect(leaderboard[1].participant_name).toBe('Arya');
+    expect(leaderboard[1].score).toBe(1);
+
+    const formatted = manager.formatLeaderboard(leaderboard);
+    expect(formatted).toContain('LEADERBOARD KUIS FLASH PEAK');
+    expect(formatted).toContain('Habibi');
+    expect(formatted).toContain('2 Poin Kuis');
+  });
+
+  it('populates quiz_leaderboard into Omak Peak context', async () => {
+    const manager = new QuizSessionManager({ db });
+    await manager.recordWin('group-1@g.us', 'user1@s.whatsapp.net', 'Habibi Top Quiz');
+
+    const ctx = await buildOmakPeakContext(db);
+    expect(ctx.quiz_leaderboard).toBeDefined();
+    expect(ctx.quiz_leaderboard?.length).toBeGreaterThanOrEqual(1);
+    expect(ctx.quiz_leaderboard?.[0].participant_name).toBe('Habibi Top Quiz');
+    expect(ctx.quiz_leaderboard?.[0].score).toBe(1);
+
+    const { system_prompt } = buildOmakPeakPrompt(ctx, 'siapa raja kuis di grup ini');
+    expect(system_prompt).toContain('quiz_leaderboard');
+    expect(system_prompt).toContain('Habibi Top Quiz');
   });
 });

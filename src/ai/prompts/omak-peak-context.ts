@@ -128,6 +128,15 @@ export interface OmakPeakContext {
     }>;
   }>;
   /**
+   * Leaderboard for community trivia quiz (!quiz) — pure engagement/fun,
+   * separate from official tournament standings.
+   */
+  quiz_leaderboard?: Array<{
+    rank: number;
+    participant_name: string;
+    score: number;
+  }>;
+  /**
    * The living FAQ (!qna). Omak Peak should prefer these for repeated questions.
    */
   qna_entries: Array<{

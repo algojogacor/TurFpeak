@@ -235,6 +235,7 @@
       "category": "general",
       "question": "Di Flash Peak, satu pertandingan berlangsung berapa menit?",
       "answer": "Sekitar 5 menit.",
+      "keywords": ["5 menit", "5 mnt", "5menit", "lima menit", "5 min"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -242,6 +243,7 @@
       "category": "general",
       "question": "Di Flash Peak, satu pemain (manusia) mengontrol berapa karakter dalam satu pertandingan?",
       "answer": "Satu karakter saja — bukan satu tim penuh seperti FIFA/eFootball.",
+      "keywords": ["1 karakter", "satu karakter", "1 pemain", "satu pemain", "1 orang", "satu orang", "1 doang", "satu doang"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -249,6 +251,7 @@
       "category": "general",
       "question": "Siapa developer Flash Peak, dan di bawah publisher mana?",
       "answer": "Moco Studios I Private Limited, di bawah Garena.",
+      "keywords": ["moco", "garena", "moco studios"],
       "sources": ["flashpeak.net", "Garena press"]
     },
     {
@@ -256,6 +259,7 @@
       "category": "general",
       "question": "Apakah Flash Peak punya aturan offside seperti sepak bola tradisional?",
       "answer": "Tidak. Flash Peak arcade freestyle — tidak ada offside, tidak ada sistem pelanggaran/kartu.",
+      "keywords": ["tidak", "ngga", "nggak", "gaada", "gak ada", "ga ada", "tidak ada", "no offside", "gada"],
       "sources": ["flashpeak.net", "user brief"]
     },
     {
@@ -263,6 +267,7 @@
       "category": "characters",
       "question": "Posisi apa yang diisi Shirou di Flash Peak?",
       "answer": "Striker (ST), nomor punggung 10.",
+      "keywords": ["striker", "st", "no 10", "nomor 10", "punggung 10"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -270,6 +275,7 @@
       "category": "characters",
       "question": "Apa nama Awakening Skill Homer di Flash Peak?",
       "answer": "Guided Pulse Pass — umpan melengkung pinpoint ke penyerang.",
+      "keywords": ["guided pulse pass", "pulse pass", "guided pulse", "pulse"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -277,6 +283,7 @@
       "category": "characters",
       "question": "Kelly bermain di posisi apa di Flash Peak?",
       "answer": "Winger / Wing Forward (WF), nomor 7.",
+      "keywords": ["winger", "wing forward", "wf", "sayap", "no 7", "nomor 7", "punggung 7"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -284,6 +291,7 @@
       "category": "characters",
       "question": "Karakter Moco (dari Free Fire) main di posisi apa di Flash Peak?",
       "answer": "Central Midfielder (CM), ditambahkan di update terbaru.",
+      "keywords": ["cm", "central midfielder", "gelandang tengah", "gelandang", "midfielder"],
       "sources": ["Google Play listing com.moco.crgame"]
     },
     {
@@ -291,6 +299,7 @@
       "category": "competitive",
       "question": "Tier ranked tertinggi di Flash Peak bernama apa?",
       "answer": "World Class — tier ke-7 dari bawah: Rookie, Amateur, Academy, Semi-Pro, Pro, Superstar, World Class.",
+      "keywords": ["world class", "worldclass"],
       "sources": ["flashpeak.net"]
     },
     {
@@ -298,6 +307,7 @@
       "category": "characters",
       "question": "Karakter-karakter Flash Peak aslinya berasal dari game apa?",
       "answer": "Free Fire — karakter Free Fire yang di-reimagine sebagai pemain sepak bola.",
+      "keywords": ["free fire", "ff"],
       "sources": ["flashpeak.net", "duniagames.co.id"]
     },
     {
@@ -305,6 +315,7 @@
       "category": "easteregg",
       "question": "Siapa nama karakter Striker tersembunyi di dalam file game Flash Peak (ID 1011) yang belum resmi dirilis ke publik dan memiliki ultimate 'Savage Dash'?",
       "answer": "Oscar (奥斯卡) — Striker tipe badak dengan Power 78, skill Two Point Sprint, dan ultimate Savage Dash yang menabrak jatuh lawan di jalurnya.",
+      "keywords": ["oscar", "oscar striker"],
       "sources": ["FlashPeak client game asset FootballPlayerMainTable ID 1011"]
     },
     {
@@ -312,6 +323,7 @@
       "category": "gameplay",
       "question": "Berapa selisih Power (Delta Power) minimal saat benturan bahu (Shoulder Barge) yang memicu 80% efek Catastrophic Knockdown dan 100% bola lepas?",
       "answer": "Delta Power > 25 (selisih di atas 25 poin Power, seperti Andrew Power 87 vs Kelly Power 58).",
+      "keywords": ["25", "> 25", ">25", "25 poin", "dua puluh lima"],
       "sources": ["FlashPeak PlayerBeShoulderBargeTransition assembly"]
     },
     {
@@ -319,6 +331,7 @@
       "category": "gameplay",
       "question": "Apa debuff yang dialami pembawa bola jika ditempel/dikepung oleh 2 pemain lawan sekaligus di Flash Peak?",
       "answer": "Kecepatan sprint turun drastis ke 90% dan benturan bahu terpicu otomatis setiap 0.5 detik.",
+      "keywords": ["90%", "90 persen", "0.5", "0.5 detik", "0,5", "0,5 detik", "bahu"],
       "sources": ["FlashPeak ProjectCR.Runtime.dll OverlapPlayerHasBall"]
     },
     {
@@ -326,6 +339,7 @@
       "category": "gameplay",
       "question": "Berapa ukuran/dimensi resmi lapangan pertandingan Flash Peak menurut data game map?",
       "answer": "66 meter (lebar) x 103 meter (panjang) x 20 meter (tinggi batas atas).",
+      "keywords": ["66", "103", "66x103", "66 x 103", "66 meter", "103 meter", "66m", "103m"],
       "sources": ["FlashPeak GameMapTable"]
     },
     {
@@ -333,6 +347,7 @@
       "category": "characters",
       "question": "Berapa meter jangkauan meluncur Super Tackle (Anchor Sweep) milik Andrew saat mengaktifkan Ultimate?",
       "answer": "18 meter — begitu menyentuh bola langsung lengket di kaki Andrew (ControlBallImmediately).",
+      "keywords": ["18", "18 meter", "18m", "delapan belas"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1003020"]
     },
     {
@@ -340,6 +355,7 @@
       "category": "characters",
       "question": "Berapa detik durasi barikade pertahanan Super Block milik Ford, dan apa bonus yang didapat tim?",
       "answer": "4.0 detik — dan seluruh rekan tim langsung memulihkan 12% Ultimate Energy jika blok berhasil.",
+      "keywords": ["4", "4 detik", "4.0", "4s", "empat detik", "12%", "12 persen"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1009020"]
     },
     {
@@ -347,6 +363,7 @@
       "category": "characters",
       "question": "Siapa karakter di Flash Peak yang ultimatenya bisa berlari di dinding stadion sejauh 15 meter dan kebal tekel rumput?",
       "answer": "Kelly (Wing Forward / WF) — skill Wall Dash (Ultra Velocity).",
+      "keywords": ["kelly"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1004020"]
     },
     {
@@ -354,6 +371,7 @@
       "category": "characters",
       "question": "Siapa satu-satunya karakter di Flash Peak yang memiliki skill Dash gratis (0 Stamina dan 0 Energy) dengan cooldown 5.5 detik?",
       "answer": "Tatsuya (Wing Forward / WF).",
+      "keywords": ["tatsuya"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1013010"]
     },
     {
@@ -361,6 +379,7 @@
       "category": "characters",
       "question": "Berapa biaya energi Ultimate milik Homer (Full Vision) yang menjadikannya ulti paling murah di game Flash Peak?",
       "answer": "Hanya 280 Energy (durasi 60 detik dengan radius kunci homing 16 meter).",
+      "keywords": ["280", "280 energy", "280 energi"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1010020"]
     },
     {
@@ -368,6 +387,7 @@
       "category": "characters",
       "question": "Bek mana di Flash Peak yang ultimatenya 'Doodle Storm' memberikan buff tekel ganda (Dual Slide) ke SELURUH rekan setim selama 10 detik?",
       "answer": "Steffie (Center Back / CB) — bek tercepat di game dengan Jockey Speed 87.",
+      "keywords": ["steffie", "stefie", "stefi"],
       "sources": ["FlashPeak FootballPlayerAbilityTable ID 1012020"]
     },
     {
@@ -375,6 +395,7 @@
       "category": "gameplay",
       "question": "Apa nama aturan di Flash Peak saat waktu 5 menit sudah habis (00:00) tapi peluit akhir ditahan wasit karena bola masih dalam ancaman serangan gawang?",
       "answer": "Final Play (Serangan Terakhir).",
+      "keywords": ["final play", "serangan terakhir"],
       "sources": ["FlashPeak GameModeTable"]
     },
     {
@@ -382,6 +403,7 @@
       "category": "gameplay",
       "question": "Berapa batas waktu maksimal kiper boleh menahan bola saat menerima umpan balik (back-pass) dari rekan setim?",
       "answer": "Hanya 0.3 detik (aturan anti-stall sebelum bola harus segera dilepas).",
+      "keywords": ["0.3", "0.3 detik", "0.3s", "0,3", "0,3 detik", "anti-stall", "anti stall"],
       "sources": ["FlashPeak ProjectCR.Runtime.dll"]
     }
   ]

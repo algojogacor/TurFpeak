@@ -247,6 +247,7 @@ export class OmakPeakService {
         standings_by_group: [],
         teams_and_delegates: [],
         team_rosters: [],
+        quiz_leaderboard: [],
         qna_entries: [],
         rules_summary: '(konteks turnamen gagal dimuat — jawaban turnamen mungkin terbatas)',
         game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
@@ -323,16 +324,37 @@ const RULES_SUMMARY = `Aturan inti Gojiha Tournament (Flash Peak):
 - Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff kena aturan di atas (D-031 grup / D-032 KO).
 - Best Goalkeeper Award: DITANGGUHKAN sementara untuk season ini atas keputusan panitia. Penghargaan aktif: Golden Boot, Top Assist, Best Defender.`;
 
+async function fetchQuizLeaderboard(db: Client): Promise<OmakPeakContext['quiz_leaderboard']> {
+  try {
+    const qzRes = await db.execute({
+      sql: `SELECT participant_name, score FROM quiz_scores ORDER BY score DESC, updated_at ASC LIMIT 5`,
+    });
+    return qzRes.rows.map((r, i) => {
+      const row = r as unknown as Record<string, unknown>;
+      return {
+        rank: i + 1,
+        participant_name: String(row.participant_name),
+        score: Number(row.score),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext> {
   // Active tournament (any non-terminal status).
   const tRes = await db.execute({
     sql: "SELECT id, name, status, config_json FROM tournaments WHERE status NOT IN ('COMPLETED','ARCHIVED') ORDER BY created_at DESC LIMIT 1",
   });
   if (tRes.rows.length === 0) {
+    const quiz_leaderboard = await fetchQuizLeaderboard(db);
     return {
       today_fixtures: [],
       standings_by_group: [],
       teams_and_delegates: [],
+      team_rosters: [],
+      quiz_leaderboard,
       qna_entries: [],
       rules_summary: RULES_SUMMARY,
       game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,
@@ -610,6 +632,9 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     team_rosters = [];
   }
 
+  // Quiz Leaderboard (community trivia mini-game, separate from tournament)
+  const quiz_leaderboard = await fetchQuizLeaderboard(db);
+
   return {
     tournament: {
       name: tournamentName,
@@ -634,6 +659,7 @@ export async function buildOmakPeakContext(db: Client): Promise<OmakPeakContext>
     },
     teams_and_delegates,
     team_rosters,
+    quiz_leaderboard,
     qna_entries,
     rules_summary: RULES_SUMMARY,
     game_knowledge: FLASH_PEAK_GAME_KNOWLEDGE,

@@ -21,18 +21,19 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { ProviderRouter } from '../ai/router.js';
 
-interface TriviaFact {
+export interface TriviaFact {
   id: string;
   category: string;
   fact: string;
   sources: string[];
 }
-interface TriviaQuiz {
+export interface TriviaQuiz {
   id: string;
   category: string;
   question: string;
   answer: string;
-  sources: string[];
+  keywords: string[];
+  sources?: string[];
 }
 interface TriviaData {
   facts: TriviaFact[];
@@ -105,6 +106,7 @@ export class TriviaService {
     responseText: string;
     question?: string;
     answer?: string;
+    quiz?: TriviaQuiz;
   }> {
     const quiz = this.data.quiz;
     if (quiz.length === 0) {
@@ -116,6 +118,7 @@ export class TriviaService {
       responseText: '', // not displayed; the command handler sends a custom message
       question: q.question,
       answer: q.answer,
+      quiz: q,
     };
   }
 }

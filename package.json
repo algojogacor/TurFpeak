@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "tsx src/cli/start.ts",
-    "build": "tsc && mkdir -p dist/data && cp src/data/*.json dist/data/",
+    "build": "tsc && node -e \"import('node:fs').then(fs => { fs.mkdirSync('dist/data', { recursive: true }); for (const f of fs.readdirSync('src/data')) if (f.endsWith('.json')) fs.copyFileSync('src/data/' + f, 'dist/data/' + f); })\"",
     "test": "vitest run",
     "lint": "eslint src",
     "migrate": "tsx src/db/migrate.ts",
