@@ -1,5 +1,56 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Penambahan Aksi adjust_quiz_score pada AI Agent Panitia (!agent)
+
+### Konteks Sesi & Permintaan User
+1. **Penambahan Kemampuan Kuis pada `!agent` (Opsi A)**:
+   - User menginstruksikan untuk menambahkan aksi pengaturan leaderboard kuis ke dalam AI Agent Panitia (`!agent`) untuk kebutuhan hiburan/seru-seruan komunitas.
+   - Contoh kasus instruksi: `!agent ubah top leaderboard kuis menjadi milikku` atau `!agent set poin kuis Erenn jadi 50`.
+2. **Batasan Keamanan Ketat (Strict RBAC)**:
+   - Hanya nomor WhatsApp/LID yang terdaftar sah sebagai Panitia/Organizer (`WA_ORGANIZER_JID` / `WA_ORGANIZER_PHONE`) yang diizinkan memicu atau mengonfirmasi aksi ini.
+   - Peserta non-organizer wajib ditolak tegas (`⛔ Perintah ini hanya memiliki izin untuk dijalankan oleh Organizer turnamen`).
+
+### Perubahan Kode (Surgical)
+1. **`src/application/agent-actions.ts`**:
+   - Menambahkan schema Zod `adjustQuizScoreParams`:
+     - `chat_id` (string), `target_address` (string), `participant_name` (string), `new_score` (int 0..9999), `reason` (string).
+   - Mendaftarkan aksi `adjust_quiz_score` ke dalam `AgentActionCatalog`:
+     - **`preview(db, params)`**: Membaca skor lama dari tabel `quiz_scores` dan menghasilkan ringkasan terformat:
+       `Set skor kuis untuk *<nama>* (<address>) di grup dari <skor_lama> poin ➔ *<skor_baru> poin*. Alasan: "<alasan>".`
+     - **`execute(txClient, params)`**: Mengeksekusi upsert atomic ke tabel `quiz_scores` menggunakan statement `INSERT ... ON CONFLICT(chat_id, sender_raw_address) DO UPDATE SET score=..., participant_name=..., updated_at=...`.
+2. **`src/application/agent-planner.ts`**:
+   - Memperbarui `buildPlannerContext`:
+     - Menerima `req: PlanRequest` (membawa `chatId` dan `organizerAddress`).
+     - Mengambil top 5 leaderboard kuis grup saat ini dari tabel `quiz_scores` dan menyertakannya ke `PlannerContext.top_quiz_scores`.
+   - Memperbarui `PLANNER_SYSTEM_PROMPT`:
+     - Menambahkan aturan panduan untuk aksi `adjust_quiz_score`: jika panitia menyebut kata "milikku", "aku", atau "saya", gunakan `target_address: <context>.organizer_address` dan tentukan skor baru di atas peringkat 1 saat ini (atau sesuai angka permintaan).
+   - Memperbarui pesan panduan dan daftar aksi pada respons ketika instruksi kosong atau tidak cocok.
+3. **`tests/unit/ai_native.test.ts`**:
+   - Menambahkan test case untuk `adjust_quiz_score`:
+     - Preview validation & delta skor format.
+     - Execute insert awal dan update atomic kedua pada database in-memory.
+     - Pengecekan pendaftaran `adjust_quiz_score` pada `catalog.toPromptJson()`.
+
+### Verifikasi Empiris
+1. **Unit Test Lokal (Vitest)**:
+   - `npx vitest run tests/unit/ai_native.test.ts`: 63/63 tests passed.
+   - `npx vitest run`: Seluruh 337 tests pada 23 test suites passed 100% tanpa regresi.
+2. **Build Lokal & Git Commit**:
+   - `npm run build` sukses.
+   - Commit `e8639c3` di-push ke remote `master`.
+3. **Deployment Server VM (`forfh`)**:
+   - `git pull origin master` & `npm run build` berhasil pada VM.
+   - PM2 restart `flashpeak-bot` (PID 3328964) online dan aktif.
+4. **Verifikasi Simulasi Live di Server VM**:
+   - Menjalankan pengetesan pesan `!agent ubah top leaderboard kuis menjadi milikku` dari LID `165210883154071@lid`:
+     - AI planner mendeteksi skor tertinggi saat ini di grup (Aqrys: 31 poin).
+     - AI planner menyusun aksi `adjust_quiz_score` dengan `target_address: 165210883154071@lid`, `new_score: 32`, `participant_name: Panitia Arya`.
+     - Output preview plan sukses menghasilkan kode `AGENT-49EB` dengan konfirmasi `!agentconfirm`.
+   - Menjalankan pengetesan pesan dari non-organizer (`9999999999@s.whatsapp.net`):
+     - Ditolak seketika dengan `⛔ Perintah ini hanya memiliki izin untuk dijalankan oleh Organizer turnamen.`
+
+---
+
 ## [2026-11-23] Sesi: Perbaikan Sistem Kuis (Keyword Enrichment, Normalisasi Koma Desimal, Two-Tier Evaluation & LLM Fallback)
 
 ### Konteks Sesi & Permintaan User
