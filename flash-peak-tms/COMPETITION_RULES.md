@@ -26,6 +26,10 @@
 9. Nickname changes during the tournament are prohibited.
 10. Any discrepancy is referred to organizer review. A default score must not be applied automatically until the relevant evidence and rule are reviewed.
 11. **Karakter Unik / Larangan Karakter Kembar (No Duplicate Characters):** Dalam satu tim, setiap pemain dilarang menggunakan karakter in-game yang sama dalam satu pertandingan (misalnya: dilarang menggunakan double Ford, double Moco, double Rafael, dll). Setiap pemain di tim wajib menggunakan karakter yang berbeda.
+12. **Pemain Tidak Terdaftar / Pemain Gelap (Unregistered Player):**
+    - Setiap tim wajib hanya memainkan pemain yang telah terdaftar resmi di roster turnamen.
+    - **Jika Tim yang Memainkan Pemain Tidak Terdaftar MENANG atau SERI:** Kemenangan atau hasil seri tersebut otomatis **DIBATALKAN**. Pertandingan dinyatakan kalah Walkover (**WO 0–3**) untuk tim pelanggar (kemenangan WO 3–0 untuk tim lawan yang sah), dengan persetujuan 2 pihak (Panitia dan Tim Lawan) melalui `!approve`.
+    - **Jika Tim yang Memainkan Pemain Tidak Terdaftar KALAH:** Skor asli pertandingan di lapangan **TETAP BERLAKU** (misalnya 7–1 tetap dicatat 7–1, tidak dipotong menjadi WO 3–0) demi menjamin keadilan tim pemenang yang sah agar selisih gol (GD) dan jumlah gol (GF) mereka tidak dirugikan. Namun, pemain tidak terdaftar tersebut ditetapkan berstatus `INELIGIBLE` (`is_award_eligible = 0`, tidak berhak atas penghargaan/statistik individu), dilarang bermain di match berikutnya, dan tim yang melanggar mendapatkan peringatan/teguran resmi panitia.
 
 ## 3. Competition format
 

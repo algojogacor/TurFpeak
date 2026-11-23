@@ -323,6 +323,36 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
       expect(validation.errors.some((e) => e.includes('not a registered active player'))).toBe(true);
     });
 
+    it('allows unregistered player on losing team with INELIGIBLE status and preserved score (Rule 2.12, D-035)', async () => {
+      const lineupB = createValidLineupB();
+      lineupB[1].nickname_raw = 'RogueLosingPlayer'; // Team B has unregistered player
+
+      const validation = await validateMatchReport(db, {
+        fixture_id: fixtureId,
+        game_id: gameId,
+        team_a_id: teamAId,
+        team_b_id: teamBId,
+        team_a_score: 3,
+        team_b_score: 1,
+        team_a_players: createValidLineupA(),
+        team_b_players: lineupB,
+      });
+
+      // Valid because Team B lost (3 - 1); innocent winning team A keeps their win and GD
+      expect(validation.isValid).toBe(true);
+      expect(validation.errors).toHaveLength(0);
+      expect(validation.warnings.some((w) => w.includes('INELIGIBLE'))).toBe(true);
+      expect(validation.warnings.some((w) => w.includes('skor asli tetap berlaku'))).toBe(true);
+
+      // Verify the player is registered as INELIGIBLE in DB
+      const pRes = await db.execute({
+        sql: `SELECT status FROM players WHERE nickname_raw = 'RogueLosingPlayer' AND team_id = ?`,
+        args: [teamBId],
+      });
+      expect(pRes.rows.length).toBe(1);
+      expect(String(pRes.rows[0][0])).toBe('INELIGIBLE');
+    });
+
     it('rejects duplicate player row within a team lineup', async () => {
       const lineupA = createValidLineupA();
       lineupA[2].nickname_raw = 'AstraStriker'; // Duplicate striker instead of mid

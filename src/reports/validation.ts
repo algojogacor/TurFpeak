@@ -14,6 +14,7 @@
  * 7. Goalkeeper saves mapping: Map summary DEFENSE to goalkeeper_saves for confirmed keepers (FR-GK-003).
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { distance } from 'fastest-levenshtein';
 import type {
@@ -148,6 +149,108 @@ export function matchPlayerToRoster(
 }
 
 /**
+ * Resolves or registers an unregistered player as INELIGIBLE.
+ * Used when a losing team fields an unregistered player: their stats are recorded
+ * with status = 'INELIGIBLE' (is_award_eligible = 0) so the winning team's goal
+ * difference and victory are preserved without corrupting individual awards.
+ */
+export async function resolveOrRegisterIneligiblePlayer(
+  db: Client,
+  tournamentId: string,
+  teamId: string,
+  nicknameRaw: string,
+  position: 'GOALKEEPER' | 'OUTFIELD'
+): Promise<Player> {
+  const normNfc = normalizeNickname(nicknameRaw);
+  const cleanKey = cleanSearchKey(nicknameRaw);
+
+  // 1. Check if player already exists in tournament
+  const existing = await db.execute({
+    sql: `
+      SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc,
+             nickname_search_key, position, roster_slot, roster_type, status
+      FROM players
+      WHERE tournament_id = ? AND (nickname_raw = ? OR nickname_nfc = ?)
+      LIMIT 1
+    `,
+    args: [tournamentId, nicknameRaw, normNfc],
+  });
+
+  if (existing.rows.length > 0) {
+    const row = existing.rows[0];
+    return {
+      id: String(row[0]),
+      tournament_id: String(row[1]),
+      team_id: String(row[2]),
+      nickname_raw: String(row[3]),
+      nickname_nfc: String(row[4]),
+      nickname_search_key: String(row[5]),
+      position: String(row[6]) as Player['position'],
+      roster_slot: Number(row[7]),
+      roster_type: String(row[8]) as Player['roster_type'],
+      status: String(row[9]) as Player['status'],
+      created_at: '',
+      updated_at: '',
+    };
+  }
+
+  // 2. Find first free roster slot 1..10
+  const slotsRes = await db.execute({
+    sql: `SELECT roster_slot FROM players WHERE team_id = ?`,
+    args: [teamId],
+  });
+  const occupiedSlots = new Set(slotsRes.rows.map((r) => Number(r[0])));
+  let targetSlot = 1;
+  while (occupiedSlots.has(targetSlot) && targetSlot <= 10) {
+    targetSlot++;
+  }
+  if (targetSlot > 10) {
+    targetSlot = 10;
+  }
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+
+  await db.execute({
+    sql: `
+      INSERT INTO players (
+        id, tournament_id, team_id, nickname_raw, nickname_nfc,
+        nickname_search_key, position, roster_slot, roster_type,
+        status, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SUBSTITUTE', 'INELIGIBLE', ?, ?)
+    `,
+    args: [
+      id,
+      tournamentId,
+      teamId,
+      nicknameRaw,
+      normNfc,
+      cleanKey,
+      position,
+      targetSlot,
+      now,
+      now,
+    ],
+  });
+
+  return {
+    id,
+    tournament_id: tournamentId,
+    team_id: teamId,
+    nickname_raw: nicknameRaw,
+    nickname_nfc: normNfc,
+    nickname_search_key: cleanKey,
+    position,
+    roster_slot: targetSlot,
+    roster_type: 'SUBSTITUTE',
+    status: 'INELIGIBLE',
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/**
  * Deterministically validates a match report against database records and game rules.
  */
 export async function validateMatchReport(
@@ -175,6 +278,7 @@ export async function validateMatchReport(
   }
 
   const fixtureRow = fixtureResult.rows[0];
+  const tournamentId = String(fixtureRow[1]);
   const fixtureTeamAId = String(fixtureRow[2]);
   const fixtureTeamBId = String(fixtureRow[3]);
 
@@ -209,6 +313,10 @@ export async function validateMatchReport(
   if (input.team_b_score < 0 || !Number.isInteger(input.team_b_score)) {
     errors.push(`Team B score must be a non-negative integer (got ${input.team_b_score})`);
   }
+
+  const isTeamAWinner = input.team_a_score > input.team_b_score;
+  const isTeamBWinner = input.team_b_score > input.team_a_score;
+  const isDraw = input.team_a_score === input.team_b_score;
 
   // 3. Player Counts per Side (Exactly 5 active players per side in lineup)
   if (input.team_a_players.length !== 5) {
@@ -265,13 +373,32 @@ export async function validateMatchReport(
 
   for (let idx = 0; idx < input.team_a_players.length; idx++) {
     const p = input.team_a_players[idx];
-    const registered = matchPlayer(p, rosterA);
+    let registered = matchPlayer(p, rosterA);
 
     if (!registered) {
-      errors.push(
-        `Team A player #${idx + 1} "${p.nickname_raw}" is not a registered active player on Team A`
-      );
-    } else {
+      if (isTeamBWinner) {
+        // Team A lost the match. Sesuai regulasi (Rule 2.12):
+        // Skor asli tetap disahkan demi keadilan tim pemenang (Team B).
+        // Pemain tidak terdaftar ini dicatat sebagai INELIGIBLE dan tim mendapatkan peringatan resmi.
+        warnings.push(
+          `⚠️ Peringatan Pelanggaran Roster: Pemain #${idx + 1} "${p.nickname_raw}" tidak terdaftar di roster aktif Tim A. Karena Tim A kalah (${input.team_a_score} - ${input.team_b_score}), skor asli tetap berlaku demi keadilan tim pemenang, namun pemain ini berstatus INELIGIBLE (tidak berhak atas penghargaan individu).`
+        );
+        registered = await resolveOrRegisterIneligiblePlayer(
+          db,
+          tournamentId,
+          input.team_a_id,
+          p.nickname_raw,
+          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD'
+        );
+      } else {
+        // Team A won or drew with an unregistered player: FATAL VIOLATION
+        errors.push(
+          `🚨 Pelanggaran Roster Berat: Tim A memainkan pemain tidak terdaftar (not a registered active player: "${p.nickname_raw}") saat memenangkan/menahan imbang pertandingan (${input.team_a_score} - ${input.team_b_score}). Sesuai regulasi, kemenangan/hasil seri dibatalkan dan wajib diproses sebagai Walkover (WO 0-3) untuk Tim B dengan persetujuan 2 pihak.`
+        );
+      }
+    }
+
+    if (registered) {
       if (seenPlayerIdsA.has(registered.id)) {
         errors.push(`Duplicate player detected in Team A lineup: "${registered.nickname_raw}"`);
       }
@@ -346,13 +473,32 @@ export async function validateMatchReport(
 
   for (let idx = 0; idx < input.team_b_players.length; idx++) {
     const p = input.team_b_players[idx];
-    const registered = matchPlayer(p, rosterB);
+    let registered = matchPlayer(p, rosterB);
 
     if (!registered) {
-      errors.push(
-        `Team B player #${idx + 1} "${p.nickname_raw}" is not a registered active player on Team B`
-      );
-    } else {
+      if (isTeamAWinner) {
+        // Team B lost the match. Sesuai regulasi (Rule 2.12):
+        // Skor asli tetap disahkan demi keadilan tim pemenang (Team A).
+        // Pemain tidak terdaftar ini dicatat sebagai INELIGIBLE dan tim mendapatkan peringatan resmi.
+        warnings.push(
+          `⚠️ Peringatan Pelanggaran Roster: Pemain #${idx + 1} "${p.nickname_raw}" tidak terdaftar di roster aktif Tim B. Karena Tim B kalah (${input.team_b_score} - ${input.team_a_score}), skor asli tetap berlaku demi keadilan tim pemenang, namun pemain ini berstatus INELIGIBLE (tidak berhak atas penghargaan individu).`
+        );
+        registered = await resolveOrRegisterIneligiblePlayer(
+          db,
+          tournamentId,
+          input.team_b_id,
+          p.nickname_raw,
+          p.goalkeeper_saves !== null && p.goalkeeper_saves !== undefined ? 'GOALKEEPER' : 'OUTFIELD'
+        );
+      } else {
+        // Team B won or drew with an unregistered player: FATAL VIOLATION
+        errors.push(
+          `🚨 Pelanggaran Roster Berat: Tim B memainkan pemain tidak terdaftar (not a registered active player: "${p.nickname_raw}") saat memenangkan/menahan imbang pertandingan (${input.team_b_score} - ${input.team_a_score}). Sesuai regulasi, kemenangan/hasil seri dibatalkan dan wajib diproses sebagai Walkover (WO 3-0) untuk Tim A dengan persetujuan 2 pihak.`
+        );
+      }
+    }
+
+    if (registered) {
       if (seenPlayerIdsB.has(registered.id)) {
         errors.push(`Duplicate player detected in Team B lineup: "${registered.nickname_raw}"`);
       }

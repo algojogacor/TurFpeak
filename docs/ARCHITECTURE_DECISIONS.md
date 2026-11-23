@@ -46,6 +46,7 @@ This document records the definitive architectural decisions (D-001 through D-03
 | **D-032** | KO Double Room Card Unavailability = Double Loss (bye) | KO requires decisive winner ("no drawn series"); with both sides failing, both teams lose and the next-round pairing advances via automatic bye. [Revised 20 Nov 2026 — replaces prior reschedule ruling.] | `src/competition/walkover.ts` |
 | **D-033** | Report Session Expiry Extension Capped at 3 | Objections within window extend session by base duration, capped at 3 extensions before organizer review. | `src/ingestion/session.ts` |
 | **D-034** | Balanced Group Stage Left/Right Host Count | Fixture generator circle method ensures team host count differs by at most 1 across all group games. | `src/competition/fixtures.ts` |
+| **D-035** | Unregistered Player Policy ("Pemain Gelap") | Winning/drawing team fielding unregistered player: victory voided, overturned to WO 3-0 for opponent upon 2-party consensus. Losing team fielding unregistered player: actual score stands to protect innocent winner's GD & GF, unregistered player marked INELIGIBLE (is_award_eligible = 0). | `src/reports/validation.ts`, `src/reports/stats.ts` |
 
 ---
 

@@ -72,6 +72,39 @@ export async function onReportLocked(
       args: [now, validatedData.game_id],
     });
 
+    // Check Fixture and Group Standings
+    const fixtureRes = await db.execute({
+      sql: 'SELECT id, tournament_id, stage, group_id FROM fixtures WHERE id = ?',
+      args: [validatedData.fixture_id],
+    });
+
+    if (fixtureRes.rows.length > 0) {
+      const fRow = fixtureRes.rows[0];
+      const tournamentId = String(fRow[1]);
+      const stage = String(fRow[2]);
+      const groupId = fRow[3] ? String(fRow[3]) : null;
+
+      const gamesRes = await db.execute({
+        sql: "SELECT COUNT(*) as unfinished FROM games WHERE fixture_id = ? AND status NOT IN ('COMPLETED', 'WALKOVER')",
+        args: [validatedData.fixture_id],
+      });
+      const unfinished = Number(gamesRes.rows[0]?.[0] ?? (gamesRes.rows[0] as { unfinished?: unknown })?.unfinished ?? 0);
+      if (unfinished === 0) {
+        await db.execute({
+          sql: "UPDATE fixtures SET status = 'COMPLETED', updated_at = ? WHERE id = ?",
+          args: [now, validatedData.fixture_id],
+        });
+      }
+
+      if (stage === 'GROUP' && groupId) {
+        try {
+          await recalculateAndPersistGroupStandings(db, tournamentId, groupId);
+        } catch (err) {
+          console.warn(`[reports:stats] Standings recalculation notice: ${String(err)}`);
+        }
+      }
+    }
+
     return {
       locked: true,
       gameId: validatedData.game_id,
@@ -100,14 +133,16 @@ export async function onReportLocked(
   ].filter(Boolean);
 
   const playerPositions = new Map<string, string>();
+  const playerStatuses = new Map<string, string>();
   if (allPlayerIds.length > 0) {
     const placeholders = allPlayerIds.map(() => '?').join(',');
     const posRes = await db.execute({
-      sql: `SELECT id, position FROM players WHERE id IN (${placeholders})`,
+      sql: `SELECT id, position, status FROM players WHERE id IN (${placeholders})`,
       args: allPlayerIds,
     });
     for (const r of posRes.rows) {
       playerPositions.set(String(r[0]), String(r[1]));
+      playerStatuses.set(String(r[0]), String(r[2]));
     }
   }
 
@@ -123,12 +158,17 @@ export async function onReportLocked(
     if (!p.player_id) continue;
 
     const pos = playerPositions.get(p.player_id) || (p.goalkeeper_saves !== null ? 'GOALKEEPER' : 'OUTFIELD');
+    const status = playerStatuses.get(p.player_id) || 'ACTIVE';
     const isGK = pos === 'GOALKEEPER';
 
-    // FR-GK-008: Outfield players are always award eligible (1);
+    // FR-GK-008 & Rule 2.12:
+    // Ineligible players (e.g. unregistered player on losing team) are NEVER award-eligible (0).
+    // Outfield active players are award eligible (1);
     // Goalkeepers are eligible (1) ONLY for won games (0 for lost or drawn games).
     let isAwardEligible = 1;
-    if (isGK) {
+    if (status === 'INELIGIBLE') {
+      isAwardEligible = 0;
+    } else if (isGK) {
       const gkTeamWon = winnerTeamId !== null && winnerTeamId === p.team_id;
       isAwardEligible = gkTeamWon ? 1 : 0;
     }
