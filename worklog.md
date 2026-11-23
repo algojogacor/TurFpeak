@@ -1,5 +1,34 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Sinkronisasi Regulasi Resmi (!rule) & Pendaftaran Alias Kuis (!kuis) ke !help
+
+### Konteks Sesi & Permintaan User
+1. **Verifikasi Command !help & Penambahan Alias !kuis**:
+   - Memastikan seluruh command baru terdaftar dan discoverable di `!help`.
+   - Mendaftarkan alias `!kuis` berdampingan dengan `!quiz`.
+2. **Pembaruan Rulebook Resmi (!rule / !rules / !regulasi)**:
+   - Menyesuaikan isi `!rule` dengan keputusan resmi terbaru:
+     - **Change Name (CN)**: Menambahkan aturan bahwa pergantian nickname selama turnamen diperbolehkan asalkan wajib lapor dan dikonfirmasi ke Panitia Arya agar disesuaikan di database sistem sebelum bertanding.
+     - **Pelaporan Skor**: Memperbarui aturan bahwa tim pemenang cukup mengirim 1 screenshot scoreboard utama pertandingan.
+     - **Penangguhan Kiper**: Mencatat bahwa kewajiban kartu kiper dan penghargaan Best Goalkeeper ditangguhkan sementara untuk season ini (penghargaan aktif: Golden Boot, Top Assist, Best Defender).
+
+### Perubahan Kode & Data
+1. `src/application/ai-native-commands.ts`:
+   - Mendaftarkan loop alias `['quiz', 'kuis']` pada router command sehingga kedua trigger aktif dan tampil di `!help`.
+2. `src/application/tournament-commands.ts`:
+   - Memperbarui teks `ruleHandler` pada Poin 1 (Regulasi CN) dan Poin 6 (Pelaporan skor 1 screenshot & status penangguhan kiper).
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `npx tsc --noEmit` lolos 0 error.
+   - `npx vitest run` lolos 59/59 tests.
+2. **Server VM (`forfh`)**:
+   - Git pull, `npm run build` sukses, dan PM2 restart `flashpeak-bot` (PID 3308060).
+   - Pengujian live runtime VM membuktikan:
+     - `!rule` langsung menampilkan teks regulasi terbaru yang akurat.
+     - `!help` memuat `!quiz`, `!kuis`, `!topquiz`, `!quizleaderboard`, `!kuisleaderboard`, `!topkuis`.
+
+
 ## [2026-11-23] Sesi: Implementasi Transactional Outbox Pattern & CLI Announcement Dispatcher
 
 ### Konteks Sesi & Permintaan User
