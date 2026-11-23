@@ -1,5 +1,71 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Kuis Interaktif Real-Time 15 Detik, Feedback Salah, Timeout Closure, Leaderboard Kuis Komunitas & Injeksi Omak Peak
+
+### Konteks Sesi & Permintaan User
+1. **Aturan Main Kuis Interaktif (!quiz)**:
+   - Batas waktu kuis dibuat ketat 15 detik ("biar ga sempat nyari dari internet").
+   - Jika peserta menjawab salah, berikan feedback langsung bahwa jawabannya salah dan beri kesempatan tebak lagi sebelum waktu habis.
+   - Jika waktu 15 detik habis tanpa jawaban yang benar, bot otomatis memberikan pesan penutupan beserta kunci jawaban resminya.
+   - Jika ada yang menjawab benar: kuis otomatis ditutup seketika, mengumumkan pemenang, durasi kecepatan menjawab, dan penambahan poin kuis.
+2. **Leaderboard Khusus Kuis Komunitas**:
+   - Dibuat leaderboard tersendiri untuk pencatat skor kuis (`quiz_scores`), murni untuk seru-seruan komunitas tongkrongan dan tidak mencemari/memengaruhi klasemen resmi turnamen.
+   - Command discovery: `!topquiz`, `!quizleaderboard`, `!kuisleaderboard`, `!topkuis` (terdaftar di `!help`).
+3. **Injeksi ke Omak Peak (!ai)**:
+   - Top skor kuis diinjeksi ke dalam `trusted_context` Omak Peak agar jika ada yang bertanya siapa "raja kuis" / si paling pintar di grup, bot bisa menjawab santai dan bercanda berdasarkan data leaderboard.
+
+### Perubahan Kode & Desain Arsitektur
+1. `src/data/flashpeak-trivia.json`:
+   - Menambahkan array `keywords: string[]` pada seluruh 22 butir soal kuis (single-word token dan multi-word phrase).
+   - Memastikan pencocokan jawaban deterministik super cepat (<0.1 ms) tanpa latensi pemanggilan model AI (LLM) di tengah jalannya kuis 15 detik.
+2. `migrations/005_quiz_leaderboard.sql`:
+   - Membuat tabel baru `quiz_scores`:
+     - Kolom: `id`, `chat_id`, `sender_raw_address`, `participant_name`, `score`, `created_at`, `updated_at`.
+     - Constraint: `UNIQUE(chat_id, sender_raw_address)`.
+3. `src/application/quiz-session.ts`:
+   - Modul baru pengelola sesi arcade kuis real-time:
+     - `isQuizAnswerMatch(input, keywords)`: Normalisasi NFKD, lowercase, penanganan tanda baca, pencocokan frase & token kata.
+     - `QuizSessionManager`: Membatasi kuis 1 sesi aktif per chat, timer 15 detik dengan `setTimeout`, pembatalan saat benar, evaluasi jawaban masuk, dan upsert atomic skor `ON CONFLICT DO UPDATE SET score = score + 1`.
+     - `getLeaderboard` & `formatLeaderboard`: Format ranking bersih ramah WhatsApp dengan medali emoji (🥇, 🥈, 🥉).
+4. `src/application/trivia.ts`:
+   - Mengekspor `TriviaQuiz` interface dengan properti `keywords` dan mengembalikan objek kuis lengkap.
+5. `src/application/ai-native-commands.ts`:
+   - Mengintegrasikan `QuizSessionManager` ke dalam router pesan.
+   - Mengubah `!quiz`: menjalankan timer 15 detik dengan pesan hitung mundur dan mendaftarkan callback timeout.
+   - Menambahkan handler `!topquiz`, `!quizleaderboard`, `!topkuis`, `!kuisleaderboard`.
+   - Mendaftarkan seluruh command kuis baru di `!help`.
+6. `src/index.ts`:
+   - Menginstansiasi `quizSessionManager` dan menyuntikkannya ke `AiNativeCommandsHandler`.
+   - Menambahkan hook evaluasi pesan masuk grup (pesan non-command / jawaban singkat <= 60 karakter atau reply pesan kuis):
+     - Jika benar: panggil `recordWin`, bersihkan timer kuis, balas dengan selebrasi kemenangan, tag user, durasi jawab, dan total poin kuis.
+     - Jika salah: balas dengan `❌ Kurang tepat @name! Coba tebak lagi sebelum 15 detik habis!`.
+7. `src/ai/prompts/omak-peak-context.ts` & `src/application/omak-peak.ts`:
+   - Menambahkan field `quiz_leaderboard` pada `OmakPeakContext`.
+   - Mengambil 5 skor tertinggi kuis komunitas pada `buildOmakPeakContext` (tetap tersedia baik saat turnamen aktif maupun belum dimulai).
+8. `src/ai/prompts/omak-peak.ts`:
+   - Menambahkan panduan pada system prompt Omak Peak di bawah `JAWAB BERDASARKAN KONTEKS` mengenai `quiz_leaderboard`.
+9. `package.json`:
+   - Mengubah skrip `"build"` dari bash command kaku `mkdir -p && cp` menjadi skrip berbasis Node.js lintas platform sehingga kompatibel di Windows maupun Linux.
+10. `tests/unit/ai_native.test.ts`:
+    - Menambahkan 4 test case komprehensif: keyword matching (token & frase), siklus hidup 15 detik `QuizSessionManager` & evaluasi jawaban, pencatatan skor leaderboard, dan injeksi context Omak Peak.
+
+### Verifikasi Empiris
+1. **Lokal**:
+   - `npx tsc --noEmit` lolos 0 error.
+   - `npx vitest run tests/unit/ai_native.test.ts tests/migration.test.ts` lolos 62/62 tests.
+   - `npx vitest run` full suite lolos 333/333 tests di 23 file pengujian.
+   - `npm run build` sukses membangun `dist/` dan menyalin `src/data/*.json`.
+2. **Server VM (`forfh`)**:
+   - Push commit `891ae1d`, git pull di server VM.
+   - Migrasi 005 berhasil dijalankan (`Applied: 005_quiz_leaderboard.sql`).
+   - `npm run build` berhasil di Linux VM.
+   - PM2 restart `flashpeak-bot` (PID 3305848) berjalan normal dan terhubung ke WhatsApp.
+   - Pengujian live runtime VM:
+     - Tabel `quiz_scores` terverifikasi aktif di `local.sqlite`.
+     - Player `7SB_S+#@?LOL` tetap aman dan valid.
+     - `QuizSessionManager` live test mengembalikan format leaderboard dengan benar.
+
+
 ## [2026-11-23] Sesi: Perluasan Database Trivia & Quiz Flash Peak (Mekanik Tempur & Easter Egg Oscar)
 
 ### Konteks Sesi & Permintaan User
