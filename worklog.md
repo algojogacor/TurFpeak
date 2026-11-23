@@ -1,5 +1,29 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Perubahan Nickname Resmi Peserta (Change Name / CN) — 7Sins Venom
+
+### Konteks Sesi & Instruksi User
+1. **Permintaan Change Name (CN)**:
+   - Peserta dari tim `7Sins•BlueLock Venom` mengganti nama in-game dari `7SB_AL' Z` (tercatat di database sebagai `7SB_AL`z`) menjadi `7SB_S+#@?LOL`.
+   - Panitia Arya mengonfirmasi perubahan nama resmi ini agar data terupdate di database sebelum pertandingan berikutnya, serta memastikan 5 gol yang sudah dicetak tidak hilang.
+
+### Perubahan Database & Verifikasi
+1. **Target Pemain**:
+   - `id`: `ae553c0a-3f41-43af-8e33-896d2339c25b`
+   - Tim: `7Sins•BlueLock Venom` (`team_id: 39c98ae2-bea6-4e3e-acc8-5f603d97508e`)
+   - Posisi: `OUTFIELD`, Slot: `3`, Status: `ACTIVE`, Roster Type: `STARTER`
+2. **Eksekusi Update**:
+   - `nickname_raw`: `'7SB_S+#@?LOL'`
+   - `nickname_nfc`: `'7SB_S+#@?LOL'`
+   - `nickname_search_key`: `'7sbslol'`
+   - `updated_at`: `2026-11-23T02:41:03.645Z`
+3. **Verifikasi Empiris**:
+   - **Tabel Top Scorer**: Tetap mencatat 5 gol dari Match 1 vs Mizukage, otomatis tampil dengan nama baru `7SB_S+#@?LOL`.
+   - **Roster & Omak Peak Context**: Roster resmi `7Sins•BlueLock Venom` langsung menampilkan `7SB_S+#@?LOL` sebagai starter outfield.
+   - **OCR Roster Matcher**: Pengujian OCR match eksak (`7SB_S+#@?LOL`) maupun variasi karakter OCR (`7SB_S+#@LOL`) terbukti 100% cocok dengan pemain resmi, sehingga pada match berikutnya tidak akan terdeteksi sebagai pemain tidak terdaftar (unregistered player).
+
+---
+
 ## [2026-11-23] Sesi: Injeksi Konteks Roster Tim Resmi ke Omak Peak (!ai)
 
 ### Konteks Sesi & Investigasi User
