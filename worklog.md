@@ -2674,3 +2674,80 @@ Melakukan dekonstruksi mendalam terhadap sistem fisika, mekanik taktis AI, geome
   - **Wajib ke Grup Resmi Turnamen** (`WA_CENTRAL_GROUP_JID`), bukan ke DM bot atau DM Panitia. Bot hanya mengonsumsi media di grup resmi, dan pengiriman di grup menjamin transparansi serta konsensus persetujuan (`!approve`).
   - Untuk Round 2 (20:30 WIB), status fixture masih `SCHEDULED`, sehingga AI Vision bot akan memproses screenshot secara 100% otomatis seperti biasa.
 
+
+## 2026-11-23 ó Session 12: Multi-Tier LLM Architecture & Cutoff Dispensation Execution
+### 1. Perubahan Konkret
+- **Multi-Provider Priority Router**:
+  - src/ai/router.ts: Menerapkan 3-tier priority routing (Kuis: Mistral -> NIM -> Gemini -> Groq -> DeepSeek; Omak Peak: Groq -> Gemini -> NIM -> Mistral -> DeepSeek; Vision: Groq -> Gemini -> NIM -> DeepSeek).
+  - src/ai/providers/groq.ts: Rotasi otomatis 15 API key saat rate limit (429) & graceful fallback 413.
+  - src/ai/providers/mistral.ts: Auto key rotation saat 401/403.
+  - VM .env: Update NIM model ke 
+vidia/nemotron-3.5-bolt-e4b, sanitasi 3 key invalid Mistral (di-##).
+- **Deployment & Status**:
+  - PM2 lashpeak-bot direload bersih (pm2 restart flashpeak-bot --update-env).
+  - Bot online dan live merespons di WhatsApp.
+  - Kasus Zodiac vs Hokage: Panduan dispensasi pertandingan tunda via !manualreport 38f2b9c9-4671-4019-9685-d1973d87c740 disiapkan.
+
+
+## 2026-11-23 ó Session 13: Ineligible Player Roster Slot Collision Fix & Session 472b062c Resolution
+### 1. Root Cause Analysis
+- Pada pertandingan **Helix Moonbreaker vs 7SinsïBlueLock Venom** (Sesi 472b062c), tim Venom memainkan pemain 7SB_Nesta yang tidak terdaftar di roster resmi mereka.
+- Sesuai regulasi (Rule 2.12), karena Venom kalah (4-5), kemenangan Helix tetap disahkan dan 7SB_Nesta didaftarkan dengan status INELIGIBLE.
+- Namun, tim Venom sudah memiliki 10 slot pemain terisi di tabel players (slot 1..8 pemain aktif, slot 9..10 pemain ineligible sisa uji coba sebelumnya).
+- Fungsi esolveOrRegisterIneligiblePlayer sebelumnya melakukan 	argetSlot = 10 jika slot > 10, sehingga mencoba meng-INSERT slot 10 ganda dan menabrak database constraint UNIQUE(team_id, roster_slot).
+- Crash tak terduga ini memicu fallback darurat ormatAIFailureMessage (" Pemrosesan Tangkapan Layar Otomatis Sementara Tidak Tersedia\).
+
+### 2. Perubahan Konkret
+- **src/reports/validation.ts**:
+ - Memperbarui esolveOrRegisterIneligiblePlayer: jika argetSlot > 10, sistem memeriksa apakah terdapat pemain INELIGIBLE yang belum memiliki relasi pada player_game_stats.
+ - Jika ada, slot tersebut diperbarui (reuse) secara non-destruktif dengan nama pemain baru, sehingga tidak melanggar UNIQUE(team_id, roster_slot) maupun foreign key referensial.
+ - Meneruskan seenPlayerIdsA dan seenPlayerIdsB ke parameter excludeIds agar jika terdapat lebih dari satu pemain tidak terdaftar, mereka tidak memakai ID pemain yang sama.
+- ** ests/unit/reports.test.ts**:
+ - Menambahkan unit test safely resolves ineligible player when team slots 1..10 are completely full untuk memverifikasi isolasi bug ini secara permanen.
+
+### 3. Verifikasi & Deployment
+- Unit testing: 
+px vitest run tests/unit/reports.test.ts -> 27/27 passed.
+- Full test suite: 
+pm test -> 338/338 passed across 23 test files.
+- Commit & push: e05241.
+- VM build & PM2 reload: Berhasil online.
+- Verifikasi langsung pada sesi 472b062c: Berhasil diproses ulang secara otomatis, draf pertandingan Versi 1 (Helix Moonbreaker 5 - 4 7SinsïBlueLock Venom) telah terbit di grup WhatsApp turnamen dan berstatus PENDING_APPROVAL.
+
+
+## 2026-11-23 ó Session 14: Roster Player Nickname Update (AVO|ROMENY -> YGC|ROMENY)
+### 1. Tujuan
+- Memeriksa keberadaan pemain dengan nama AVO|ROMENY.
+- Mengubah nickname pemain tersebut menjadi YGC|ROMENY atas instruksi Organizer.
+
+### 2. Eksekusi & Hasil
+- Pemain ditemukan pada tim **Yakigami** (ID: 3dbdef43-65d9-49e8-82c7-81fb478f1766, Roster Slot: 6, Status: ACTIVE, belum memiliki riwayat statistik player_game_stats).
+- Berhasil diperbarui menjadi YGC|ROMENY dengan normalisasi NFC dan 
+ickname_search_key: ygcromeny.
+- Dicatat pada tabel udit_events dengan event PLAYER_UPDATED untuk akuntabilitas.
+
+
+## 2026-11-23 ‚Äî Session 15: Agent Walkover Capability Analysis & 10-Hour Log Audit
+### 1. Tujuan
+- Menganalisis mengapa fitur !agent belum bisa memproses klaim WO (Walkover) secara natural language.
+- Mengaudit log WhatsApp dan sistem selama 10 jam terakhir (10:00‚Äì20:00 WIB / 03:00‚Äì13:00 UTC) untuk mendeteksi kegagalan sistem lain.
+
+### 2. Temuan & Analisis Akar Masalah (Root Cause)
+1. **Fitur !agent untuk Klaim WO**:
+   - Aksi orfeit_winner sudah terdaftar di AgentActionCatalog (src/application/agent-actions.ts).
+   - Namun, terdapat 3 hambatan kritis yang menyebabkannya gagal saat dipicu (misal: !agent team zodiac menang wo atas hokage):
+     - **Context ID Missing**: uildPlannerContext pada src/application/agent-planner.ts hanya memilih nama tim (	eam_a_name, 	eam_b_name) tanpa menyertakan UUID tim (	eam_a_id, 	eam_b_id) pada ecent_fixtures. Akibatnya, model AI tidak mengetahui UUID tim pemenang.
+     - **Validasi String vs UUID**: Model AI mengembalikan nama tim (mis. "Team Zodiac") ke winning_team_id. Fungsi preview membandingkannya dengan string UUID ow.team_a_id (d4d92be0...), sehingga langsung ditolak dengan pesan: ‚ùå winning_team_id "Team Zodiac" bukan peserta fixture ini.
+     - **Query Kolom Non-Existent**: Pada tahap execute, kode mencoba menjalankan SELECT status, winner_team_id FROM fixtures WHERE id = ?. Kolom winner_team_id tidak ada di tabel ixtures (hanya ada di tabel games), yang akan menyebabkan runtime SQL error jika dieksekusi.
+     - **Hak Akses (RBAC)**: !agent dibatasi khusus untuk role ORGANIZER. Delegasi tim biasa tidak dapat menggunakan !agent (delegasi diarahkan memakai !claimwo / !wo / !klaimwo).
+2. **Klaim WO Delegasi (!claimwo / !klaimwo)**:
+   - Pada pukul 19:34 WIB, delegasi Astra Lumina Nova mencoba klaim WO dengan format !klaimwo astra lumina nova vs Yakigami, win astra lumina nova. Format ini gagal karena parser mewajibkan syntax !claimwo <fixture_id> <nama_tim_forfeit> [alasan].
+   - Delegasi kemudian mengirim screenshot bukti chat WA (+62 853-7395-7219) ke grup. Sistem batch processor mendeteksinya sebagai bukti pertandingan dan menolaknya (Screenshot skor akhir pertandingan tidak terdeteksi, Sesi 025ba69).
+   - Karena klaim WO belum tuntas dan batas waktu matchday terlewati, pada pukul 19:59 WIB scheduler otomatis mencatat **Double Walkover (D-031)** untuk fixture Yakigami vs Astra Lumina Nova (keduanya kalah 0-0, 0 poin).
+
+3. **Audit Log Sistem 10 Jam Terakhir (10:00‚Äì20:00 WIB)**:
+   - **Mistral API AUTH_FAILED**: Seluruh panggilan ke Mistral (codestral-latest) gagal dengan status AUTH_FAILED (401), sehingga bot terus menerus fallback ke Groq dan NVIDIA NIM.
+   - **Groq Rate Limited & Provider Unavailable**: Pada jam-jam padat (11:11 & 12:47‚Äì13:00 UTC), Groq sempat mengalami 429 dan 503. Failover ke NVIDIA NIM berjalan, namun sempat mengalami 1x timeout pada model multimodal 
+emotron-super-vl-120b.
+   - **Baileys E2E Decryption**: Terdapat beberapa pesan masuk di grup komunitas (120363411005527783@g.us) dengan log No session found to decrypt message / Bad MAC saat burst chat, yang secara otomatis dipulihkan oleh prekey bundle exchange Baileys.
+   - **Scheduler Cutoff & Pengingat**: Pengingat matchday (17:00 WIB & 18:59 WIB) serta eksekusi cutoff harian (19:59 WIB) berjalan 100% tepat waktu sesuai jadwal.
