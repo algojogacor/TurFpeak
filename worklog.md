@@ -1,5 +1,46 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-23] Sesi: Telemetri Persisten LLM (provider_usage), Logging Real-Time PM2, Prioritas Mistral, & Command !aistatus
+
+### Konteks Sesi & Permintaan User
+1. **Pemeriksaan Log AI / LLM**:
+   - User melihat log PM2 dan menanyakan ketiadaan log sistem LLM ("itu gaada sistem botnya kah? kasih aja dong. eh sistem llm maksudku").
+   - Meminta agar model yang jarang dipakai seperti **Mistral** diprioritaskan.
+2. **Pencatatan / Pelacakan Penggunaan AI**:
+   - User menanyakan: *"btw sekarang ada pencatatan gak? ai apa yang sering dipakai dan tidak?"*
+   - Investigasi menemukan bahwa tabel database `provider_usage` sudah ada (migration 001/004), namun callback `onTelemetry` di `src/cli/start.ts` belum disambungkan sehingga tabel tersebut kosong (`0 rows`) dan tidak ada output log AI ke console/PM2.
+
+### Perubahan Kode & Data
+1. `src/cli/start.ts`:
+   - Menyambungkan callback `onTelemetry` pada `ProviderRouter`:
+     - Mencatat setiap inferensi AI ke tabel `provider_usage` (provider, model, task_type, status, latency_ms, input_tokens, output_tokens, error_code).
+     - Menampilkan log visual di PM2: `[LLM] 🤖 <PROVIDER> (<MODEL>) | Task: <TASK> | <STATUS> (<LATENCY>ms) | in=<IN>, out=<OUT>`.
+2. `src/ai/router.ts`:
+   - Memperbarui urutan prioritas task (`prioritizeByTask`):
+     - **Vision**: `['MISTRAL', 'DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'COHERE', 'OLLAMA_CLOUD']` (Mistral `ministral-14b-latest` diaktifkan dan diposisikan paling depan).
+     - **Text**: `['MISTRAL', 'COHERE', 'NVIDIA_NIM', 'DEEPSEEK', 'GROQ', 'GEMINI', 'OLLAMA_CLOUD']` (Mistral `codestral-latest`, Cohere, dan Nvidia NIM diposisikan paling depan agar model yang jarang dipakai aktif terutilisasi).
+3. `src/application/ai-native-commands.ts`:
+   - Menambahkan command baru `!aistatus` (terbuka di grup maupun DM):
+     - Mengagregasi data dari `provider_usage` (jumlah panggilan, jumlah sukses, rata-rata latency, total token per provider).
+     - Menampilkan status health circuit breaker jika belum ada riwayat atau sedang terjadi gangguan provider.
+
+### Verifikasi Empiris
+1. **Benchmark Multi-Provider di VM (`forfh`)**:
+   - Seluruh 6 provider terverifikasi aktif dan sukses:
+     - MISTRAL (`codestral-latest`): 574ms
+     - GROQ (`qwen/qwen3.8-27b`): 263ms
+     - DEEPSEEK (`deepseek-flash`): 1077ms
+     - GEMINI (`gemini-3-flash-preview`): 3377ms
+     - NVIDIA_NIM (`nemotron-3.5-super-vl`): 3716ms
+     - COHERE (`command-a-reasoning`): 5200ms
+2. **Pengujian Live Telemetri di Server**:
+   - Menjalankan request AI via `!pantun`:
+     - MISTRAL terpilih dan berhasil dieksekusi dalam 1156ms.
+     - Row telemetri tersimpan otomatis ke `provider_usage`.
+     - Command `!aistatus` langsung membaca data tersebut dan merender rekap penggunaan di WhatsApp secara akurat.
+   - PM2 restart `flashpeak-bot` (PID 3310481) aktif dan siap melayani.
+
+
 ## [2026-11-23] Sesi: Pengiriman Broadcast Pengumuman Resmi Kuis ke Grup Turnamen via Omak Peak
 
 ### Konteks Sesi & Instruksi User
