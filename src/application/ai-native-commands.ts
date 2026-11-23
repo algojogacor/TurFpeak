@@ -372,7 +372,7 @@ export function registerAiNativeCommands(
               '🔌 *Status Health Provider:*',
               activeList || '• Multi-provider router standby.',
               '──────────────────────────────',
-              '💡 _Prioritas utama: Mistral & Cohere. Fallback: Nvidia NIM, DeepSeek, Groq, Gemini._',
+              '💡 _Prioritas teks: Mistral ➔ Groq ➔ Nvidia NIM ➔ Cohere ➔ Gemini ➔ DeepSeek (hemat saldo)._',
             ].join('\n'),
           };
         }
@@ -393,7 +393,7 @@ export function registerAiNativeCommands(
         }
 
         lines.push('──────────────────────────────');
-        lines.push('💡 _Sistem multi-provider aktif dengan prioritas Mistral & fallback otomatis._');
+        lines.push('💡 _Prioritas teks: Mistral ➔ Groq ➔ Nvidia NIM ➔ Cohere ➔ Gemini ➔ DeepSeek (hemat saldo)._');
         return {
           success: true,
           responseText: lines.join('\n'),
