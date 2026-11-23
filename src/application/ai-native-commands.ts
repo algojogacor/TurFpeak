@@ -208,87 +208,91 @@ export function registerAiNativeCommands(
   });
 
   // -------------------------------------------------------------------------
-  // !quiz  —  interactive 15-second real-time quiz (any role)
+  // !quiz / !kuis  —  interactive 15-second real-time quiz (any role)
   // -------------------------------------------------------------------------
-  router.registerCommand({
-    command: 'quiz',
-    requiredRole: 'ANY',
-    description: 'Kuis Flash Peak 15 detik! Tebak langsung di grup, rebutan poin leaderboard.',
-    allowedInDm: true,
-    allowedInGroup: true,
-    handler: async (ctx: CommandContext) => {
-      const targetChat = ctx.message.chat_id || deps.centralGroupJid;
-      if (!targetChat) {
-        return { success: false, responseText: '⚠️ Target grup tidak ditemukan.' };
-      }
+  const handleQuiz = async (ctx: CommandContext) => {
+    const targetChat = ctx.message.chat_id || deps.centralGroupJid;
+    if (!targetChat) {
+      return { success: false, responseText: '⚠️ Target grup tidak ditemukan.' };
+    }
 
-      if (quizSessionManager.hasActiveQuiz(targetChat)) {
-        const rem = quizSessionManager.getRemainingSeconds(targetChat);
-        return {
-          success: true,
-          responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${rem} detik*. Ayo jawab sekarang!`,
-        };
-      }
+    if (quizSessionManager.hasActiveQuiz(targetChat)) {
+      const rem = quizSessionManager.getRemainingSeconds(targetChat);
+      return {
+        success: true,
+        responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${rem} detik*. Ayo jawab sekarang!`,
+      };
+    }
 
-      const res = await trivia.randomQuiz();
-      if (!res.success || !res.quiz) {
-        return { success: false, responseText: res.responseText || 'ℹ️ Quiz belum tersedia.' };
-      }
+    const res = await trivia.randomQuiz();
+    if (!res.success || !res.quiz) {
+      return { success: false, responseText: res.responseText || 'ℹ️ Quiz belum tersedia.' };
+    }
 
-      const quizItem = res.quiz;
-      const senderRef = deps.sender;
+    const quizItem = res.quiz;
+    const senderRef = deps.sender;
 
-      const startRes = quizSessionManager.startQuiz(targetChat, quizItem, async (active) => {
-        // Timeout callback: called when 15 seconds elapse with no correct answer
-        if (senderRef) {
-          try {
-            await senderRef.sendText(
-              targetChat,
-              [
-                '⏰ *WAKTU HABIS!* (15 detik)',
-                'Belum ada yang berhasil menebak dengan benar.',
-                '',
-                `💡 *Jawaban yang benar:* ${active.quiz.answer}`,
-                '',
-                '_Mau coba lagi? Ketik *!quiz*!_',
-              ].join('\n')
-            );
-          } catch {
-            // best-effort
-          }
-        }
-      });
-
-      if (!startRes.success || !startRes.quiz) {
-        return {
-          success: true,
-          responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${startRes.remainingSeconds} detik*. Ayo tebak dulu!`,
-        };
-      }
-
-      // Send the question immediately
-      try {
-        if (senderRef) {
+    const startRes = quizSessionManager.startQuiz(targetChat, quizItem, async (active) => {
+      // Timeout callback: called when 15 seconds elapse with no correct answer
+      if (senderRef) {
+        try {
           await senderRef.sendText(
             targetChat,
             [
-              '❓ *QUIZ FLASH PEAK (15 DETIK!)* ⏱️',
+              '⏰ *WAKTU HABIS!* (15 detik)',
+              'Belum ada yang berhasil menebak dengan benar.',
               '',
-              quizItem.question,
+              `💡 *Jawaban yang benar:* ${active.quiz.answer}`,
               '',
-              '👉 *Ketik jawabanmu langsung di grup sekarang!*',
-              '_Jawaban ditutup otomatis dalam 15 detik._',
+              '_Mau coba lagi? Ketik *!quiz*!_',
             ].join('\n')
           );
+        } catch {
+          // best-effort
         }
-      } catch {
-        quizSessionManager.cancelQuiz(targetChat);
-        return { success: false, responseText: '⚠️ Gagal mengirim pertanyaan kuis.' };
       }
+    });
 
-      return { success: true, responseText: '' };
-    },
-  });
+    if (!startRes.success || !startRes.quiz) {
+      return {
+        success: true,
+        responseText: `⚠️ *Kuis masih berlangsung!* Sisa waktu: *${startRes.remainingSeconds} detik*. Ayo tebak dulu!`,
+      };
+    }
+
+    // Send the question immediately
+    try {
+      if (senderRef) {
+        await senderRef.sendText(
+          targetChat,
+          [
+            '❓ *QUIZ FLASH PEAK (15 DETIK!)* ⏱️',
+            '',
+            quizItem.question,
+            '',
+            '👉 *Ketik jawabanmu langsung di grup sekarang!*',
+            '_Jawaban ditutup otomatis dalam 15 detik._',
+          ].join('\n')
+        );
+      }
+    } catch {
+      quizSessionManager.cancelQuiz(targetChat);
+      return { success: false, responseText: '⚠️ Gagal mengirim pertanyaan kuis.' };
+    }
+
+    return { success: true, responseText: '' };
+  };
+
+  for (const cmd of ['quiz', 'kuis']) {
+    router.registerCommand({
+      command: cmd,
+      requiredRole: 'ANY',
+      description: 'Kuis Flash Peak 15 detik! Tebak langsung di grup, rebutan poin leaderboard.',
+      allowedInDm: true,
+      allowedInGroup: true,
+      handler: handleQuiz,
+    });
+  }
 
   // -------------------------------------------------------------------------
   // !topquiz / !quizleaderboard / !kuisleaderboard / !topkuis  —  quiz leaderboard
