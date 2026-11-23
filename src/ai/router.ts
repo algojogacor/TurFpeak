@@ -185,13 +185,21 @@ export class ProviderRouter {
   /**
    * Obtains the list of adapters ordered for the next request based on task priority or rotation.
    */
-  private getOrderedAdapters(isVision = false): ProviderAdapter[] {
+  private getOrderedAdapters(isVision = false, task?: string): ProviderAdapter[] {
     const now = Date.now();
 
     if (this.prioritizeByTask) {
-      const priorityOrder: AIProviderName[] = isVision
-        ? ['DEEPSEEK', 'GROQ', 'GEMINI', 'NVIDIA_NIM', 'COHERE', 'OLLAMA_CLOUD']
-        : ['MISTRAL', 'GROQ', 'NVIDIA_NIM', 'COHERE', 'GEMINI', 'DEEPSEEK', 'OLLAMA_CLOUD'];
+      let priorityOrder: AIProviderName[];
+      if (isVision) {
+        // 3️⃣ Vision (Baca Bukti Screenshot Skor)
+        priorityOrder = ['GROQ', 'GEMINI', 'NVIDIA_NIM', 'DEEPSEEK', 'COHERE', 'OLLAMA_CLOUD'];
+      } else if (task === 'CHAT_OMAK_PEAK') {
+        // 2️⃣ Chat Komunitas Omak Peak (!ai)
+        priorityOrder = ['GROQ', 'GEMINI', 'NVIDIA_NIM', 'MISTRAL', 'DEEPSEEK', 'COHERE', 'OLLAMA_CLOUD'];
+      } else {
+        // 1️⃣ Kuis (!quiz, !trivia), Parsing Roster, Agent Plan, & task teks lainnya
+        priorityOrder = ['MISTRAL', 'NVIDIA_NIM', 'GEMINI', 'GROQ', 'DEEPSEEK', 'COHERE', 'OLLAMA_CLOUD'];
+      }
 
       const sorted = [...this.adapters].sort((a, b) => {
         let idxA = priorityOrder.indexOf(a.name);
@@ -229,7 +237,7 @@ export class ProviderRouter {
    */
   public async execute<T = unknown>(request: AIRequest): Promise<AIResponse<T>> {
     const isVision = Boolean(request.images && request.images.length > 0);
-    const ordered = this.getOrderedAdapters(isVision);
+    const ordered = this.getOrderedAdapters(isVision, request.task);
     const errors: Array<{ provider: AIProviderName; error: unknown }> = [];
     const now = Date.now();
 

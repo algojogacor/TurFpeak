@@ -189,6 +189,7 @@ export class MistralAdapter implements ProviderAdapter {
         const sanitizedBody = sanitizeSensitiveString(rawErrorBody, this.apiKeys);
 
         if (res.status === 401 || res.status === 403) {
+          this.rotateKey();
           throw new AIAuthenticationError(this.name, `Mistral authentication failed (${res.status}): ${sanitizedBody}`, res.status);
         }
 

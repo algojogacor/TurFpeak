@@ -99,11 +99,6 @@ export class GroqAdapter implements ProviderAdapter {
   }
 
   public async execute<T = unknown>(request: AIRequest): Promise<AIResponse<T>> {
-    const activeKey = this.getActiveApiKey();
-    if (!activeKey) {
-      throw new AIAuthenticationError(this.name, 'GROQ_API_KEY is not configured');
-    }
-
     const timeoutMs = request.timeout_ms ?? this.defaultTimeoutMs;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -163,89 +158,116 @@ export class GroqAdapter implements ProviderAdapter {
     }
 
     const startTime = Date.now();
+    const maxKeyAttempts = Math.min(Math.max(this.apiKeys.length, 1), 5);
+    let lastError: unknown = null;
 
-    try {
-      const res = await this.customFetch(this.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${activeKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+    for (let attempt = 0; attempt < maxKeyAttempts; attempt++) {
+      const activeKey = this.getActiveApiKey();
+      if (!activeKey) {
+        throw new AIAuthenticationError(this.name, 'GROQ_API_KEY is not configured');
+      }
 
-      const latencyMs = Date.now() - startTime;
+      try {
+        const res = await this.customFetch(this.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${activeKey}`,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
 
-      if (!res.ok) {
-        const rawErrorBody = await res.text().catch(() => '');
-        const sanitizedBody = sanitizeSensitiveString(rawErrorBody, [activeKey]);
+        const latencyMs = Date.now() - startTime;
 
-        if (res.status === 401 || res.status === 403) {
-          this.rotateKey();
-          throw new AIAuthenticationError(this.name, `Groq authentication failed (${res.status}): ${sanitizedBody}`, res.status);
-        }
+        if (!res.ok) {
+          const rawErrorBody = await res.text().catch(() => '');
+          const sanitizedBody = sanitizeSensitiveString(rawErrorBody, [activeKey]);
 
-        if (res.status === 429) {
-          this.rotateKey();
-          const lowerBody = sanitizedBody.toLowerCase();
-          if (lowerBody.includes('quota') || lowerBody.includes('insufficient_quota') || lowerBody.includes('exceeded your current quota')) {
-            throw new AIQuotaExceededError(this.name, `Groq quota exhausted: ${sanitizedBody}`, res.status);
+          if (res.status === 401 || res.status === 403) {
+            this.rotateKey();
+            throw new AIAuthenticationError(this.name, `Groq authentication failed (${res.status}): ${sanitizedBody}`, res.status);
           }
-          throw new AIRateLimitError(this.name, `Groq rate limit: ${sanitizedBody}`, res.status);
+
+          if (res.status === 429) {
+            this.rotateKey();
+            const lowerBody = sanitizedBody.toLowerCase();
+            if (lowerBody.includes('quota') || lowerBody.includes('insufficient_quota') || lowerBody.includes('exceeded your current quota')) {
+              throw new AIQuotaExceededError(this.name, `Groq quota exhausted: ${sanitizedBody}`, res.status);
+            }
+            if (attempt < maxKeyAttempts - 1) {
+              continue; // Try next rotated key in pool
+            }
+            throw new AIRateLimitError(this.name, `Groq rate limit: ${sanitizedBody}`, res.status);
+          }
+
+          if (res.status === 400 && (sanitizedBody.includes('safety') || sanitizedBody.includes('policy'))) {
+            throw new AISafetyError(this.name, `Groq safety policy rejection: ${sanitizedBody}`);
+          }
+
+          throw new AIProviderUnavailableError(this.name, `Groq returned status ${res.status}: ${sanitizedBody}`, res.status);
         }
 
-        if (res.status === 400 && (sanitizedBody.includes('safety') || sanitizedBody.includes('policy'))) {
-          throw new AISafetyError(this.name, `Groq safety policy rejection: ${sanitizedBody}`);
+        const resJson = await res.json() as {
+          choices?: Array<{ message?: { content?: string } }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+
+        const rawText = resJson.choices?.[0]?.message?.content ?? '';
+        if (!rawText) {
+          throw new AIMalformedResponseError(this.name, 'Groq returned empty response content');
         }
 
-        throw new AIProviderUnavailableError(this.name, `Groq returned status ${res.status}: ${sanitizedBody}`, res.status);
-      }
+        let parsedJson: T | undefined;
+        if (request.structured_output) {
+          try {
+            parsedJson = JSON.parse(rawText) as T;
+          } catch {
+            throw new AIMalformedResponseError(this.name, `Groq JSON parsing failed: ${rawText.slice(0, 100)}`);
+          }
+        }
 
-      const resJson = await res.json() as {
-        choices?: Array<{ message?: { content?: string } }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
-      };
-
-      const rawText = resJson.choices?.[0]?.message?.content ?? '';
-      if (!rawText) {
-        throw new AIMalformedResponseError(this.name, 'Groq returned empty response content');
-      }
-
-      let parsedJson: T | undefined;
-      if (request.structured_output) {
-        try {
-          parsedJson = JSON.parse(rawText) as T;
-        } catch {
-          throw new AIMalformedResponseError(this.name, `Groq JSON parsing failed: ${rawText.slice(0, 100)}`);
+        return {
+          raw_text: rawText,
+          parsed_json: parsedJson,
+          telemetry: {
+            provider: this.name,
+            model: modelToUse,
+            task_type: request.task,
+            latency_ms: latencyMs,
+            input_tokens: resJson.usage?.prompt_tokens ?? null,
+            output_tokens: resJson.usage?.completion_tokens ?? null,
+            status: 'SUCCESS',
+            error_code: null,
+          },
+        };
+      } catch (err: unknown) {
+        lastError = err;
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new AITimeoutError(this.name, 'Groq request timed out', timeoutMs);
+        }
+        if (
+          err instanceof AIAuthenticationError ||
+          err instanceof AIQuotaExceededError ||
+          err instanceof AISafetyError
+        ) {
+          throw err;
+        }
+        if (err instanceof AIRateLimitError && attempt < maxKeyAttempts - 1) {
+          continue;
+        }
+        if (err instanceof Error) {
+          err.message = sanitizeSensitiveString(err.message, this.apiKeys);
+        }
+        throw err;
+      } finally {
+        if (attempt === maxKeyAttempts - 1) {
+          clearTimeout(timeoutId);
         }
       }
-
-      return {
-        raw_text: rawText,
-        parsed_json: parsedJson,
-        telemetry: {
-          provider: this.name,
-          model: modelToUse,
-          task_type: request.task,
-          latency_ms: latencyMs,
-          input_tokens: resJson.usage?.prompt_tokens ?? null,
-          output_tokens: resJson.usage?.completion_tokens ?? null,
-          status: 'SUCCESS',
-          error_code: null,
-        },
-      };
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AITimeoutError(this.name, 'Groq request timed out', timeoutMs);
-      }
-      if (err instanceof Error) {
-        // Ensure sensitive tokens are not leaked in message
-        err.message = sanitizeSensitiveString(err.message, this.apiKeys);
-      }
-      throw err;
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    clearTimeout(timeoutId);
+    throw lastError || new AIProviderUnavailableError(this.name, 'All Groq key attempts failed');
   }
 }

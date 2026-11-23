@@ -159,16 +159,16 @@ describe('New Multi-Provider Adapters & Priority Routing Tests', () => {
       prioritizeByTask: true,
     });
 
-    // 1. Vision request (has images) -> Must go to DEEPSEEK first
+    // 1. Vision request (has images) -> Must go to GROQ first (per user policy: GROQ > GEMINI > NVIDIA > DEEPSEEK)
     await router.execute({
       task: 'EXTRACT_MATCH',
       system_prompt: '',
       prompt: 'match',
       images: [{ mime_type: 'image/jpeg', base64: 'abc' }],
     });
-    expect(calls[calls.length - 1]).toBe('DEEPSEEK');
+    expect(calls[calls.length - 1]).toBe('GROQ');
 
-    // 2. Text request (no images) -> Must go to GROQ first
+    // 2. Text request (no images) -> Must go to GROQ first when Mistral/NVIDIA not in pool
     await router.execute({
       task: 'PARSE_ROSTER',
       system_prompt: '',
