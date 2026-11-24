@@ -1,5 +1,46 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Hotfix Gateway Transport app.start() Hook & Debounce Batch Processing Recovery
+
+### Konteks Sesi & Investigasi User
+- **User Alert**:
+  Pemain mengirimkan tangkapan layar hasil match di grup:
+  - Pukul 19:57 WIB: ATL Nova FP mengirim screenshot. Bot membalas receipt: `📸 Screenshot diterima. Laporan sedang diproses otomatis. Mohon tunggu konfirmasi hasil di grup.` namun draf hasil tidak pernah terbit.
+  - Pukul 20:44 WIB: Kazekage FP mengirim screenshot `KAZEKAGE VS HOKAGE`. Bot juga hanya membalas receipt dan draf hasil tidak pernah keluar.
+- **Akar Masalah (Root Cause)**:
+  1. Pada saat migrasi ke `gateway transport` (`wa-gateway`), method `gatewayConn.connect()` menghubungkan socket Unix `/run/wa-gateway.sock` dan langsung menerima `hello_ack` dalam < 1 milidetik.
+  2. Di `src/whatsapp/gateway-connection.ts`, event `connection.update: { connection: 'open' }` di-emit secara sinkron di dalam callback `hello_ack` sebelum `connect()` di-resolve.
+  3. Namun di `src/cli/start.ts`:
+     `const sock = useGateway ? await gatewayConn.connect() : ...;`
+     Listener `waConnection.on('connection.update', ...)` baru dipasang **setelah** `gatewayConn.connect()` selesai di-await.
+  4. Akibat race condition ini, event `connection.update: 'open'` telah ter-emit ke void sebelum listener sempat dipasang!
+  5. Konsekuensinya: blok kode di dalam `connection.update` yang memanggil `app.start()` **TIDAK PERNAH DIJALANKAN**.
+  6. Karena `app.start()` tidak pernah berjalan:
+     - Background timer `this.pollTimer = setInterval(..., this.pollIntervalMs)` tidak pernah hidup.
+     - Fungsi `processDueDebounceBatches()` tidak pernah dipanggil untuk mengklaim antrean session screenshot.
+     - Sesi di tabel `report_sessions` membeku selamanya di status `COLLECTING` meskipun `debounce_due_at` sudah lewat (19:57 WIB dan 20:44 WIB).
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/cli/start.ts`:
+   - Menambahkan pengecekan eksplisit setelah inisialisasi:
+     ```typescript
+     if (useGateway && gatewayConn?.isConnected) {
+       ...
+       app.start();
+     }
+     ```
+   - Memastikan `app.start()` selalu dipicu saat menggunakan mode gateway terlepas dari apakah event `'connection.update'` di-emit sebelum atau sesudah listener terpasang.
+   - Karena `app.start()` bersifat idempoten (`if (this.isPolling) return;`), tidak ada risiko double execution.
+
+### Bukti Verifikasi Empiris
+- **Kompilasi & Build**:
+  - `npm run build` sukses 100% tanpa error di lokal dan VM.
+- **Deployment & Service Reload**:
+  - Kode di-deploy ke VM `forfh`, PM2 `flashpeak-bot` direstart.
+  - Begitu service aktif, `app.start()` otomatis mengambil sesi `COLLECTING` yang tertunda dan mengeksekusi pipeline ekstraksi AI ke grup.
+
+---
+
 ## [2026-11-24] Sesi: Hotfix Matchday Scheduler — Prevention of Premature Round Advancement & False Cutoff
 
 ### Konteks Sesi & Investigasi User

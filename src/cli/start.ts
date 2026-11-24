@@ -314,7 +314,7 @@ async function main() {
   waConnection.on('connection.update', (update) => {
     if (update.connection === 'open') {
       const currentSock = gatewayConn ? gatewayConn.getSocket() : legacyConn?.getSocket();
-      const userJid = currentSock?.user?.id || sock.user?.id || 'Unknown';
+      const userJid = currentSock?.user?.id || (sock as any)?.user?.id || 'Unknown';
       console.log('\n====================================================');
       console.log(`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!`);
       console.log(`[WA] Akun Bot JID: ${userJid}`);
@@ -323,6 +323,18 @@ async function main() {
       app.start();
     }
   });
+
+  // If already connected immediately on gateway attach, ensure app.start() is triggered
+  if (useGateway && gatewayConn?.isConnected) {
+    const currentSock = gatewayConn.getSocket();
+    const userJid = currentSock?.user?.id || 'gateway';
+    console.log('\n====================================================');
+    console.log(`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)`);
+    console.log(`[WA] Akun Bot JID: ${userJid}`);
+    console.log(`[WA] Bot siap memproses turnamen.`);
+    console.log('====================================================\n');
+    app.start();
+  }
 
   // Inbound messages routing attached to waConnection (persists across all socket reconnects!)
   waConnection.on('messages.upsert', async (data: { type: string; messages: any[] }) => {
