@@ -629,15 +629,36 @@ export function registerTournamentCommands(
         if (ver) versionId = ver.id;
       }
       if (!versionId) {
-        const latestVer = await db.execute(`
-          SELECT rv.id FROM report_versions rv
-          JOIN fixtures f ON rv.fixture_id = f.id
-          JOIN tournaments t ON f.tournament_id = t.id
-          WHERE t.status = 'ACTIVE' AND rv.status IN ('PENDING_APPROVAL', 'NEEDS_CORRECTION')
-          ORDER BY rv.created_at DESC LIMIT 1
-        `);
-        if (latestVer.rows.length > 0) {
-          versionId = String(latestVer.rows[0].id ?? latestVer.rows[0][0]);
+        if (ctx.role === 'DELEGATE' && ctx.delegateId && !ctx.isOrganizer) {
+          const delVer = await db.execute({
+            sql: `
+              SELECT rv.id FROM report_versions rv
+              JOIN fixtures f ON rv.fixture_id = f.id
+              JOIN tournaments t ON f.tournament_id = t.id
+              WHERE t.status = 'ACTIVE' 
+                AND rv.status IN ('PENDING_APPROVAL', 'NEEDS_CORRECTION')
+                AND (
+                  f.team_a_id IN (SELECT id FROM teams WHERE delegate_id = ?)
+                  OR f.team_b_id IN (SELECT id FROM teams WHERE delegate_id = ?)
+                )
+              ORDER BY rv.created_at DESC LIMIT 1
+            `,
+            args: [ctx.delegateId, ctx.delegateId],
+          });
+          if (delVer.rows.length > 0) {
+            versionId = String(delVer.rows[0].id ?? delVer.rows[0][0]);
+          }
+        } else {
+          const latestVer = await db.execute(`
+            SELECT rv.id FROM report_versions rv
+            JOIN fixtures f ON rv.fixture_id = f.id
+            JOIN tournaments t ON f.tournament_id = t.id
+            WHERE t.status = 'ACTIVE' AND rv.status IN ('PENDING_APPROVAL', 'NEEDS_CORRECTION')
+            ORDER BY rv.created_at DESC LIMIT 1
+          `);
+          if (latestVer.rows.length > 0) {
+            versionId = String(latestVer.rows[0].id ?? latestVer.rows[0][0]);
+          }
         }
       }
       if (!versionId) {
@@ -646,24 +667,46 @@ export function registerTournamentCommands(
           responseText: '⚠️ Balas/kutip pesan draf laporan pertandingan dengan *!approve*, atau ketik: `!approve <id>`',
         };
       }
-      let approverType: ApproverType = 'ORGANIZER';
-      if (ctx.role === 'DELEGATE') {
-        const verRes = await db.execute({
-          sql: `SELECT f.team_a_id, f.team_b_id, ta.delegate_id, tb.delegate_id
-                FROM report_versions rv
-                JOIN fixtures f ON rv.fixture_id = f.id
-                LEFT JOIN teams ta ON f.team_a_id = ta.id
-                LEFT JOIN teams tb ON f.team_b_id = tb.id
-                WHERE rv.id = ?`,
-          args: [versionId],
-        });
-        if (verRes.rows.length > 0) {
-          const row = verRes.rows[0];
-          const delA = row[2] ? String(row[2]) : null;
-          const delB = row[3] ? String(row[3]) : null;
-          if (ctx.delegateId === delA) approverType = 'TEAM_A';
-          else if (ctx.delegateId === delB) approverType = 'TEAM_B';
+
+      let approverType: ApproverType | null = null;
+      const verRes = await db.execute({
+        sql: `SELECT f.team_a_id, f.team_b_id, ta.delegate_id, tb.delegate_id, ta.team_name, tb.team_name
+              FROM report_versions rv
+              JOIN fixtures f ON rv.fixture_id = f.id
+              LEFT JOIN teams ta ON f.team_a_id = ta.id
+              LEFT JOIN teams tb ON f.team_b_id = tb.id
+              WHERE rv.id = ?`,
+        args: [versionId],
+      });
+
+      if (verRes.rows.length > 0) {
+        const row = verRes.rows[0];
+        const delA = row[2] ? String(row[2]) : null;
+        const delB = row[3] ? String(row[3]) : null;
+        const nameA = row[4] ? String(row[4]) : 'Tim A';
+        const nameB = row[5] ? String(row[5]) : 'Tim B';
+
+        if (ctx.delegateId && ctx.delegateId === delA) {
+          approverType = 'TEAM_A';
+        } else if (ctx.delegateId && ctx.delegateId === delB) {
+          approverType = 'TEAM_B';
+        } else if (ctx.isOrganizer) {
+          approverType = 'ORGANIZER';
         }
+
+        if (!approverType) {
+          return {
+            success: false,
+            responseText: `⚠️ Kamu bukan delegasi dari tim yang bertanding di pertandingan ini (*${nameA} vs ${nameB}*). Hanya delegasi yang bertanding atau panitia yang dapat melakukan *!approve*.`,
+          };
+        }
+      } else if (ctx.isOrganizer) {
+        approverType = 'ORGANIZER';
+      } else {
+        return {
+          success: false,
+          responseText: '⚠️ Draf laporan pertandingan tidak ditemukan.',
+        };
       }
 
       const approverId = ctx.delegateId || ctx.message.sender_normalized_address;
