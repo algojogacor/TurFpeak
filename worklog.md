@@ -1,5 +1,38 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Sync Master Branch & Gateway Transport Verification
+
+### Konteks Sesi & Tujuan Tugas
+- Roster / Swarm Agent: Coordinator / Solo Senior Engineer
+- Purpose:
+  1. Melakukan `git pull origin master` pada repository lokal dan server VM (`forfh`).
+  2. Memverifikasi sinkronisasi commit terbaru (fitur `gateway transport` untuk `wa-gateway`).
+  3. Menjalankan `npm run build` dan `npm test` untuk memverifikasi integritas build dan fungsionalitas sistem.
+
+### Perubahan File yang Di-pull
+- `1b66283`: fix(cli): say 'gateway transport' in the boot log when WA_TRANSPORT=gateway
+- `6f20974`: fix(cli): retry gateway attach when the socket is not up yet (boot-order tolerance)
+- `b6eb5fb`: feat(whatsapp): gateway transport — consume the single-connection wa-gateway via Unix socket
+- Files updated:
+  - `README.md`
+  - `src/cli/start.ts`
+  - `src/whatsapp/gateway-connection.ts`
+  - `test/whatsapp/gateway-connection.test.ts`
+
+### Hasil Verifikasi Empiris
+- **Git Status**:
+  - Lokal: Up to date dengan `origin/master` (`1b66283`).
+  - Server VM (`forfh`): Up to date dengan `origin/master` (`1b66283`).
+- **Build Status**:
+  - `npm run build` lokal: Berhasil tanpa error (`tsc`).
+  - `npm run build` server: Berhasil tanpa error (`tsc`).
+- **Test Suite**:
+  - `npm test` server: **25 test files passed, 420 passed (100% success)**.
+- **Service Status**:
+  - PM2 `flashpeak-bot` (id 24) dan `wa-gateway` (id 27) online dan aktif melayani pesan grup WhatsApp secara real-time.
+
+---
+
 ## [2026-11-24] Sesi: Model Matrix Audit, Provider Live Endpoint Benchmark & Baseline Confirmation
 
 ### Konteks Sesi & Tujuan Tugas
