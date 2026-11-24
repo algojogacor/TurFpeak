@@ -382,6 +382,7 @@ describe('OmakPeakService (D-037)', () => {
     expect(classifyOmakPeakIntent('pagi omak')).toBe('CHIT_CHAT');
     expect(classifyOmakPeakIntent('siapa kamu?')).toBe('CHIT_CHAT');
     expect(classifyOmakPeakIntent('makasih ya infonya')).toBe('CHIT_CHAT');
+    expect(classifyOmakPeakIntent('p')).toBe('CHIT_CHAT');
     expect(classifyOmakPeakIntent('')).toBe('CHIT_CHAT');
 
     // GAME
@@ -394,6 +395,9 @@ describe('OmakPeakService (D-037)', () => {
     expect(classifyOmakPeakIntent('siapa lawan tim Kazekage besok?')).toBe('TOURNAMENT');
     expect(classifyOmakPeakIntent('jadwal ronde 2 kapan?')).toBe('TOURNAMENT');
     expect(classifyOmakPeakIntent('klasemen grup B siapa yang lolos?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('siapa aja yang lolos')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('siapa yang masuk 8 besar?')).toBe('TOURNAMENT');
+    expect(classifyOmakPeakIntent('posisi klasemen sementara')).toBe('TOURNAMENT');
     expect(classifyOmakPeakIntent('roster pemain Astra Lumina siapa aja?')).toBe('TOURNAMENT');
     expect(classifyOmakPeakIntent('siapa top skor turnamen?')).toBe('TOURNAMENT');
     expect(classifyOmakPeakIntent('aturan walkover gimana?')).toBe('TOURNAMENT');

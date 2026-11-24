@@ -117,6 +117,8 @@ export function classifyOmakPeakIntent(userMessage: string): OmakPeakIntent {
     'best defender', 'kiper penghargaan', 'roster', 'lineup', 'pemain', 'cadangan',
     'starter', 'substitute', 'delegasi', 'kontak', 'nomor wa', 'panitia', 'arya',
     'aturan', 'rules', 'quiz', 'kuis', 'raja kuis',
+    'lolos', 'gugur', '8 besar', 'delapan besar', 'babak 8 besar', 'playoff', 'playoffs',
+    'knockout', 'ko', 'fase grup', 'posisi', 'leaderboard', 'tabel', 'juara', 'tiket', 'slot',
     'kazekage', 'zodiac', 'apostles', 'yakigami', 'jestre', 'astra', 'lumina', 'nova',
     'inferno', 'venom', '7sins', 'bluelock', 'avoid', 'prime', 'impact', 'elite 8',
     'elite8', 'hokage', 'raikage', 'moonbreaker', 'helix'
@@ -166,7 +168,8 @@ export function classifyOmakPeakIntent(userMessage: string): OmakPeakIntent {
 
   if (text.length < 60) {
     for (const kw of chitChatKeywords) {
-      if (text.includes(kw)) {
+      const regex = new RegExp(`(^|[^a-z0-9])${kw}([^a-z0-9]|$)`, 'i');
+      if (regex.test(text)) {
         return 'CHIT_CHAT';
       }
     }
