@@ -533,3 +533,240 @@ export async function revealNext(
     current_groups: assignment,
   };
 }
+
+export interface KnockoutQualifier {
+  team_id: UUID;
+  team_name: string;
+  group_code: string;
+  group_rank: 1 | 2; // 1st or 2nd place
+}
+
+export interface KnockoutMatchPair {
+  match_index: number;
+  match_number: number;
+  bracket_half: 'UPPER' | 'LOWER';
+  team_a: KnockoutQualifier;
+  team_b: KnockoutQualifier;
+  pot1_team: KnockoutQualifier;
+  pot2_team: KnockoutQualifier;
+  is_host_a: boolean;
+  is_pot1_host: boolean;
+}
+
+export interface KnockoutSeededDrawOptions {
+  shuffle?: <T>(array: T[]) => T[];
+}
+
+/**
+ * Generates Seeded Knockout Bracket Draw pairings with:
+ * - Pot 1 (group winners, rank 1) vs Pot 2 (runners-up, rank 2)
+ * - Constraint 1 (Same-Group Protection): No match pairs teams from the same group
+ * - Constraint 2 (Opposite Halves): Teams from the same group MUST be placed in opposite halves
+ *   of the bracket tree (Upper Half vs Lower Half, e.g. QF1/QF2 vs QF3/QF4) so they cannot meet again until the Grand Final
+ * - Constraint 3 (50:50 Host): Randomize which team is team_a (default host) vs team_b
+ * - Deadlock-free: Uses mathematical disjoint partition for even M (no backtracking needed, 0% deadlock)
+ *   and randomized backtracking derangement for odd M.
+ */
+export function generateKnockoutSeededDraw(
+  qualifiers: KnockoutQualifier[],
+  options?: KnockoutSeededDrawOptions
+): KnockoutMatchPair[] {
+  if (!qualifiers || qualifiers.length < 2) {
+    throw new Error('Minimal 2 tim yang lolos untuk membentuk bracket Knockout');
+  }
+
+  // Check for duplicate team IDs
+  const uniqueIds = new Set(qualifiers.map((q) => q.team_id));
+  if (uniqueIds.size !== qualifiers.length) {
+    throw new Error('Bracket tidak valid: ada tim yang dipasangkan dengan dirinya sendiri (kualifikasi duplikat).');
+  }
+
+  const pot1 = qualifiers.filter((q) => q.group_rank === 1);
+  const pot2 = qualifiers.filter((q) => q.group_rank === 2);
+
+  if (pot1.length !== pot2.length || pot1.length === 0 || pot1.length + pot2.length !== qualifiers.length) {
+    throw new Error('Jumlah tim Pot 1 (juara grup) dan Pot 2 (runner-up) harus sama untuk seeded knockout draw.');
+  }
+
+  const pot1Groups = new Set(pot1.map((t) => t.group_code));
+  const pot2Groups = new Set(pot2.map((t) => t.group_code));
+
+  if (pot1Groups.size !== pot1.length || pot2Groups.size !== pot2.length) {
+    throw new Error('Setiap grup harus memiliki tepat 1 juara grup dan 1 runner-up.');
+  }
+
+  for (const g of pot1Groups) {
+    if (!pot2Groups.has(g)) {
+      throw new Error(`Grup ${g} tidak memiliki perwakilan runner-up di Pot 2.`);
+    }
+  }
+
+  const M = pot1.length;
+  const shuffleFn = options?.shuffle ?? cryptoFisherYates;
+
+  // Single-match edge case (e.g. 2 qualifiers)
+  if (M === 1) {
+    const t1 = pot1[0]!;
+    const t2 = pot2[0]!;
+    if (t1.group_code === t2.group_code) {
+      throw new Error(`Tidak dapat membentuk match: kedua tim berasal dari grup yang sama (${t1.group_code}).`);
+    }
+    const isHostPot1 = options?.shuffle
+      ? options.shuffle([true, false])[0]!
+      : randomInt(0, 2) === 0;
+    const team_a = isHostPot1 ? t1 : t2;
+    const team_b = isHostPot1 ? t2 : t1;
+    return [
+      {
+        match_index: 0,
+        match_number: 1,
+        bracket_half: 'UPPER',
+        team_a,
+        team_b,
+        pot1_team: t1,
+        pot2_team: t2,
+        is_host_a: true,
+        is_pot1_host: isHostPot1,
+      },
+    ];
+  }
+
+  // For even M (e.g. M = 2, 4, 8, 16):
+  // Partition groups into two disjoint sets: upperGroups and lowerGroups.
+  // Upper Half matches: Pot 1 from upperGroups vs Pot 2 from lowerGroups.
+  // Lower Half matches: Pot 1 from lowerGroups vs Pot 2 from upperGroups.
+  // This mathematically guarantees:
+  // 1. Same-group protection (Upper Pot 1 and Upper Pot 2 have disjoint group sets; same for Lower).
+  // 2. Opposite halves (for every group, its Pot 1 and Pot 2 are placed in opposite halves of the bracket).
+  // 3. Complete deadlock-free guarantee (zero backtracking, 100% success rate on first attempt).
+  if (M % 2 === 0) {
+    const half = M / 2;
+
+    const groupCodes = shuffleFn(Array.from(pot1Groups));
+    const upperGroups = new Set(groupCodes.slice(0, half));
+    const lowerGroups = new Set(groupCodes.slice(half));
+
+    const upperPot1 = shuffleFn(pot1.filter((t) => upperGroups.has(t.group_code)));
+    const upperPot2 = shuffleFn(pot2.filter((t) => lowerGroups.has(t.group_code)));
+
+    const lowerPot1 = shuffleFn(pot1.filter((t) => lowerGroups.has(t.group_code)));
+    const lowerPot2 = shuffleFn(pot2.filter((t) => upperGroups.has(t.group_code)));
+
+    const result: KnockoutMatchPair[] = [];
+
+    // Upper Half Matches (indices 0 .. half - 1)
+    for (let i = 0; i < half; i++) {
+      const p1 = upperPot1[i]!;
+      const p2 = upperPot2[i]!;
+      const isHostPot1 = options?.shuffle
+        ? options.shuffle([true, false])[0]!
+        : randomInt(0, 2) === 0;
+      const team_a = isHostPot1 ? p1 : p2;
+      const team_b = isHostPot1 ? p2 : p1;
+
+      result.push({
+        match_index: i,
+        match_number: i + 1,
+        bracket_half: 'UPPER',
+        team_a,
+        team_b,
+        pot1_team: p1,
+        pot2_team: p2,
+        is_host_a: true,
+        is_pot1_host: isHostPot1,
+      });
+    }
+
+    // Lower Half Matches (indices half .. M - 1)
+    for (let i = 0; i < half; i++) {
+      const p1 = lowerPot1[i]!;
+      const p2 = lowerPot2[i]!;
+      const isHostPot1 = options?.shuffle
+        ? options.shuffle([true, false])[0]!
+        : randomInt(0, 2) === 0;
+      const team_a = isHostPot1 ? p1 : p2;
+      const team_b = isHostPot1 ? p2 : p1;
+
+      result.push({
+        match_index: half + i,
+        match_number: half + i + 1,
+        bracket_half: 'LOWER',
+        team_a,
+        team_b,
+        pot1_team: p1,
+        pot2_team: p2,
+        is_host_a: true,
+        is_pot1_host: isHostPot1,
+      });
+    }
+
+    return result;
+  }
+
+  // Odd M fallback (e.g. M = 3 or 5):
+  // Randomized backtracking derangement algorithm
+  const upperCount = Math.floor(M / 2);
+  const shuffledPot1 = shuffleFn([...pot1]);
+  const shuffledPot2 = shuffleFn([...pot2]);
+
+  const assignedPot2: (KnockoutQualifier | null)[] = Array(M).fill(null);
+  const usedPot2 = new Set<string>();
+
+  function backtrack(matchIdx: number): boolean {
+    if (matchIdx === M) return true;
+    const p1 = shuffledPot1[matchIdx]!;
+    const isUpper = matchIdx < upperCount;
+
+    const candidates = shuffledPot2.filter(
+      (p2) => !usedPot2.has(p2.team_id) && p2.group_code !== p1.group_code
+    );
+
+    // Prioritize candidates whose Pot 1 counterpart is in the opposite half
+    candidates.sort((a, b) => {
+      const aPot1Idx = shuffledPot1.findIndex((p) => p.group_code === a.group_code);
+      const bPot1Idx = shuffledPot1.findIndex((p) => p.group_code === b.group_code);
+      const aOpposite = (aPot1Idx < upperCount) !== isUpper ? 1 : 0;
+      const bOpposite = (bPot1Idx < upperCount) !== isUpper ? 1 : 0;
+      return bOpposite - aOpposite;
+    });
+
+    for (const cand of candidates) {
+      assignedPot2[matchIdx] = cand;
+      usedPot2.add(cand.team_id);
+      if (backtrack(matchIdx + 1)) return true;
+      usedPot2.delete(cand.team_id);
+      assignedPot2[matchIdx] = null;
+    }
+    return false;
+  }
+
+  const ok = backtrack(0);
+  if (!ok) {
+    throw new Error('Gagal menemukan pairing seeded knockout yang memenuhi batasan grup.');
+  }
+
+  const result: KnockoutMatchPair[] = [];
+  for (let i = 0; i < M; i++) {
+    const p1 = shuffledPot1[i]!;
+    const p2 = assignedPot2[i]!;
+    const isHostPot1 = options?.shuffle
+      ? options.shuffle([true, false])[0]!
+      : randomInt(0, 2) === 0;
+    const team_a = isHostPot1 ? p1 : p2;
+    const team_b = isHostPot1 ? p2 : p1;
+
+    result.push({
+      match_index: i,
+      match_number: i + 1,
+      bracket_half: i < upperCount ? 'UPPER' : 'LOWER',
+      team_a,
+      team_b,
+      pot1_team: p1,
+      pot2_team: p2,
+      is_host_a: true,
+      is_pot1_host: isHostPot1,
+    });
+  }
+
+  return result;
+}

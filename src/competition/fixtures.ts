@@ -9,13 +9,26 @@
 import { randomUUID } from 'node:crypto';
 import type { Client } from '@libsql/client';
 import { recalculateAndPersistGroupStandings } from './standings.js';
-import { cryptoFisherYates } from './draw.js';
+import {
+  cryptoFisherYates,
+  generateKnockoutSeededDraw,
+  type KnockoutQualifier,
+  type KnockoutMatchPair,
+  type KnockoutSeededDrawOptions,
+} from './draw.js';
 import type {
   Fixture,
   Series,
   UUID,
   ISODateString,
 } from '../shared/types/index.js';
+
+export {
+  generateKnockoutSeededDraw,
+  type KnockoutQualifier,
+  type KnockoutMatchPair,
+  type KnockoutSeededDrawOptions,
+};
 
 export interface GroupTeamParticipant {
   team_id: UUID;
@@ -27,13 +40,6 @@ export interface ScheduledMatchPair {
   round: number;
   team_a: GroupTeamParticipant; // Left-side host recommendation
   team_b: GroupTeamParticipant; // Right-side team
-}
-
-export interface KnockoutQualifier {
-  team_id: UUID;
-  team_name: string;
-  group_code: string;
-  group_rank: 1 | 2; // 1st or 2nd place
 }
 
 /**
@@ -290,13 +296,15 @@ export async function generateGroupStageFixtures(
  */
 export interface GenerateKnockoutOptions {
   /**
-   * BRACKET-REDRAW (Arya decision, 21 Nov 2026): for SECOND-AND-LATER knockout
-   * rounds the surviving teams are RE-DRAWN (re-paired) each round instead of
-   * being mapped from the previous round's fixture order. The shuffle function
-   * is injectable so tests can make the draw deterministic; production passes
-   * cryptoFisherYates (same primitive as the group-stage !draw).
+   * Shuffle function to randomize draw or make it deterministic in tests.
    */
   shuffle?: <T>(array: T[]) => T[];
+
+  /**
+   * Optional pre-drawn match pairs (e.g. from generateKnockoutSeededDraw and !drawknockout progressive reveal).
+   * When provided, these pairs are inserted directly instead of re-generating.
+   */
+  matchPairs?: KnockoutMatchPair[];
 }
 
 /**
@@ -430,14 +438,23 @@ export async function generateKnockoutFixtures(
 
   const firstRoundMatches: { team_a: KnockoutQualifier; team_b: KnockoutQualifier }[] = [];
 
-  // BRACKET-REDRAW: when a shuffle function is supplied (later rounds via
-  // !startknockout), the pool is re-drawn: shuffle first, then pair
-  // sequentially. This makes the pairing independent of any previous round's
-  // fixture order/indices. Without a shuffle (first knockout round derived
-  // from group standings), the classic seeding is kept:
-  const hasRealGroupSeeding = winners.length === runnersUp.length && winners.length > 0;
+  const hasRealGroupSeeding =
+    pool.length >= 4 &&
+    winners.length === runnersUp.length &&
+    winners.length > 0 &&
+    winners.length + runnersUp.length === pool.length;
 
-  if (options?.shuffle) {
+  if (options?.matchPairs && options.matchPairs.length > 0) {
+    for (const p of options.matchPairs) {
+      firstRoundMatches.push({ team_a: p.team_a, team_b: p.team_b });
+    }
+  } else if (hasRealGroupSeeding) {
+    // First knockout round: Seeded draw with Pot 1 vs Pot 2, same-group protection, opposite halves, 50:50 host
+    const pairs = generateKnockoutSeededDraw(pool, { shuffle: options?.shuffle });
+    for (const p of pairs) {
+      firstRoundMatches.push({ team_a: p.team_a, team_b: p.team_b });
+    }
+  } else if (options?.shuffle) {
     const drawn = options.shuffle(pool);
     // REVIEW-FIX quickwin-shuffle-validation (21 Nov 2026): the old check
     // used Set identity of the ARRAY ELEMENTS (object references), so a
@@ -457,21 +474,11 @@ export async function generateKnockoutFixtures(
     for (let i = 0; i + 1 < pool.length; i += 2) {
       firstRoundMatches.push({ team_a: pool[i]!, team_b: pool[i + 1]! });
     }
-  } else if (hasRealGroupSeeding) {
-    // First knockout round from group standings: pair winners against adjacent
-    // group runners-up so no same-group rematch (Winner Group i vs Runner-up
-    // Group (i + 1) % numGroups). Winner is assigned left side (host
-    // recommendation).
-    const numGroups = winners.length;
-    for (let i = 0; i < numGroups; i++) {
-      const winner = winners[i]!;
-      const runnerUpIndex = (i + 1) % numGroups;
-      const runnerUp = runnersUp[runnerUpIndex]!;
-      firstRoundMatches.push({ team_a: winner, team_b: runnerUp });
-    }
   } else {
-    // Unbalanced sides without a shuffle (defensive; !startknockout always
-    // passes one): pair the even pool sequentially in qualifier order.
+    // Fixed Bracket Tree progression: pair sequentially from previous round order
+    // In a 4-match QF (Match 1..4):
+    // Winner Match 1 plays Winner Match 2 in SF 1; Winner Match 3 plays Winner Match 4 in SF 2.
+    // In SF (SF 1..2): Winner SF 1 plays Winner SF 2 in Grand Final.
     for (let i = 0; i + 1 < pool.length; i += 2) {
       firstRoundMatches.push({ team_a: pool[i]!, team_b: pool[i + 1]! });
     }
@@ -484,9 +491,12 @@ export async function generateKnockoutFixtures(
   // !startknockout's per-label winner collection).
   const roundCode = await deriveKnockoutRoundCode(db, tournamentId, firstRoundMatches.length);
 
-  for (const match of firstRoundMatches) {
+  const baseTime = Date.now();
+  for (let i = 0; i < firstRoundMatches.length; i++) {
+    const match = firstRoundMatches[i]!;
     const fixtureId: UUID = randomUUID();
     const seriesId: UUID = randomUUID();
+    const fixtureTime: ISODateString = new Date(baseTime + i * 1000).toISOString();
 
     const isGrandFinal = roundCode === 'FINAL';
     const seriesFormat = isGrandFinal ? 'BO5' : 'BO3';
@@ -506,8 +516,8 @@ export async function generateKnockoutFixtures(
       host_team_id: null,
       host_assignment_reason: 'DEFAULT_LEFT_SIDE',
       status: 'SCHEDULED',
-      created_at: now,
-      updated_at: now,
+      created_at: fixtureTime,
+      updated_at: fixtureTime,
     };
 
     const s: Series = {
@@ -519,8 +529,8 @@ export async function generateKnockoutFixtures(
       winner_team_id: null,
       team_a_game_wins: 0,
       team_b_game_wins: 0,
-      created_at: now,
-      updated_at: now,
+      created_at: fixtureTime,
+      updated_at: fixtureTime,
     };
 
     await db.execute({

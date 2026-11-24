@@ -527,6 +527,208 @@ export interface KnockoutBracketFixtureItem {
   targetWins: number;
 }
 
+// =============================================================================
+// Knockout Seeded Draw & Fixed Bracket Tree Formatters
+// =============================================================================
+
+export interface KnockoutPotEntry {
+  teamName?: string;
+  groupCode?: string;
+  groupRank?: number;
+  team_name?: string;
+  group_code?: string;
+  group_rank?: number;
+}
+
+export interface KnockoutPotAnnouncementParams {
+  tournamentName: string;
+  pot1: (KnockoutPotEntry | string)[];
+  pot2: (KnockoutPotEntry | string)[];
+}
+
+function getPotTeamDisplay(entry: KnockoutPotEntry | string): string {
+  if (typeof entry === 'string') return entry;
+  const name = entry.teamName || entry.team_name || 'Tim';
+  const group = entry.groupCode || entry.group_code;
+  return group ? `${name} (Grup ${group.toUpperCase()})` : name;
+}
+
+/**
+ * Formats the knockout pot announcement (Pot 1: Juara Grup vs Pot 2: Runner-up).
+ */
+export function formatKnockoutPotAnnouncement(params: KnockoutPotAnnouncementParams): string {
+  const { tournamentName, pot1, pot2 } = params;
+  const lines: string[] = [];
+  lines.push(`🎲 *PENGUNDIAN BRACKET KNOCKOUT — ${tournamentName.toUpperCase()}*`);
+  lines.push('──────────────────────────────');
+  lines.push('📋 *POT UNGGULAN & NON-UNGGULAN:*');
+  lines.push('');
+  lines.push('🥇 *POT 1 (Juara Grup):*');
+  if (pot1.length === 0) {
+    lines.push('  _(Belum ada tim)_');
+  } else {
+    for (const t of pot1) {
+      lines.push(`  • *${getPotTeamDisplay(t)}*`);
+    }
+  }
+  lines.push('');
+  lines.push('🥈 *POT 2 (Runner-up):*');
+  if (pot2.length === 0) {
+    lines.push('  _(Belum ada tim)_');
+  } else {
+    for (const t of pot2) {
+      lines.push(`  • *${getPotTeamDisplay(t)}*`);
+    }
+  }
+  lines.push('');
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Aturan Pengundian:_');
+  lines.push('• Setiap laga mempertemukan Pot 1 vs Pot 2');
+  lines.push('• Perlindungan Grup: Tim dari grup yang sama tidak akan bertemu di babak pertama');
+  lines.push('• Pemisahan Bagan: Tim dari satu grup dipisahkan ke bagan berbeda (Upper & Lower Half)');
+  lines.push('• Penentuan Host: Peluang 50:50 antara Pot 1 dan Pot 2');
+  lines.push('');
+  lines.push('🚀 *Memulai pengundian matchup...*');
+
+  return lines.join('\n');
+}
+
+export interface KnockoutMatchRevealParams {
+  matchIndex: number;
+  totalMatches: number;
+  roundLabel?: string;
+  teamA: string;
+  teamB: string;
+  isHostA?: boolean;
+}
+
+/**
+ * Formats a single knockout match reveal in the progressive reveal sequence.
+ */
+export function formatKnockoutMatchReveal(params: KnockoutMatchRevealParams): string {
+  const {
+    matchIndex,
+    totalMatches,
+    roundLabel = 'PEREMPAT FINAL',
+    teamA,
+    teamB,
+    isHostA = true,
+  } = params;
+  const lines: string[] = [];
+  const displayRound = roundLabel.replace(/_/g, ' ').toUpperCase();
+  lines.push(`⚔️ *HASIL DRAW KNOCKOUT — ${displayRound}*`);
+  lines.push(`_Match ${matchIndex} dari ${totalMatches}_`);
+  lines.push('──────────────────────────────');
+  const tagA = isHostA ? ' *(Host)*' : '';
+  const tagB = !isHostA ? ' *(Host)*' : '';
+  lines.push(`  🔹 *${teamA}*${tagA}  vs  *${teamB}*${tagB}`);
+  lines.push('');
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Format: BO3 (First to 2 wins). Tim bertanda *(Host)* membuat room game._');
+
+  return lines.join('\n');
+}
+
+export interface BracketNodeDisplay {
+  matchLabel?: string;
+  teamA: string;
+  teamB: string;
+  isHostA?: boolean;
+  hostName?: string;
+  seriesFormat?: string;
+  [key: string]: any;
+}
+
+export interface KnockoutBracketTreeSummaryParams {
+  tournamentName: string;
+  upperHalf: BracketNodeDisplay[];
+  lowerHalf: BracketNodeDisplay[];
+  roundLabel?: string;
+  seriesFormat?: string;
+}
+
+/**
+ * Formats the complete visual bracket tree summary for WhatsApp.
+ */
+export function formatKnockoutBracketTreeSummary(params: KnockoutBracketTreeSummaryParams): string {
+  const { tournamentName, upperHalf, lowerHalf } = params;
+  const lines: string[] = [];
+
+  lines.push(`🏆 *BAGAN BRACKET KNOCKOUT RESMI*`);
+  lines.push(`🏅 *${tournamentName.toUpperCase()}*`);
+  lines.push('──────────────────────────────');
+
+  const totalMatches = upperHalf.length + lowerHalf.length;
+
+  const renderHalf = (
+    title: string,
+    matches: BracketNodeDisplay[],
+    startIndex: number,
+    sfNumber: number
+  ) => {
+    lines.push(`🌳 *${title}*`);
+    if (matches.length === 0) {
+      lines.push('  _(Belum ada pertandingan)_');
+      return;
+    }
+
+    if (matches.length === 1) {
+      const m = matches[0]!;
+      const hostA = m.isHostA !== false ? ' *(Host)*' : '';
+      const hostB = m.isHostA === false ? ' *(Host)*' : '';
+      const lbl = m.matchLabel || `SF ${sfNumber}`;
+      lines.push(`  ⚔️ ${lbl}: *${m.teamA}*${hostA} vs *${m.teamB}*${hostB}`);
+    } else if (matches.length === 2 && totalMatches === 4) {
+      // Standard 4 QF format
+      const m1 = matches[0]!;
+      const m2 = matches[1]!;
+      const lbl1 = m1.matchLabel || `QF ${startIndex + 1}`;
+      const lbl2 = m2.matchLabel || `QF ${startIndex + 2}`;
+      const hostA1 = m1.isHostA !== false ? ' (Host)' : '';
+      const hostB1 = m1.isHostA === false ? ' (Host)' : '';
+      const hostA2 = m2.isHostA !== false ? ' (Host)' : '';
+      const hostB2 = m2.isHostA === false ? ' (Host)' : '';
+
+      lines.push(`┌ ${lbl1}: *${m1.teamA}*${hostA1} vs *${m1.teamB}*${hostB1}`);
+      lines.push(`└ ${lbl2}: *${m2.teamA}*${hostA2} vs *${m2.teamB}*${hostB2}`);
+      lines.push(`  ↳ ⚔️ *Semi Final ${sfNumber}:* Pemenang ${lbl1} vs Pemenang ${lbl2}`);
+    } else {
+      // General N matches format
+      for (let i = 0; i < matches.length; i += 2) {
+        const m1 = matches[i]!;
+        const lbl1 = m1.matchLabel || `Match ${startIndex + i + 1}`;
+        const hostA1 = m1.isHostA !== false ? ' (Host)' : '';
+        const hostB1 = m1.isHostA === false ? ' (Host)' : '';
+
+        if (i + 1 < matches.length) {
+          const m2 = matches[i + 1]!;
+          const lbl2 = m2.matchLabel || `Match ${startIndex + i + 2}`;
+          const hostA2 = m2.isHostA !== false ? ' (Host)' : '';
+          const hostB2 = m2.isHostA === false ? ' (Host)' : '';
+          lines.push(`┌ ${lbl1}: *${m1.teamA}*${hostA1} vs *${m1.teamB}*${hostB1}`);
+          lines.push(`└ ${lbl2}: *${m2.teamA}*${hostA2} vs *${m2.teamB}*${hostB2}`);
+          lines.push(`  ↳ ⚔️ Pemenang ${lbl1} vs Pemenang ${lbl2}`);
+        } else {
+          lines.push(`• ${lbl1}: *${m1.teamA}*${hostA1} vs *${m1.teamB}*${hostB1}`);
+        }
+      }
+    }
+  };
+
+  renderHalf('BAGAN ATAS (UPPER HALF)', upperHalf, 0, 1);
+  lines.push('');
+  renderHalf('BAGAN BAWAH (LOWER HALF)', lowerHalf, upperHalf.length, 2);
+  lines.push('');
+
+  lines.push(`👑 *GRAND FINAL*`);
+  lines.push(`  ⚔️ Pemenang Semi Final 1 vs Pemenang Semi Final 2 (BO5)`);
+  lines.push('──────────────────────────────');
+  lines.push('💡 _Bagan bersifat FIXED: pemenang bagan atas dan bagan bawah tidak akan bertemu hingga Grand Final._');
+  lines.push('💡 _Format: BO3 (first to 2 wins) • Grand Final: BO5 (first to 3 wins)._');
+
+  return lines.join('\n');
+}
+
 function knockoutRoundLabel(roundCode: string): string {
   switch (roundCode) {
     case 'ROUND_OF_16':

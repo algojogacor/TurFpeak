@@ -3320,3 +3320,100 @@ ow.team_a_id (d4d92be0...), sehingga langsung ditolak dengan pesan: ❌ winning_
 emotron-super-vl-120b.
    - **Baileys E2E Decryption**: Terdapat beberapa pesan masuk di grup komunitas (120363411005527783@g.us) dengan log No session found to decrypt message / Bad MAC saat burst chat, yang secara otomatis dipulihkan oleh prekey bundle exchange Baileys.
    - **Scheduler Cutoff & Pengingat**: Pengingat matchday (17:00 WIB & 18:59 WIB) serta eksekusi cutoff harian (19:59 WIB) berjalan 100% tepat waktu sesuai jadwal.
+
+
+## 2026-11-24 — Session 16: Seeded Knockout Draw & Fixed Bracket Tree Verification
+### 1. Tujuan & Scope
+- Memverifikasi implementasi Seeded Knockout Draw engine (`generateKnockoutSeededDraw`) dan Fixed Bracket Tree progression di `src/competition/draw.ts` dan `src/competition/fixtures.ts`.
+- Memverifikasi command interaktif WhatsApp `!drawknockout` (dengan alias `!kodraw` dan `!drawko`) di `src/application/tournament-commands.ts` beserta visual formatters di `src/whatsapp/formatters.ts`.
+- Memverifikasi kepatuhan seluruh aturan kompetisi (Pot 1 vs Pot 2, proteksi grup 0% collision, pemisahan Upper vs Lower Halves, 50:50 host, dan bagan fixed tanpa re-draw acak di SF/Final).
+- Menjalankan static type checking (`tsc --noEmit`), unit test suite, dan empirical verification artifact.
+
+### 2. Perubahan Konkret
+- **`src/competition/draw.ts`**:
+  - Mengimplementasikan `generateKnockoutSeededDraw(qualifiers, options)`:
+    - Membagi kualifikasi menjadi Pot 1 (Juara Grup) dan Pot 2 (Runner-up).
+    - Constraint 1 (Perlindungan Grup): Menjamin tim dari grup yang sama tidak pernah berpasangan di babak pertama.
+    - Constraint 2 (Pemisahan Bagan): Mempartisi tim dari grup yang sama ke Upper Half (`bracket_half: 'UPPER'`) vs Lower Half (`bracket_half: 'LOWER'`), sehingga tidak dapat bertemu kembali sebelum Grand Final.
+    - Constraint 3 (50:50 Host): Mengacak tim kiri (`team_a`, default host) vs tim kanan (`team_b`) secara adil.
+    - Menghadirkan algoritma partisi matematis disjoint untuk jumlah grup genap (O(N), 100% deadlock-free tanpa backtracking) serta randomized backtracking derangement untuk grup ganjil.
+- **`src/competition/fixtures.ts`**:
+  - Mengintegrasikan `generateKnockoutSeededDraw` ke dalam `generateKnockoutFixtures` untuk babak pertama knockout saat grup selesai.
+  - Mengimplementasikan Fixed Bracket Tree untuk babak-babak selanjutnya (SF, Final) secara sekuensial tanpa acak: Pemenang QF1 vs Pemenang QF2 di SF1; Pemenang QF3 vs Pemenang QF4 di SF2; Pemenang SF1 vs Pemenang SF2 di Final (BO5).
+  - Menstagger timestamp fixture (`baseTime + i * 1000`) agar query dengan `ORDER BY created_at ASC` selalu konsisten menjaga urutan slot bagan.
+- **`src/whatsapp/formatters.ts`**:
+  - `formatKnockoutPotAnnouncement`: Pengumuman Pot 1 dan Pot 2 serta penjelasan aturan pengundian.
+  - `formatKnockoutMatchReveal`: Kartu reveal progressive matchup per pertandingan dengan tag *(Host)*.
+  - `formatKnockoutBracketTreeSummary`: Tampilan pohon bagan lengkap WhatsApp (Bagan Atas, Bagan Bawah, Grand Final BO5).
+- **`src/application/tournament-commands.ts`**:
+  - Mendaftarkan command `!drawknockout`, `!kodraw`, dan `!drawko` (RBAC: ORGANIZER only).
+  - Guard kelengkapan babak grup (menolak jika ada pertandingan grup yang belum selesai).
+  - Guard duplikasi (menolak jika bracket knockout sudah diundi sebelumnya).
+  - Progressive reveal loop dengan jeda ~1500ms via `deps.sender` ke grup resmi WhatsApp.
+  - Transaksi pembuatan fixture, series, dan pencatatan audit event `KNOCKOUT_DRAW_COMPLETED`.
+  - Memperbarui `!startknockout` agar mengikuti Fixed Bracket Tree pada ronde knockout lanjutan (SF/Final).
+  - Deskripsi command terdaftar di CommandRouter sehingga `!help` menampilkan `!drawknockout` dan `!kodraw` secara akurat.
+- **`tests/unit/competition.test.ts`**:
+  - Menambahkan test suite `Seeded Knockout Draw & Fixed Bracket Tree Engine` memverifikasi Pot 1 vs Pot 2, zero same-group pairing, pemisahan Upper/Lower halves, dan Fixed Bracket progression.
+  - Memperbarui ekspektasi test replay KO game agar dynamically membaca `fixture.team_a_id`.
+- **`tests/unit/knockout_seeded_draw.test.ts`**:
+  - File test unit baru (17 tests) memverifikasi:
+    1. Seeded draw rules (Pot 1 vs Pot 2, zero same-group pairings across 100 iterations, 100 iterations Upper vs Lower separation, 50:50 host distribution, odd-group derangement, rejection guards).
+    2. Fixed Bracket Tree progression (QF1..4 -> SF1..2 -> Final BO5, pre-drawn matchPairs option).
+    3. Command behavior (`!drawknockout`, `!kodraw`, `!drawko`, role guard, uncompleted group guard, duplicate guard, audit event, dan `!help` listing).
+    4. Formatters WhatsApp.
+- **`verify-artifacts/verify_seeded_knockout_bracket.ts`**:
+  - Skrip verifikasi empiris independen memvalidasi 1.000 simulasi Monte Carlo, rantai fixed bracket QF->SF->Final, dan command discovery.
+
+### 3. Bukti Verifikasi Empiris
+1. **Skrip Verifikasi Mandiri (`verify-artifacts/verify_seeded_knockout_bracket.ts`)**:
+   - Perintah: `npx tsx verify-artifacts/verify_seeded_knockout_bracket.ts`
+   - Output:
+     ```
+     ================================================================
+     FLASH PEAK TMS — SEEDED KNOCKOUT DRAW & FIXED BRACKET TREE AUDIT
+     ================================================================
+
+     1. Monte Carlo Simulation: generateKnockoutSeededDraw (1,000 iterations)
+       ✅ [PASS] All 4,000 matches paired Pot 1 (Rank 1) vs Pot 2 (Rank 2)
+       ✅ [PASS] Zero same-group pairings across 1,000 runs (0% collision)
+       ✅ [PASS] Same-group teams strictly separated into Upper vs Lower Halves in 100% of draws
+          Host Randomization: Pot 1 was host in 49.93% of matches (50:50 coin toss target)
+       ✅ [PASS] Host distribution is within balanced 50:50 statistical bounds (45%-55%)
+
+     2. Fixed Bracket Tree Progression (QF -> SF -> Final)
+       ✅ [PASS] Quarter-Final generated 4 matches
+       ✅ [PASS] Round code is QUARTER_FINAL
+       ✅ [PASS] Semi-Final generated 2 matches
+       ✅ [PASS] Round code is SEMI_FINAL
+       ✅ [PASS] SF 1 pairs Winner QF 1 vs Winner QF 2 (Fixed Upper Bracket)
+       ✅ [PASS] SF 2 pairs Winner QF 3 vs Winner QF 4 (Fixed Lower Bracket)
+       ✅ [PASS] Final generated 1 match
+       ✅ [PASS] Round code is FINAL
+       ✅ [PASS] Grand Final format is BO5 (target 3 wins)
+
+     3. Command Interface (!drawknockout, !kodraw, !help)
+       ✅ [PASS] !help lists !drawknockout
+       ✅ [PASS] !help lists !kodraw
+
+     ================================================================
+     AUDIT RESULT: 15/15 CHECKS PASSED (100%)
+     ================================================================
+     ```
+2. **TypeScript Compilation**:
+   - Perintah: `npx tsc --noEmit`
+   - Hasil: Exit code 0, 0 errors.
+3. **Vitest Unit & Integration Test Suite**:
+   - Perintah: `npx vitest run tests/unit/competition.test.ts`
+     - Hasil: 30/30 tests PASS.
+   - Perintah: `npx vitest run tests/unit/knockout_seeded_draw.test.ts`
+     - Hasil: 17/17 tests PASS.
+   - Perintah: `npx vitest run tests/`
+     - Hasil: 25 test files PASS, 422 tests PASS (100%).
+   - Perintah: `npx vitest run test/multi-provider-adapters.test.ts test/roster-ai-parser.test.ts`
+     - Hasil: 2 test files PASS, 23 tests PASS.
+
+### 4. Temuan Bug / Keterbatasan Di Luar Scope (AGENTS.md §11)
+- **`test/whatsapp/gateway-connection.test.ts`**:
+  - Status: `REPORTED / PENDING_APPROVAL`
+  - Deskripsi: Test pada file tersebut mencoba memanggil `net.Server.listen(socketPath)` menggunakan path file di `AppData/Local/Temp/fpgw-*/gw.sock`. Pada lingkungan Windows OS (Win32), binding Unix domain socket file path menghasilkan error OS `EACCES: permission denied` karena Windows membutuhkan named pipe syntax (`\\\\?\\pipe\\...`). Modul aplikasi utama tidak terdampak karena berjalan normal di Linux/VM staging. Sesuai prinsip *Surgical Changes* dan AGENTS.md §11, file di luar scope tidak dimodifikasi secara sepihak.

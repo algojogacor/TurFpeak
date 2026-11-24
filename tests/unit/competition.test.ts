@@ -29,6 +29,7 @@ import {
   prepareDraw,
   revealNext,
   getDraw,
+  generateKnockoutSeededDraw,
 } from '../../src/competition/draw.js';
 import {
   generateBalancedRoundRobin,
@@ -535,14 +536,15 @@ describe('Competition Engine (Fase 3)', () => {
         { team_id: 't4', team_name: 'Team 4', group_code: 'B', group_rank: 2 },
       ];
 
-      const { series } = await generateKnockoutFixtures(db, tournament.id, qualifiers);
+      const { fixtures, series } = await generateKnockoutFixtures(db, tournament.id, qualifiers);
       const seriesId = series[0]!.id;
+      const fixture = fixtures[0]!;
       const fetchedSeries = await getSeries(db, seriesId);
       expect(fetchedSeries?.id).toBe(seriesId);
       expect(series[0]!.format).toBe('BO3');
       expect(series[0]!.target_wins).toBe(2);
 
-      // Game 1: Decisive win for Team 1 (Score 2 - 1)
+      // Game 1: Decisive win for Team A (Score 2 - 1)
       const g1 = await recordSeriesGameResult(db, {
         series_id: seriesId,
         game_number: 1,
@@ -570,7 +572,7 @@ describe('Competition Engine (Fase 3)', () => {
       // Slot 2 must be replayed (next_game_number stays 2!)
       expect(g2Tie.next_game_number).toBe(2);
 
-      // Game 2 REPLAY: Decisive win for Team 1 (Score 3 - 0)
+      // Game 2 REPLAY: Decisive win for Team A (Score 3 - 0)
       // Reuses slot 2!
       const g2Replay = await recordSeriesGameResult(db, {
         series_id: seriesId,
@@ -583,7 +585,7 @@ describe('Competition Engine (Fase 3)', () => {
       expect(g2Replay.is_replay_required).toBe(false);
       expect(g2Replay.series.team_a_game_wins).toBe(2);
       expect(g2Replay.is_series_complete).toBe(true);
-      expect(g2Replay.winner_team_id).toBe('t1');
+      expect(g2Replay.winner_team_id).toBe(fixture.team_a_id);
 
       // Check DB to ensure games table does not have an extra slot 3
       const allGames = await db.execute({
@@ -1026,6 +1028,96 @@ describe('Competition Engine (Fase 3)', () => {
           shuffle: (a) => a.map((q) => ({ ...q, team_id: q.team_id === a[0]!.team_id ? a[1]!.team_id : q.team_id })),
         })
       ).rejects.toThrow('Draw ulang bracket tidak valid');
+    });
+  });
+
+  // ===========================================================================
+  // Seeded Knockout Draw & Fixed Bracket Tree Engine
+  // ===========================================================================
+  describe('Seeded Knockout Draw & Fixed Bracket Tree Engine', () => {
+    it('generateKnockoutSeededDraw: pairs Pot 1 vs Pot 2, zero same-group match, and separates same-group into opposite halves', () => {
+      const quals: KnockoutQualifier[] = [
+        { team_id: 't-a1', team_name: 'Team A1', group_code: 'A', group_rank: 1 },
+        { team_id: 't-a2', team_name: 'Team A2', group_code: 'A', group_rank: 2 },
+        { team_id: 't-b1', team_name: 'Team B1', group_code: 'B', group_rank: 1 },
+        { team_id: 't-b2', team_name: 'Team B2', group_code: 'B', group_rank: 2 },
+        { team_id: 't-c1', team_name: 'Team C1', group_code: 'C', group_rank: 1 },
+        { team_id: 't-c2', team_name: 'Team C2', group_code: 'C', group_rank: 2 },
+        { team_id: 't-d1', team_name: 'Team D1', group_code: 'D', group_rank: 1 },
+        { team_id: 't-d2', team_name: 'Team D2', group_code: 'D', group_rank: 2 },
+      ];
+
+      for (let i = 0; i < 50; i++) {
+        const pairs = generateKnockoutSeededDraw(quals);
+        expect(pairs.length).toBe(4);
+
+        const groupHalves = new Map<string, { upper: boolean; lower: boolean }>();
+        for (const p of pairs) {
+          // Pot 1 vs Pot 2
+          expect(p.pot1_team.group_rank).toBe(1);
+          expect(p.pot2_team.group_rank).toBe(2);
+          // Same-group protection
+          expect(p.pot1_team.group_code).not.toBe(p.pot2_team.group_code);
+
+          const g1 = p.pot1_team.group_code;
+          const g2 = p.pot2_team.group_code;
+          if (!groupHalves.has(g1)) groupHalves.set(g1, { upper: false, lower: false });
+          if (!groupHalves.has(g2)) groupHalves.set(g2, { upper: false, lower: false });
+
+          if (p.bracket_half === 'UPPER') {
+            groupHalves.get(g1)!.upper = true;
+            groupHalves.get(g2)!.upper = true;
+          } else {
+            groupHalves.get(g1)!.lower = true;
+            groupHalves.get(g2)!.lower = true;
+          }
+        }
+
+        // Each group must be present in both Upper and Lower halves
+        for (const [, halves] of groupHalves) {
+          expect(halves.upper).toBe(true);
+          expect(halves.lower).toBe(true);
+        }
+      }
+    });
+
+    it('generateKnockoutFixtures: advances strictly according to Fixed Bracket Tree without shuffle', async () => {
+      const tournament = await createTournament(db, { name: 'Fixed Bracket Tree Test' });
+      for (let i = 1; i <= 8; i++) {
+        await insertTeam(db, tournament.id, `fb-t${i}`, `FB Team ${i}`);
+      }
+
+      const qfQuals: KnockoutQualifier[] = [
+        { team_id: 'fb-t1', team_name: 'FB Team 1', group_code: 'A', group_rank: 1 },
+        { team_id: 'fb-t2', team_name: 'FB Team 2', group_code: 'A', group_rank: 2 },
+        { team_id: 'fb-t3', team_name: 'FB Team 3', group_code: 'B', group_rank: 1 },
+        { team_id: 'fb-t4', team_name: 'FB Team 4', group_code: 'B', group_rank: 2 },
+        { team_id: 'fb-t5', team_name: 'FB Team 5', group_code: 'C', group_rank: 1 },
+        { team_id: 'fb-t6', team_name: 'FB Team 6', group_code: 'C', group_rank: 2 },
+        { team_id: 'fb-t7', team_name: 'FB Team 7', group_code: 'D', group_rank: 1 },
+        { team_id: 'fb-t8', team_name: 'FB Team 8', group_code: 'D', group_rank: 2 },
+      ];
+
+      const qf = await generateKnockoutFixtures(db, tournament.id, qfQuals);
+      expect(qf.fixtures.length).toBe(4);
+      expect(qf.fixtures[0]!.round_code).toBe('QUARTER_FINAL');
+
+      // Winners from QF 1..4
+      const sfSeeds: KnockoutQualifier[] = [
+        { team_id: qf.fixtures[0]!.team_a_id, team_name: 'W1', group_code: 'KO', group_rank: 1 },
+        { team_id: qf.fixtures[1]!.team_a_id, team_name: 'W2', group_code: 'KO', group_rank: 1 },
+        { team_id: qf.fixtures[2]!.team_a_id, team_name: 'W3', group_code: 'KO', group_rank: 1 },
+        { team_id: qf.fixtures[3]!.team_a_id, team_name: 'W4', group_code: 'KO', group_rank: 1 },
+      ];
+
+      // Next round without options.shuffle follows Fixed Bracket Tree
+      const sf = await generateKnockoutFixtures(db, tournament.id, sfSeeds);
+      expect(sf.fixtures.length).toBe(2);
+      expect(sf.fixtures[0]!.round_code).toBe('SEMI_FINAL');
+      expect(sf.fixtures[0]!.team_a_id).toBe(qf.fixtures[0]!.team_a_id);
+      expect(sf.fixtures[0]!.team_b_id).toBe(qf.fixtures[1]!.team_a_id);
+      expect(sf.fixtures[1]!.team_a_id).toBe(qf.fixtures[2]!.team_a_id);
+      expect(sf.fixtures[1]!.team_b_id).toBe(qf.fixtures[3]!.team_a_id);
     });
   });
 });
