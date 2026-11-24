@@ -1,5 +1,73 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Hotfix Fixture Misattribution, Caption Partial/Code Matching & Live Match Remediation
+
+### Konteks Sesi & Investigasi Insiden
+- **Insiden 1 (Round 3 - Astra Lumina Nova vs The Apostles Dominion)**:
+  - Pada pukul 19:57 WIB, delegasi ATL Nova (`214229210689643@lid`) mengirim tangkapan layar match tanpa caption.
+  - Karena LID pengirim belum terdaftar di `whatsapp_identities`, resolver fallback ke `LIMIT 1` fixture terjadwal pertama di DB (`4f2bb009-3e60-4fe1-a9a6-3218c716a144`: AVOID Prime vs AVOID Impact).
+  - Hal ini menyebabkan draf salah terbit dengan tuduhan pelanggaran berat roster 8 pemain (`ATL_Preman`, `ATL_LEAK`, dll tidak ada di roster AVOID Prime), padahal seluruh 8 pemain cocok 100% dengan roster aktif Astra Lumina Nova dan The Apostles Dominion.
+- **Insiden 2 (Round 3 - 7Sins•BlueLock Venom vs Agility Starlight)**:
+  - Pada pukul 21:14 WIB (14:14 UTC), delegasi Venom (`77584306069587@lid`) mengirim tangkapan layar match dengan caption:
+    `"7SB Venom vs Agility win 7SB venom"`.
+  - Bot kembali salah mengatribusikan match ini ke `AVOID Prime vs AVOID Impact` (Sesi `e5e076d1-b4d1-4feb-ab8b-9c763eeb8ed9`), menghasilkan status `NEEDS_CORRECTION` palsu untuk pemain `758_Ronaldo`, `758_Lorenzo`, `758_NAGIII` (skor 6 - 4).
+  - **Akar Masalah (Root Cause)**:
+    1. `src/application/fixture-resolver.ts` hanya melakukan regex matching terhadap nama tim lengkap database (`7Sins•BlueLock Venom` dan `Agility Starlight`). Ketika pengirim memakai singkatan / kode tim (`7SB Venom` dan `Agility`), regex menghasilkan 0 kecocokan nama tim.
+    2. LID pengirim `77584306069587@lid` belum terdaftar di `whatsapp_identities` untuk delegasi 7SB Venom (`9987762f-7f67-429b-944a-a527fdf34a01`), sehingga Step 2 (Identity-based auto-lock) gagal.
+    3. Step 3 fallback mengeksekusi query `LIMIT 1` yang mengembalikan `AVOID Prime vs AVOID Impact`.
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/application/fixture-resolver.ts`:
+   - Menambahkan pengenalan cerdas terhadap `team_code` (`7SB`, `ATL`, `AVO`, `E8`, `HOK`, `KZK`, `MIZ`, `RAI`, `YAK`, `ZOD`, `DOM`, `MOON`, dll) dan kamus singkatan tim resmi turnamen.
+   - Mengimplementasikan tokenisasi dinamis berbasis kata (pemisah spasi, bullet `•`, tanda hubung `-`, garis miring `/`) dengan panjang token >= 4 dan eliminasi stop-words (`the`, `team`, `fc`, `esports`).
+   - Menyempurnakan disambiguasi kandidat tim: kandidat yang hanya cocok dengan prefix parsial yang merupakan subset dari kecocokan majemuk kandidat lain (misal `7sb` terhadap `7sb venom`, atau `avoid` terhadap `avoid prime`) otomatis disaring agar tidak ambigu.
+   - Memperbaiki deteksi pemenang (`detectWinnerTeamId`): menggunakan prioritas deklarasi langsung prefix (`win <team>`, `pemenang: <team>`) di atas postfix (`<team> menang`), dengan seleksi alias terpanjang untuk mencegah nama tim kedua tertukar sebagai pemenang ketika berada di sebelah kata `win`.
+   - Menggunakan resolusi delegasi pengirim (`senderTeamId`) sebagai fallback penentu pemenang jika caption tidak menuliskan kata kunci pemenang secara eksplisit.
+2. `src/application/evidence-batch-processor.ts`:
+   - Menambahkan mekanisme pertahanan berlapis (defense-in-depth) auto-rebind: jika skor pencocokan pemain terhadap fixture terpasang < 2 pemain, sistem melakukan pemindaian silang (cross-check) terhadap seluruh fixture `SCHEDULED` / `IN_PROGRESS` lainnya di turnamen aktif.
+   - Jika ditemukan kandidat fixture dengan kecocokan pemain >= 3 (misal 8/8 pemain cocok), sesi otomatis di-rebind ke fixture yang benar, sisi/skor dihitung ulang, dan status diperbarui tanpa menuduh pelanggaran roster palsu.
+   - Jika skor pencocokan = 0 terhadap seluruh fixture turnamen, sesi ditandai `INCOMPLETE` dengan pesan edukatif ramah alih-alih merusak fixture lain.
+3. Unit Tests:
+   - `tests/unit/fixture_resolver.test.ts`: 6 skenario pengujian komprehensif (caption singkatan `7SB Venom vs Agility win 7SB venom`, nama parsial `ATL Nova vs Apostles`, deteksi pemenang, prefix bersama `AVOID Prime vs AVOID Impact`, sebutan tim tunggal, dan fallback identitas).
+   - `tests/unit/fixture_auto_rebind.test.ts`: 2 skenario pengujian untuk auto-rebind otomatis saat salah atribusi serta penolakan screenshot yang tidak cocok dengan fixture mana pun.
+
+### Remediasi Database Produksi & Deployment VM
+1. **Pembaruan Alias & Roster DB VM (`forfh`)**:
+   - Menambahkan alias LID `77584306069587@lid` ke delegasi 7SB Venom (`9987762f-7f67-429b-944a-a527fdf34a01`).
+   - Memperbarui kolom `team_code` untuk 16 tim di tabel `teams` (`7SB`, `ATL`, `AVO`, `E8`, `HOK`, `KZK`, `MIZ`, `RAI`, `YAK`, `ZOD`, `DOM`, `MOON`, dll).
+2. **Pembersihan Draf Palsu**:
+   - Menghapus draf versi 1 (`782c3903-70c9-4854-87b4-f5330d6da103`) dari fixture `4f2bb009-3e60-4fe1-a9a6-3218c716a144` (AVOID Prime vs AVOID Impact) beserta entri `report_media`-nya. Fixture AVOID Prime vs AVOID Impact kembali bersih (0 draf).
+   - Merebind sesi `e5e076d1-b4d1-4feb-ab8b-9c763eeb8ed9` ke fixture `a103ada0-9b2a-4423-b0f3-e6f3646caf91` (Agility Starlight vs 7Sins•BlueLock Venom).
+3. **Penerbitan Laporan Pertandingan Resmi (Status: PENDING_APPROVAL)**:
+   - **Match 1 (Round 3 Group B)**: `Astra Lumina Nova 6 - 2 The Apostles Dominion` (Fixture `49330959-29c7-4f46-8812-63573b4b2367`).
+     - Draf versi 1 terbit dengan status `PENDING_APPROVAL`.
+     - Ringkasan resmi di-enqueue ke `outbox_messages` dan terkirim ke grup WhatsApp `120363412423738009@g.us` (ID Outbox: `6c7fd808`, status: `SENT`).
+   - **Match 2 (Round 3 Group A)**: `7Sins•BlueLock Venom 6 - 4 Agility Starlight` (Fixture `a103ada0-9b2a-4423-b0f3-e6f3646caf91`).
+     - Draf versi 1 terbit dengan status `PENDING_APPROVAL`.
+     - Ringkasan resmi di-enqueue ke `outbox_messages` dan terkirim ke grup WhatsApp `120363412423738009@g.us` (ID Outbox: `f118fcd6`, status: `SENT`).
+4. **Deploy & Verifikasi PM2**:
+   - `git push origin master` (commit `93e25c7`), dipull ke VM `forfh`, dan `npm run build` sukses 100%.
+   - PM2 `flashpeak-bot` di-restart (PID 3556483).
+   - Log PM2 memverifikasi kedua pesan outbox berhasil terkirim ke grup WhatsApp (`Outbox message sent successfully`) dan bot online siap melayani chat.
+
+### Bukti Verifikasi Empiris
+1. **Pengujian Lokal**:
+   - `npx vitest run tests/unit/fixture_auto_rebind.test.ts tests/unit/fixture_resolver.test.ts`:
+     `✓ tests/unit/fixture_auto_rebind.test.ts (2 tests)`
+     `✓ tests/unit/fixture_resolver.test.ts (6 tests)`
+     `Test Files: 2 passed (2), Tests: 8 passed (8)`
+2. **Pengujian VM**:
+   - `npx vitest run tests/unit/fixture_auto_rebind.test.ts tests/unit/fixture_resolver.test.ts`: 8/8 passed.
+   - `npm test` di VM: 25 test files passed, 421 tests passed 100%.
+3. **Verifikasi Status Database VM**:
+   - Fixture `4f2bb009-3e60-4fe1-a9a6-3218c716a144` (AVOID Prime vs AVOID Impact): 0 draf (bersih).
+   - Fixture `49330959-29c7-4f46-8812-63573b4b2367` (Astra Lumina Nova vs The Apostles Dominion): Versi 1 `PENDING_APPROVAL`.
+   - Fixture `a103ada0-9b2a-4423-b0f3-e6f3646caf91` (Agility Starlight vs 7Sins•BlueLock Venom): Versi 1 `PENDING_APPROVAL`.
+   - Tabel `whatsapp_identities` memuat `77584306069587@lid` terikat pada delegasi 7SB Venom.
+   - Outbox messages `f118fcd6` dan `6c7fd808` berstatus `SENT` ke `120363412423738009@g.us`.
+
+---
+
 ## [2026-11-24] Sesi: Hotfix Gateway Transport app.start() Hook & Debounce Batch Processing Recovery
 
 ### Konteks Sesi & Investigasi User
