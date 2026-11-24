@@ -228,7 +228,12 @@ async function main() {
 
   // 4. Initialize WhatsApp Connection
   const authDir = process.env.WA_AUTH_STATE_DIR || './auth_state';
-  console.log(`[WA] Initializing Baileys WhatsApp client (auth dir: ${authDir})...`);
+  const gatewayMode = (process.env.WA_TRANSPORT ?? '').trim() === 'gateway';
+  console.log(
+    gatewayMode
+      ? '[WA] Gateway transport: attaching to wa-gateway Unix socket (no Baileys here)'
+      : `[WA] Initializing Baileys WhatsApp client (auth dir: ${authDir})...`,
+  );
 
   // FIX2-RBAC-001: organizer identity must be explicitly configured.
   // A missing WA_ORGANIZER_PHONE / WA_ORGANIZER_JID must abort startup instead of
