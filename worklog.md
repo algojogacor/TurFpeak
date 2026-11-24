@@ -1,5 +1,51 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Hotfix !approve Authorization & Fallback Scoping, Message Key Inbound Binding & WA Log Diagnostics
+
+### Konteks Sesi & Investigasi Insiden
+- **Laporan Masalah**:
+  Delegasi Astra Lumina Nova (`256336633815157@lid`) mencoba melakukan persetujuan hasil match dengan membalas draf dan mengetik `!approve`, namun bot mengalami error:
+  `Terjadi kesalahan saat memproses perintah !approve: Unauthorized approval: Approver "a733ecbc-9e29-422c-bb91-942bd2864edf" is not recognized as an authorized tournament organizer.`
+- **Akar Masalah (Root Cause)**:
+  1. **Missing Inbound Message Key**: Draf ringkasan Astra Lumina Nova (`8e1a30b8-46cb-4483-8c66-a4be438f957e`) dikirimkan via jalur outbox dengan key `3EB0380DB2BB6FA5A37779`, namun belum terindeks di tabel `inbound_messages`. Akibatnya, `findVersionByMessageKey('3EB0380DB2BB6FA5A37779')` mengembalikan `null`.
+  2. **Global Fallback Unscoped Query**: Ketika `versionId` bernilai `null`, query fallback di `src/application/tournament-commands.ts:632` mengambil draf pending terbaru secara global di database (`LIMIT 1`). Pertandingan yang terambil adalah `Agility Starlight vs 7Sins•BlueLock Venom` (`9ce71d50-7188-436c-80e0-f30d01aa8acd`), bukan match milik Astra Lumina Nova.
+  3. **Unauthorized Default to ORGANIZER**: Variabel `approverType` awalnya diinisialisasi default sebagai `'ORGANIZER'`. Jika delegasi yang mengetik `!approve` bukan Team A dan bukan Team B dari match yang terambil tersebut, `approverType` tidak berubah dan tetap `'ORGANIZER'`. Saat `submitApproval` dieksekusi, sistem memeriksa apakah delegasi tersebut adalah panitia (`allowed_organizer_ids`). Karena delegasi bukan panitia, fungsi melempar `Unauthorized approval: Approver "..." is not recognized as an authorized tournament organizer`.
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/application/tournament-commands.ts`:
+   - Menyempurnakan fallback `!versionId`: Jika pemanggil adalah delegasi (`ctx.role === 'DELEGATE'` dan `!ctx.isOrganizer`), query fallback secara otomatis dibatasi pada fixture yang melibatkan tim milik delegasi tersebut (`f.team_a_id IN (...) OR f.team_b_id IN (...)`).
+   - Mencegah delegasi mengeklaim tipe persetujuan `'ORGANIZER'`: Nilai `approverType` ditentukan secara tegas:
+     - Jika ID delegasi cocok dengan Team A -> `'TEAM_A'`.
+     - Jika ID delegasi cocok dengan Team B -> `'TEAM_B'`.
+     - Jika pemanggil adalah panitia turnamen -> `'ORGANIZER'`.
+     - Jika tidak memenuhi ketiga syarat di atas -> ditolak langsung dengan pesan edukatif: `⚠️ Kamu bukan delegasi dari tim yang bertanding di pertandingan ini (*${nameA} vs ${nameB}*). Hanya delegasi yang bertanding atau panitia yang dapat melakukan *!approve*.`
+2. **Remediasi Database VM (`forfh`)**:
+   - Memasukkan rekaman pesan outbound draf `3EB0380DB2BB6FA5A37779` ke tabel `inbound_messages` yang terikat pada session ID `c850e327-d2f8-4ed0-b205-f01ad98acc75` (Astra Lumina Nova vs The Apostles Dominion).
+   - Memverifikasi `findVersionByMessageKey('3EB0380DB2BB6FA5A37779')` kini mengembalikan versi `8e1a30b8-46cb-4483-8c66-a4be438f957e`.
+
+### Diagnostik Log WA Terkait
+1. **Pesan `!klaim wo` dari Delegasi Jestre (`115573895749706@lid`)**:
+   - Jestre mengetik `!klaim wo` karena matchday Round 3 melawan Yakigami telah melewati batas waktu 19:59 WIB.
+   - Bot merespons secara tepat dengan panduan format natural language: meminta alasan klaim lengkap agar dapat diverifikasi oleh Panitia.
+2. **Kueri `!ai` (Stats, Top Scorer, Top Defend)**:
+   - Provider Groq dan Gemini mengalami kendala quota (`QUOTA_EXCEEDED` / `PROVIDER_UNAVAILABLE`), namun mekanisme multi-provider router bekerja sempurna dengan fallback otomatis ke Nvidia NIM / Mistral sehingga semua kueri pemain terjawab.
+3. **Receipt Foto yang Lambat Terbit**:
+   - Penundaan publikasi draf pada pukul 20:44 (Kazekage vs Hokage) dan 19:57 disebabkan jeda debounce time + antrean provider AI router, yang akhirnya sukses terbit pada 20:52 WIB (`Hokage 2 - 3 Kazekage`).
+
+### Bukti Verifikasi Empiris
+1. **Pemeriksaan Tipe TypeScript**:
+   `npx tsc --noEmit` -> 0 errors (sukses).
+2. **Pengujian Unit & Integrasi**:
+   - `npx vitest run tests/unit/reports.test.ts`: 28/28 passed.
+   - `npx vitest run tests/integration/competition_commands.test.ts`: 17/17 passed.
+3. **Deployment VM (`forfh`)**:
+   - `git push origin master` (commit `5da10fd`) & `git pull` di VM sukses.
+   - `npm run build` sukses 100%.
+   - `pm2 restart flashpeak-bot` (PID 3564916 online).
+   - Log PM2 memverifikasi socket gateway terhubung: `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)`.
+
+---
+
 ## [2026-11-24] Sesi: Hotfix Fixture Misattribution, Caption Partial/Code Matching & Live Match Remediation
 
 ### Konteks Sesi & Investigasi Insiden
