@@ -187,6 +187,7 @@ export class GatewayConnection extends EventEmitter {
               },
               message: ev.raw?.message ?? (ev.text !== undefined ? { conversation: ev.text } : undefined),
               messageTimestamp: Math.floor(ev.ts / 1000),
+              pushName: (ev as any).pushName ?? (ev.raw as any)?.pushName ?? (ev.raw as any)?.key?.pushName,
             };
             this.emit('messages.upsert', { type: 'notify', messages: [waMsg] });
             continue;

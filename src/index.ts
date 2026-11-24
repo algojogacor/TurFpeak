@@ -616,7 +616,29 @@ export class FlashPeakApp {
         const evalRes = await this.quizSessionManager.evaluateAnswer(message.chat_id, rawMsgText);
         if (evalRes.isAnswerToQuiz) {
           const senderJid = message.sender_raw_address || message.sender_normalized_address;
-          const pushName = message.push_name || (senderJid.split('@')[0]);
+          let pushName = message.push_name?.trim();
+          if (!pushName || /^[\d.]+$/.test(pushName)) {
+            try {
+              if (this.commandRouter && this.commandRouter.isSenderOrganizer(message)) {
+                pushName = 'Panitia';
+              } else {
+                const identity = await this.identityResolver.resolveIdentity(senderJid);
+                if (identity.status === 'VERIFIED') {
+                  if (identity.team?.team_name) {
+                    pushName = identity.team.team_name;
+                  } else if (identity.delegate?.display_name) {
+                    pushName = identity.delegate.display_name;
+                  }
+                }
+              }
+            } catch {
+              // fallback to raw
+            }
+          }
+          if (!pushName || /^[\d.]+$/.test(pushName)) {
+            pushName = message.push_name || (senderJid.split('@')[0]);
+          }
+
           const mentionJid = senderJid.includes('@s.whatsapp.net') ? senderJid : '';
           const mentionTag = mentionJid ? `@${senderJid.split('@')[0]}` : `*${pushName}*`;
           const mentions = mentionJid ? [senderJid] : [];
