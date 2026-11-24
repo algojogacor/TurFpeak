@@ -405,7 +405,28 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
+  // Gateway not up yet (ENOENT during cutover/boot order): retry instead of
+  // dying — PM2 would otherwise flap the whole app while wa-gateway pairs.
+  if (process.env.WA_TRANSPORT === 'gateway' && /ENOENT|ECONNREFUSED/.test(String(err))) {
+    console.warn('[WA] gateway socket not ready; retrying in 5s:', String(err).slice(0, 80));
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      await new Promise((r) => setTimeout(r, 5_000));
+      try {
+        await main();
+        console.log('[WA] gateway attach succeeded on retry', attempt);
+        return;
+      } catch (retryErr) {
+        if (!/ENOENT|ECONNREFUSED/.test(String(retryErr))) {
+          console.error('[Fatal Error]', retryErr);
+          process.exit(1);
+        }
+        console.warn(`[WA] gateway still not ready (attempt ${attempt}/6)`);
+      }
+    }
+    console.error('[Fatal Error] gateway socket unreachable after retries');
+    process.exit(1);
+  }
   console.error('[Fatal Error]', err);
   process.exit(1);
 });
