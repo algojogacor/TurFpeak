@@ -78,7 +78,7 @@ export async function processClaimedBatch(
   const aiMaxRetries = deps.aiMaxRetries ?? 3;
   const aiRetryDelayMs = deps.aiRetryDelayMs ?? 60_000;
   const sessionId = batch.session.id;
-  const fixtureId = batch.session.fixture_id;
+  let fixtureId = batch.session.fixture_id;
   const retryCount = batch.session.ai_retry_count;
 
   const chatRes = await db.execute({
@@ -268,12 +268,12 @@ export async function processClaimedBatch(
     }
 
     const fRow = fixtureRes.rows[0];
-    const teamAId = String(fRow[1]);
-    const teamBId = String(fRow[2]);
-    const leftSideTeamId = fRow[3] ? String(fRow[3]) : teamAId;
-    const gameId = fRow[4] ? String(fRow[4]) : randomUUID();
-    const teamAName = String(fRow[5] || 'Tim A');
-    const teamBName = String(fRow[6] || 'Tim B');
+    let teamAId = String(fRow[1]);
+    let teamBId = String(fRow[2]);
+    let leftSideTeamId = fRow[3] ? String(fRow[3]) : teamAId;
+    let gameId = fRow[4] ? String(fRow[4]) : randomUUID();
+    let teamAName = String(fRow[5] || 'Tim A');
+    let teamBName = String(fRow[6] || 'Tim B');
 
     // Query active roster for both teams to supply grounded trusted_context (FIX-CTX-001)
     const playersRes = await db.execute({
@@ -303,8 +303,8 @@ export async function processClaimedBatch(
       updated_at: '',
     }));
 
-    const rosterA = registeredPlayers.filter((p) => p.team_id === teamAId);
-    const rosterB = registeredPlayers.filter((p) => p.team_id === teamBId);
+    let rosterA = registeredPlayers.filter((p) => p.team_id === teamAId);
+    let rosterB = registeredPlayers.filter((p) => p.team_id === teamBId);
 
     const matchExtraction = await matchExtractor.extract(
       {
@@ -383,10 +383,152 @@ export async function processClaimedBatch(
       if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
     }
 
+    let normalScore = leftMatchesA + rightMatchesB;
+    let invertedScore = leftMatchesB + rightMatchesA;
+    const maxMatchScore = Math.max(normalScore, invertedScore);
+
+    // FIX-FIXTURE-MISMATCH: If fewer than 2 players match the assigned fixture,
+    // cross-check whether the extracted players match a different scheduled fixture in the active tournament.
+    // This prevents wrong fixture attribution when submissions lack captions and sender is unaliased.
+    if (maxMatchScore < 2 && (leftExtractedPlayers.length > 0 || rightExtractedPlayers.length > 0)) {
+      const otherFixturesRes = await db.execute({
+        sql: `
+          SELECT f.id, f.team_a_id, f.team_b_id, f.left_side_team_id, g.id AS game_id, ta.team_name AS team_a_name, tb.team_name AS team_b_name
+          FROM fixtures f
+          JOIN tournaments tr ON f.tournament_id = tr.id
+          LEFT JOIN games g ON g.fixture_id = f.id
+          LEFT JOIN teams ta ON f.team_a_id = ta.id
+          LEFT JOIN teams tb ON f.team_b_id = tb.id
+          WHERE tr.status = 'ACTIVE'
+            AND f.stage = 'GROUP'
+            AND f.status IN ('SCHEDULED', 'IN_PROGRESS')
+            AND f.id != ?
+        `,
+        args: [fixtureId],
+      });
+
+      let bestCandFixture: any = null;
+      let bestCandScore = 0;
+      let bestCandRosterA: Player[] = [];
+      let bestCandRosterB: Player[] = [];
+
+      for (const row of otherFixturesRes.rows) {
+        const cTeamAId = String(row.team_a_id ?? row[1]);
+        const cTeamBId = String(row.team_b_id ?? row[2]);
+
+        const cPlayersRes = await db.execute({
+          sql: `SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status
+                FROM players
+                WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
+          args: [cTeamAId, cTeamBId],
+        });
+
+        const cRegistered: Player[] = cPlayersRes.rows.map((r: any) => ({
+          id: String(r.id ?? r[0]),
+          tournament_id: String(r.tournament_id ?? r[1]),
+          team_id: String(r.team_id ?? r[2]),
+          nickname_raw: String(r.nickname_raw ?? r[3]),
+          nickname_nfc: String(r.nickname_nfc ?? r[4]),
+          nickname_search_key: String(r.nickname_search_key ?? r[5]),
+          position: String(r.position ?? r[6]) as Player['position'],
+          roster_slot: Number(r.roster_slot ?? r[7]),
+          roster_type: String(r.roster_type ?? r[8]) as Player['roster_type'],
+          status: String(r.status ?? r[9]) as Player['status'],
+          created_at: '',
+          updated_at: '',
+        }));
+
+        const cRosterA = cRegistered.filter((p) => p.team_id === cTeamAId);
+        const cRosterB = cRegistered.filter((p) => p.team_id === cTeamBId);
+
+        let cLeftA = 0;
+        let cLeftB = 0;
+        for (const p of leftExtractedPlayers) {
+          if (matchPlayerToRoster(p, cRosterA)) cLeftA++;
+          if (matchPlayerToRoster(p, cRosterB)) cLeftB++;
+        }
+
+        let cRightA = 0;
+        let cRightB = 0;
+        for (const p of rightExtractedPlayers) {
+          if (matchPlayerToRoster(p, cRosterA)) cRightA++;
+          if (matchPlayerToRoster(p, cRosterB)) cRightB++;
+        }
+
+        const cNormal = cLeftA + cRightB;
+        const cInverted = cLeftB + cRightA;
+        const cMax = Math.max(cNormal, cInverted);
+
+        if (cMax > bestCandScore) {
+          bestCandScore = cMax;
+          bestCandFixture = row;
+          bestCandRosterA = cRosterA;
+          bestCandRosterB = cRosterB;
+        }
+      }
+
+      if (bestCandScore >= 3 && bestCandFixture) {
+        const prevFixtureName = `${teamAName} vs ${teamBName}`;
+        fixtureId = String(bestCandFixture.id ?? bestCandFixture[0]);
+        teamAId = String(bestCandFixture.team_a_id ?? bestCandFixture[1]);
+        teamBId = String(bestCandFixture.team_b_id ?? bestCandFixture[2]);
+        leftSideTeamId = bestCandFixture.left_side_team_id
+          ? String(bestCandFixture.left_side_team_id ?? bestCandFixture[3])
+          : teamAId;
+        gameId = bestCandFixture.game_id
+          ? String(bestCandFixture.game_id ?? bestCandFixture[4])
+          : randomUUID();
+        teamAName = String((bestCandFixture.team_a_name ?? bestCandFixture[5]) || 'Tim A');
+        teamBName = String((bestCandFixture.team_b_name ?? bestCandFixture[6]) || 'Tim B');
+        rosterA = bestCandRosterA;
+        rosterB = bestCandRosterB;
+        submittingTeamId = teamAId;
+
+        console.log(
+          `[BatchProcessor] Fixture misattribution detected! Auto-rebound session ${sessionId} from ${prevFixtureName} to ${teamAName} vs ${teamBName} (match score: ${bestCandScore})`
+        );
+
+        await db.execute({
+          sql: `UPDATE report_sessions SET fixture_id = ?, submitting_team_id = ? WHERE id = ?`,
+          args: [fixtureId, teamAId, sessionId],
+        });
+
+        // Recompute match counts for the rebound fixture
+        leftMatchesA = 0;
+        leftMatchesB = 0;
+        for (const p of leftExtractedPlayers) {
+          if (matchPlayerToRoster(p, rosterA)) leftMatchesA++;
+          if (matchPlayerToRoster(p, rosterB)) leftMatchesB++;
+        }
+
+        rightMatchesA = 0;
+        rightMatchesB = 0;
+        for (const p of rightExtractedPlayers) {
+          if (matchPlayerToRoster(p, rosterA)) rightMatchesA++;
+          if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
+        }
+
+        normalScore = leftMatchesA + rightMatchesB;
+        invertedScore = leftMatchesB + rightMatchesA;
+      } else if (maxMatchScore === 0 && bestCandScore < 2) {
+        // Screenshot cannot be matched with ANY active scheduled tournament fixture
+        await completeDebounceBatch(db, sessionId, 'INCOMPLETE');
+        return {
+          sessionId,
+          fixtureId,
+          targetChatId,
+          status: 'NEEDS_CORRECTION',
+          whatsappSummary:
+            '⚠️ Screenshot skor pertandingan tidak cocok dengan tim atau roster pada jadwal turnamen yang aktif. ' +
+            'Pastikan foto yang dikirim adalah hasil pertandingan resmi turnamen ini, sertakan caption nama tim jika diperlukan, ' +
+            'atau kirim melalui nomor delegasi resmi tim.',
+          error: 'Extracted players do not match any active tournament fixture',
+        };
+      }
+    }
+
     // Determine if screenshot sides are inverted (Left is Team B and Right is Team A)
     let isSidesSwapped = false;
-    const normalScore = leftMatchesA + rightMatchesB;
-    const invertedScore = leftMatchesB + rightMatchesA;
 
     if (invertedScore > normalScore) {
       isSidesSwapped = true;
