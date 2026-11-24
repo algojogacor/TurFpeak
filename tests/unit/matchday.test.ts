@@ -203,4 +203,29 @@ describe('MatchdayService & 19:59 WIB Cutoff (D-031)', () => {
     expect(statusText).toContain('Garuda FC');
     expect(statusText).toContain('Elang FC');
   });
+
+  it('keeps round 2 active when round 2 matches finish early before round 2 cutoff has run', async () => {
+    const setup = await setupTournamentWithGroupFixtures();
+
+    // 1. Cutoff runs for ROUND_1
+    const cutoff1 = await service.processDailyCutoff(true);
+    expect(cutoff1.hasCutoffProcessed).toBe(true);
+    expect(cutoff1.nextRoundCode).toBe('ROUND_2');
+
+    // 2. Mark the only ROUND_2 fixture as COMPLETED early (played ahead of time)
+    await db.execute({
+      sql: "UPDATE fixtures SET status = 'COMPLETED' WHERE round_code = 'ROUND_2'",
+    });
+
+    // 3. Check active tournament current round — MUST remain ROUND_2 until ROUND_2 cutoff runs!
+    const activeInfo = await service.getActiveTournamentCurrentRound();
+    expect(activeInfo).not.toBeNull();
+    expect(activeInfo!.currentRoundCode).toBe('ROUND_2');
+
+    // 4. Status display should show ROUND_2 completed, not jump to round 3
+    const statusText = await service.formatMatchdayStatus();
+    expect(statusText).toContain('Ronde 2');
+    expect(statusText).toContain('Selesai: *1*');
+    expect(statusText).toContain('Belum Selesai: *0*');
+  });
 });

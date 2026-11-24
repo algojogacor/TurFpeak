@@ -188,35 +188,78 @@ export class MatchdayService {
 
     const allRounds = roundsRes.rows.map((r) => String((r as any).round_code ?? r[0]));
 
-    // Earliest round with uncompleted matches (group rounds first, then knockout)
-    // REVIEW-FIX blocker-roundcode: same progression ordering as allRounds
-    // above, so the "current round" is the chronologically earliest unfinished
-    // round (a ROUND_OF_16 that follows a ROUND_OF_32 must win over leftover
-    // ROUND_OF_16 fixtures of an earlier round — first_seen handles that).
-    const unfinRes = await this.db.execute({
-      sql: `SELECT round_code, MIN(created_at) AS first_seen
-            FROM fixtures
-            WHERE tournament_id = ? AND round_code IS NOT NULL
-              AND stage IN ('GROUP', 'KNOCKOUT')
-              AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
-            GROUP BY round_code
-            ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END,
-              CASE round_code
-                WHEN 'ROUND_OF_32' THEN 0
-                WHEN 'ROUND_OF_16' THEN 1
-                WHEN 'QUARTER_FINAL' THEN 2
-                WHEN 'SEMI_FINAL' THEN 3
-                WHEN 'FINAL' THEN 4
-                ELSE 5
-              END ASC,
-              first_seen ASC
-            LIMIT 1`,
-      args: [tournamentId],
+    // Active matchday round:
+    // A round's matchday runs from the moment it is initiated (or previous cutoff at 19:59 WIB)
+    // until its own 19:59 WIB daily cutoff.
+    // Even if all matches in the active round are completed early, the tournament remains
+    // in that round's matchday window until 19:59 WIB cutoff officially closes it and
+    // advances to the next round.
+    const lastCutoffRes = await this.db.execute({
+      sql: `SELECT before_json FROM audit_events 
+            WHERE event_type = 'MATCHDAY_CUTOFF' 
+            ORDER BY created_at DESC 
+            LIMIT 10`,
     });
 
-    const currentRoundCode = unfinRes.rows.length > 0
-      ? String(unfinRes.rows[0][0] ?? (unfinRes.rows[0] as any).round_code)
-      : null;
+    let currentRoundCode: string | null = null;
+    if (lastCutoffRes.rows.length > 0) {
+      for (const row of lastCutoffRes.rows) {
+        try {
+          const rawJson = row.before_json ?? (row as any)[0];
+          const parsed = JSON.parse(String(rawJson || '{}'));
+          if (parsed.tournamentId && parsed.tournamentId !== tournamentId) {
+            continue;
+          }
+          const lastCutoffRound = parsed.roundCode;
+          if (lastCutoffRound) {
+            const lastIdx = allRounds.indexOf(lastCutoffRound);
+            if (lastIdx >= 0) {
+              if (lastIdx + 1 < allRounds.length) {
+                currentRoundCode = allRounds[lastIdx + 1];
+              } else {
+                // All rounds have passed their daily cutoff
+                currentRoundCode = null;
+              }
+              break;
+            }
+          }
+        } catch {
+          // ignore parse error, continue
+        }
+      }
+    }
+
+    if (!currentRoundCode && allRounds.length > 0) {
+      if (lastCutoffRes.rows.length === 0) {
+        // Before any daily cutoffs have run, the first round is active
+        currentRoundCode = allRounds[0];
+      } else {
+        // Fallback: earliest round with uncompleted matches
+        const unfinRes = await this.db.execute({
+          sql: `SELECT round_code, MIN(created_at) AS first_seen
+                FROM fixtures
+                WHERE tournament_id = ? AND round_code IS NOT NULL
+                  AND stage IN ('GROUP', 'KNOCKOUT')
+                  AND status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+                GROUP BY round_code
+                ORDER BY CASE WHEN stage = 'GROUP' THEN 0 ELSE 1 END,
+                  CASE round_code
+                    WHEN 'ROUND_OF_32' THEN 0
+                    WHEN 'ROUND_OF_16' THEN 1
+                    WHEN 'QUARTER_FINAL' THEN 2
+                    WHEN 'SEMI_FINAL' THEN 3
+                    WHEN 'FINAL' THEN 4
+                    ELSE 5
+                  END ASC,
+                  first_seen ASC
+                LIMIT 1`,
+          args: [tournamentId],
+        });
+        currentRoundCode = unfinRes.rows.length > 0
+          ? String(unfinRes.rows[0][0] ?? (unfinRes.rows[0] as any).round_code)
+          : null;
+      }
+    }
 
     return {
       tournamentId,
@@ -385,7 +428,7 @@ export class MatchdayService {
       args: [
         randomUUID(),
         dateStr,
-        JSON.stringify({ roundCode: currentRoundCode, expiredCount: expiredFixtures.length }),
+        JSON.stringify({ roundCode: currentRoundCode, expiredCount: expiredFixtures.length, tournamentId }),
         JSON.stringify({ resolvedIds: expiredFixtures.map((f) => f.id) }),
         `Daily matchday cutoff 19:59 WIB (force: ${force})`,
         randomUUID(),

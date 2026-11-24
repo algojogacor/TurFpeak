@@ -1,5 +1,53 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Hotfix Matchday Scheduler — Prevention of Premature Round Advancement & False Cutoff
+
+### Konteks Sesi & Investigasi User
+- **User Alert**:
+  Bot mengirimkan pesan pengingat matchday:
+  ```
+  ⏰ PENGINGAT MATCHDAY — SISA 3 JAM LAGI!
+  🏆 Gojiha Cup S1 — Ronde 3
+  Batas waktu pertandingan: Hari ini pukul 19:59 WIB
+  Pertandingan berikut belum dilaporkan / belum selesai: (7 match Ronde 3)
+  ⚠️ Sesuai regulasi turnamen (D-031), pertandingan yang tidak diselesaikan hingga 19:59 WIB otomatis dinyatakan Double Walkover
+  ```
+  User Arya menegur: *"Cek log itu. kan waktunya belum waktunya round 3? logic nya salah"*
+- **Akar Masalah (Root Cause)**:
+  1. Pada `src/application/matchday-service.ts`, fungsi `getActiveTournamentCurrentRound()` menentukan ronde aktif hanya berdasarkan query:
+     `SELECT round_code ... WHERE status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED') ... LIMIT 1`.
+  2. Pertandingan Ronde 2 telah dimainkan lebih cepat oleh para peserta tadi malam (23 November 20:00–21:34 WIB), sehingga seluruh 8 match Ronde 2 sudah berstatus `COMPLETED` / `WALKOVER`.
+  3. Namun, batas waktu resmi Ronde 2 sebenarnya baru berakhir hari ini (24 November pukul 19:59 WIB). Ronde 3 baru resmi dimulai hari ini pukul 19:59 WIB dengan batas waktu 24 jam ke depan (25 November pukul 19:59 WIB).
+  4. Karena fungsi `getActiveTournamentCurrentRound()` hanya mencari ronde pertama yang masih memiliki match belum selesai, fungsi tersebut langsung melompat ke `ROUND_3`.
+  5. Akibatnya, pada pukul 17:00 dan 18:59 WIB hari ini, bot mengirimkan false alarm bahwa Ronde 3 akan berakhir hari ini pukul 19:59 WIB. Lebih kritis lagi, jika dibiarkan, pada pukul 19:59 WIB hari ini `processDailyCutoff()` akan mengeksekusi Double Walkover (D-031) pada ke-7 pertandingan Ronde 3 yang belum bertanding!
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/application/matchday-service.ts`:
+   - Mengubah `getActiveTournamentCurrentRound()` agar ronde aktif ditentukan berdasarkan riwayat cutoff harian (`audit_events WHERE event_type = 'MATCHDAY_CUTOFF'`).
+   - Setiap ronde memiliki masa berlaku matchday 24 jam penuh dari cutoff sebelumnya (19:59 WIB) sampai cutoff berikutnya (19:59 WIB).
+   - Meskipun semua pertandingan dalam ronde aktif selesai lebih awal, ronde tersebut tetap menjadi ronde aktif hingga cutoff resminya pukul 19:59 WIB tiba untuk menutup ronde dan secara resmi membuka ronde berikutnya.
+   - Menyimpan `tournamentId` pada metadata cutoff untuk isolasi multi-turnamen.
+   - Memberikan fallback aman ke `allRounds[0]` untuk turnamen baru yang belum pernah menjalankan cutoff, dan fallback ke query unfinished matches jika metadata tidak ditemukan.
+2. `tests/unit/matchday.test.ts`:
+   - Menambahkan unit test permanen: `keeps round 2 active when round 2 matches finish early before round 2 cutoff has run`.
+   - Memverifikasi bahwa ronde aktif tetap `ROUND_2` saat seluruh match `ROUND_2` selesai sebelum cutoff, dan format status tidak melompat ke ronde 3.
+
+### Bukti Verifikasi Empiris
+- **Unit Testing**:
+  - `npx vitest run tests/unit/matchday.test.ts`: 5/5 tests passed (100%).
+- **Live Database & Server Simulation di VM `forfh`**:
+  - `getActiveTournamentCurrentRound()` pada database live `local.sqlite` kini dengan benar mengembalikan `currentRoundCode: 'ROUND_2'`.
+  - `formatMatchdayStatus()` menampilkan:
+    - *Ronde Aktif:* Ronde 2 (dari total 3 ronde)
+    - *Progres Ronde 2:* Selesai: 8, Belum Selesai: 0.
+    - *"🎉 Luar biasa! Seluruh pertandingan Ronde 2 sudah selesai dimainkan. Ronde berikutnya akan dimulai otomatis pukul 19:59 WIB."*
+  - Pada cutoff 19:59 WIB malam ini, sistem mengevaluasi Ronde 2 (0 match hangus), lalu mengumumkan dimulainya Ronde 3 dengan deadline besok (25 November 19:59 WIB) tanpa merugikan peserta turnamen.
+- **Deployment**:
+  - File berhasil dicompile via `npm run build` di lokal dan VM.
+  - PM2 service `flashpeak-bot` (PID 3535813) berhasil direload dan berstatus online melayani grup.
+
+---
+
 ## [2026-11-24] Sesi: Hotfix Intent Classification & Leaderboard Context Injection for General Qualification Queries
 
 ### Konteks Sesi & Tujuan Tugas
