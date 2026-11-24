@@ -13,6 +13,8 @@ import qrcode from 'qrcode-terminal';
 import { downloadMediaWithLimits } from '../whatsapp/media-download.js';
 import { createClient } from '@libsql/client';
 import { WhatsAppConnection } from '../whatsapp/connection.js';
+import { GatewayConnection } from '../whatsapp/gateway-connection.js';
+import type { EventEmitter } from 'node:events';
 import { WhatsAppSender } from '../whatsapp/sender.js';
 import { normalizeWAMessage } from '../whatsapp/normalizer.js';
 import { FlashPeakMediaClient } from '../media/client.js';
@@ -245,11 +247,21 @@ async function main() {
   }
   console.log(`[WA] Organizer identity configured (phone: ${organizerPhone ? 'set' : 'not set'}, jid: ${organizerJid ? 'set' : 'not set'}).`);
 
-  const waConnection = new WhatsAppConnection({
-    authStateDir: authDir,
-    printQRInTerminal: false,
-    browser: ['FlashPeak TMS', 'Chrome', '1.0.0'],
-  });
+  const useGateway = (process.env.WA_TRANSPORT ?? '').trim() === 'gateway';
+  const gatewayConn = useGateway
+    ? new GatewayConnection(
+        process.env.WA_SOCKET_PATH ?? '/run/wa-gateway.sock',
+        'flashpeak',
+      )
+    : null;
+  const legacyConn = useGateway
+    ? null
+    : new WhatsAppConnection({
+        authStateDir: authDir,
+        printQRInTerminal: false,
+        browser: ['FlashPeak TMS', 'Chrome', '1.0.0'],
+      });
+  const waConnection: EventEmitter = (gatewayConn ?? legacyConn) as EventEmitter;
 
   // Handle QR code generation for user scanning
   waConnection.on('qr', (qr: string) => {
@@ -284,13 +296,19 @@ async function main() {
   });
 
   // Connect socket
-  const sock = await waConnection.connect();
-  const sender = new WhatsAppSender(() => waConnection.getSocket() || sock, { minIntervalMs: 1500 });
+  const sock = useGateway
+    ? ((await gatewayConn!.connect()) as never)
+    : await legacyConn!.connect();
+  const sender = new WhatsAppSender(
+    () =>
+      ((gatewayConn ? gatewayConn.getSocket() : legacyConn?.getSocket()) || sock) as never,
+    { minIntervalMs: 1500 },
+  );
   app.setSender(sender);
 
   waConnection.on('connection.update', (update) => {
     if (update.connection === 'open') {
-      const currentSock = waConnection.getSocket();
+      const currentSock = gatewayConn ? gatewayConn.getSocket() : legacyConn?.getSocket();
       const userJid = currentSock?.user?.id || sock.user?.id || 'Unknown';
       console.log('\n====================================================');
       console.log(`[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP!`);
@@ -305,7 +323,7 @@ async function main() {
   waConnection.on('messages.upsert', async (data: { type: string; messages: any[] }) => {
     try {
       if (data.type !== 'notify') return;
-      const currentSock = waConnection.getSocket() || sock;
+      const currentSock = (gatewayConn ? gatewayConn.getSocket() : legacyConn?.getSocket()) || sock;
 
       for (const msg of data.messages) {
         if (!msg.message || msg.key?.fromMe) continue;
@@ -340,7 +358,7 @@ async function main() {
           // B-1: bounded download — a stalled or oversized attachment must never
           // block the inbound message loop (timeout default 20s, cap default 10MB).
           const mediaResult = await downloadMediaWithLimits(msg, {
-            sock: currentSock,
+            sock: currentSock as never,
             logger: pino({ level: 'silent' }),
             timeoutMs: process.env.WA_MEDIA_DOWNLOAD_TIMEOUT_MS
               ? Number(process.env.WA_MEDIA_DOWNLOAD_TIMEOUT_MS)
@@ -378,7 +396,8 @@ async function main() {
   const shutdown = async () => {
     console.log('\n[System] Shutting down gracefully...');
     app.stop();
-    await waConnection.disconnect();
+    if (gatewayConn) await gatewayConn.disconnect();
+    else await legacyConn!.disconnect();
     process.exit(0);
   };
 
