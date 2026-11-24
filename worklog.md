@@ -1,5 +1,44 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-24] Sesi: Hotfix Intent Classification & Leaderboard Context Injection for General Qualification Queries
+
+### Konteks Sesi & Tujuan Tugas
+- Roster / Swarm Agent: Coordinator / Solo Senior Engineer
+- Purpose:
+  - Investigasi akar masalah query `!ai siapa aja yang lolos` di mana bot menjawab *"sistem lagi nggak nyuplai klasemen lengkap buat gue baca secara langsung sekarang"*.
+  - Menemukan dan memperbaiki root cause pada router intent `classifyOmakPeakIntent` di `src/application/omak-peak.ts`.
+  - Memverifikasi bahwa query klasemen umum/kelolosan yang tidak menyebutkan tim spesifik memuat konteks klasemen lengkap seluruh grup (A, B, C, D) tanpa ter-hijack ke fast-path `CHIT_CHAT`.
+
+### Root Cause Analysis
+1. Pada `src/application/omak-peak.ts`:
+   - Kata kunci chit-chat memuat karakter `'p'`, dan sebelumnya dievaluasi menggunakan `text.includes(kw)`.
+   - Kalimat `"siapa aja yang lolos"` mengandung huruf `'p'` (pada kata *"siapa"*), sehingga mencocokkan `kw = 'p'`.
+   - Karena panjang teks < 60 karakter dan keyword turnamen sebelumnya belum mencakup kata *"lolos"*, query tersebut terklasifikasi sebagai `CHIT_CHAT`.
+   - Fast-path `CHIT_CHAT` sengaja memangkas seluruh data turnamen (`standings_by_group: []`) guna menghemat token, sehingga AI secara faktual menerima tabel klasemen kosong dan merespons bahwa sistem tidak menyuplai data klasemen.
+2. Sebaliknya, query seperti `"!ai berapa peluang mizukage lolos"` dan `"!ai berapa peluang team zodiac lolos"` berhasil karena nama tim terdeteksi oleh `matchTeams`, sehingga masuk ke intent `TOURNAMENT`.
+
+### Perubahan Konkret
+1. `src/application/omak-peak.ts`:
+   - Menambahkan kata kunci kualifikasi dan pemeringkatan ke dalam `tournamentKeywords`:
+     `'lolos'`, `'gugur'`, `'8 besar'`, `'delapan besar'`, `'babak 8 besar'`, `'playoff'`, `'playoffs'`, `'knockout'`, `'ko'`, `'fase grup'`, `'posisi'`, `'leaderboard'`, `'tabel'`, `'juara'`, `'tiket'`, `'slot'`.
+   - Mengubah pencocokan `chitChatKeywords` dari `text.includes(kw)` menjadi regex word-boundary `(^|[^a-z0-9])${kw}([^a-z0-9]|$)` sehingga huruf `'p'` hanya cocok pada kata mandiri (misal ping / pesan singkat "p"), bukan substring dari kata lain seperti *"siapa"*, *"apa"*, *"kapan"*, *"peluang"*.
+2. `tests/unit/ai_native.test.ts`:
+   - Menambahkan unit test untuk query `siapa aja yang lolos`, `siapa yang masuk 8 besar?`, `posisi klasemen sementara` (memastikan intent `TOURNAMENT`).
+   - Menambahkan unit test untuk standalone `"p"` (memastikan intent `CHIT_CHAT`).
+
+### Bukti Verifikasi Empiris
+- **Unit & Integration Tests**:
+  - `npx vitest run tests/unit/ai_native.test.ts`: 73/73 passed.
+  - Simulasi di server via Node.js:
+    `query = 'siapa aja yang lolos'` terklasifikasi sebagai `TOURNAMENT`.
+    `buildOmakPeakContext` berhasil mengembalikan 4 grup klasemen lengkap (Grup A: Helix Moonbreaker 9 pts, Grup B: Apostles & Astra Lumina 6 pts, Grup C: Elite 8 & Raikage 6 pts, Grup D: Team Zodiac 6 pts).
+- **Deployment**:
+  - Git commit `51f6527` di-push ke GitHub dan di-pull ke server VM.
+  - `npm run build` berhasil di server.
+  - PM2 process ID 24 (`flashpeak-bot`) di-restart dengan `--update-env` dan berjalan normal.
+
+---
+
 ## [2026-11-24] Sesi: Sync Master Branch & Gateway Transport Verification
 
 ### Konteks Sesi & Tujuan Tugas
