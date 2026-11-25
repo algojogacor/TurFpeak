@@ -560,10 +560,17 @@ export class GantiSessionManager {
         };
       }
 
-      if (exStatus === 'INELIGIBLE' || exStatus === 'SUSPENDED') {
+      if (exStatus === 'INELIGIBLE') {
         return {
           handled: true,
-          replyText: `⚠️ Pemain *"${newRaw}"* berstatus ${exStatus} di turnamen ini dan tidak dapat didaftarkan kembali. Balas dengan nickname lain atau \`batal\`.`,
+          replyText: `⚠️ Pemain *"${newRaw}"* berstatus *INELIGIBLE* karena sebelumnya pernah tercatat sebagai pemain tidak terdaftar (pemain gelap) dan terkena diskualifikasi dari kelayakan roster di turnamen ini. Balas dengan nickname lain atau \`batal\`.`,
+        };
+      }
+
+      if (exStatus === 'SUSPENDED') {
+        return {
+          handled: true,
+          replyText: `⚠️ Pemain *"${newRaw}"* sedang berstatus *SUSPENDED* di turnamen ini dan tidak dapat didaftarkan kembali. Balas dengan nickname lain atau \`batal\`.`,
         };
       }
 
