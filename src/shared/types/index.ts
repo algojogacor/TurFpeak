@@ -37,6 +37,7 @@ export interface TournamentConfig {
   points_loss: number; // default: 0
   wo_goals_winner: number; // default: 3
   wo_goals_loser: number; // default: 0
+  ko_transfer_open?: boolean; // default: false (manual organizer toggle for KO roster replacement)
 }
 
 export interface Tournament {
@@ -122,7 +123,7 @@ export interface BotInstance {
 
 export type PlayerPosition = 'GOALKEEPER' | 'OUTFIELD';
 export type RosterType = 'STARTER' | 'SUBSTITUTE';
-export type PlayerStatus = 'ACTIVE' | 'SUSPENDED' | 'INELIGIBLE';
+export type PlayerStatus = 'ACTIVE' | 'SUSPENDED' | 'INELIGIBLE' | 'REPLACED';
 
 export interface Player {
   id: UUID;

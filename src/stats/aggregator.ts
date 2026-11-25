@@ -108,7 +108,7 @@ export async function aggregatePlayerStats(
     JOIN games g ON pgs.game_id = g.id
     JOIN fixtures f ON g.fixture_id = f.id
     WHERE p.tournament_id = ?
-      AND p.status = 'ACTIVE'
+      AND p.status IN ('ACTIVE', 'REPLACED')
       AND g.status = 'COMPLETED'
       AND g.is_walkover = 0
       ${filterClause}

@@ -40,6 +40,7 @@ export const tournamentConfigSchema = z.object({
   points_loss: z.number().int().default(0),
   wo_goals_winner: z.number().int().default(3),
   wo_goals_loser: z.number().int().default(0),
+  ko_transfer_open: z.boolean().optional().default(false),
 });
 
 export const tournamentSchema = z.object({
@@ -126,7 +127,7 @@ export const botInstanceSchema = z.object({
 
 export const playerPositionSchema = z.enum(['GOALKEEPER', 'OUTFIELD']);
 export const rosterTypeSchema = z.enum(['STARTER', 'SUBSTITUTE']);
-export const playerStatusSchema = z.enum(['ACTIVE', 'SUSPENDED', 'INELIGIBLE']);
+export const playerStatusSchema = z.enum(['ACTIVE', 'SUSPENDED', 'INELIGIBLE', 'REPLACED']);
 
 export const playerSchema = z.object({
   id: uuidSchema,

@@ -198,9 +198,9 @@ export async function resolveOrRegisterIneligiblePlayer(
     }
   }
 
-  // 2. Find first free roster slot 1..10
+  // 2. Find first free roster slot 1..10 (exclude REPLACED historical players)
   const slotsRes = await db.execute({
-    sql: `SELECT roster_slot FROM players WHERE team_id = ?`,
+    sql: `SELECT roster_slot FROM players WHERE team_id = ? AND status != 'REPLACED'`,
     args: [teamId],
   });
   const occupiedSlots = new Set(slotsRes.rows.map((r) => Number(r[0])));
@@ -250,7 +250,7 @@ export async function resolveOrRegisterIneligiblePlayer(
 
     // 2b. If all ineligible players have stats or all 10 are active, reuse existing slot 10 player to preserve FK
     const slot10Res = await db.execute({
-      sql: `SELECT id, roster_slot, nickname_raw, position, status FROM players WHERE team_id = ? ORDER BY roster_slot DESC`,
+      sql: `SELECT id, roster_slot, nickname_raw, position, status FROM players WHERE team_id = ? AND status != 'REPLACED' ORDER BY roster_slot DESC`,
       args: [teamId],
     });
     const sCandidate = slot10Res.rows.find((r) => !excludeIds || !excludeIds.has(String(r[0])));

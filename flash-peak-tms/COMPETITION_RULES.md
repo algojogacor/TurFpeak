@@ -23,7 +23,7 @@
 6. Only registered roster members may play.
 7. A player may represent only one team in the tournament.
 8. Registered in-game nicknames must match the nickname used in the game.
-9. Nickname changes during the tournament are prohibited.
+9. Nickname changes during matches are prohibited. Roster replacements via `!roster` are locked once a team begins Round 1. During the Group-to-Knockout transition, if the organizer opens the KO replacement window (`!bukaganti`), KO-qualified teams may replace up to their full 5+3 roster via `!ganti` until that team's first Knockout match starts/is reported (hard-locked per team thereafter). Replaced players' Group Stage statistics remain eligible for individual awards, and Rule 2.7 (one team per player) continues to apply.
 10. Any discrepancy is referred to organizer review. A default score must not be applied automatically until the relevant evidence and rule are reviewed.
 11. **Karakter Unik / Larangan Karakter Kembar (No Duplicate Characters):** Dalam satu tim, setiap pemain dilarang menggunakan karakter in-game yang sama dalam satu pertandingan (misalnya: dilarang menggunakan double Ford, double Moco, double Rafael, dll). Setiap pemain di tim wajib menggunakan karakter yang berbeda.
 12. **Pemain Tidak Terdaftar / Pemain Gelap (Unregistered Player):**

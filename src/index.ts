@@ -56,6 +56,7 @@ import {
   type ManualReportResult,
 } from './reports/manual.js';
 import { ManualReportSessionManager } from './application/manual-report-session.js';
+import { GantiSessionManager } from './application/ko-roster-transfer.js';
 import {
   WoClaimSessionManager,
   parseWoClaimIntent,
@@ -146,6 +147,7 @@ export class FlashPeakApp {
   public readonly correctionParser?: CorrectionParser;
   public readonly manualReportSession: ManualReportSessionManager;
   public readonly woClaimSession: WoClaimSessionManager;
+  public readonly gantiSessionManager: GantiSessionManager;
   public readonly matchdayService: MatchdayService;
   // AI-native services — assigned in registerAppCommands() (called from
   // constructor); semantically set-once, but not declared `readonly` because
@@ -187,6 +189,7 @@ export class FlashPeakApp {
     this.onboardingService = new OnboardingService(this.identityResolver, this.db);
     this.manualReportSession = new ManualReportSessionManager();
     this.woClaimSession = new WoClaimSessionManager();
+    this.gantiSessionManager = new GantiSessionManager();
     this.matchdayService = new MatchdayService({
       db: this.db,
       sender: this.sender,
@@ -251,6 +254,7 @@ export class FlashPeakApp {
       onboardingService: this.onboardingService,
       manualReportSession: this.manualReportSession,
       woClaimSession: this.woClaimSession,
+      gantiSessionManager: this.gantiSessionManager,
       matchdayService: this.matchdayService,
       rosterExtractor: this.rosterExtractor,
       get sender() {
@@ -680,6 +684,25 @@ export class FlashPeakApp {
             };
           }
         }
+      }
+    }
+
+    // 1.4 Interactive !ganti Roster Replacement Reply Check (must quote bot's !ganti prompt)
+    if (message.reply_to_key && message.message_type === 'TEXT') {
+      const gantiReply = await this.gantiSessionManager.handleReply(
+        this.db,
+        message,
+        this.sender
+      );
+      if (gantiReply.handled) {
+        return {
+          handled: true,
+          type: 'COMMAND',
+          replyText: gantiReply.replyText,
+          commandResult: gantiReply.promptMessageKey
+            ? { success: true, metadata: { promptMessageKey: gantiReply.promptMessageKey } }
+            : { success: true },
+        };
       }
     }
 

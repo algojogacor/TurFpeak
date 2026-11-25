@@ -915,5 +915,120 @@ describe('Competition Worker Commands Integration (!createtournament & !draw)', 
       });
       expect(checkRes.rows[0].status).toBe('WALKOVER');
     });
+
+    it('allows !roster replacement before Round 1 is played, but locks !roster updates once the team has played (preserving view and stats)', async () => {
+      const app = createApp({ db, organizerPhone, centralGroupJid });
+
+      await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!createtournament Lock Cup'));
+      for (let i = 1; i <= 8; i++) {
+        await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, `!addteam LockTeam${i}`));
+      }
+
+      // Register initial roster for LockTeam1
+      const initRes = await app.handleInboundMessage(
+        createTextMessage(
+          organizerJid,
+          centralGroupJid,
+          '!roster LockTeam1 GK: GK1 | Inti: P1, P2, P3, P4 | Cadangan: S1'
+        )
+      );
+      expect(initRes.commandResult?.success).toBe(true);
+
+      // Mark all 8 teams verified (simulating completed !onboarding)
+      await db.execute({
+        sql: `UPDATE teams SET registration_status = 'VERIFIED' WHERE tournament_id = (SELECT id FROM tournaments WHERE name = 'Lock Cup')`,
+      });
+
+      // Run draw (fixtures are created as SCHEDULED; team has NOT played Round 1 yet)
+      const drawRes = await app.handleInboundMessage(createTextMessage(organizerJid, centralGroupJid, '!draw'));
+      expect(drawRes.commandResult?.success).toBe(true);
+
+      // Before Round 1 is played: updating roster via !roster must STILL succeed
+      const prePlayUpdate = await app.handleInboundMessage(
+        createTextMessage(
+          organizerJid,
+          centralGroupJid,
+          '!roster LockTeam1 GK: GK1New | Inti: P1New, P2, P3, P4 | Cadangan: S1, S2'
+        )
+      );
+      expect(prePlayUpdate.commandResult?.success).toBe(true);
+      expect(prePlayUpdate.replyText).toContain('BERHASIL DIDAFTARKAN');
+      expect(prePlayUpdate.replyText).toContain('GK1New');
+
+      // Simulate LockTeam1 playing Round 1 (e.g. fixture transitions to COMPLETED or WALKOVER via !claimwo, or REPORT_PENDING)
+      const fRes = await db.execute({
+        sql: `SELECT f.id, ta.id as team_a_id, tb.id as team_b_id, ta.team_name as team_a_name, tb.team_name as team_b_name
+              FROM fixtures f
+              JOIN teams ta ON f.team_a_id = ta.id
+              JOIN teams tb ON f.team_b_id = tb.id
+              WHERE ta.team_name = 'LockTeam1' OR tb.team_name = 'LockTeam1'
+              LIMIT 1`,
+      });
+      const fx = fRes.rows[0]!;
+      const fixtureId = String(fx.id);
+      const lockTeamId = String(fx.team_a_name) === 'LockTeam1' ? String(fx.team_a_id) : String(fx.team_b_id);
+      const otherTeamName = String(fx.team_a_name) === 'LockTeam1' ? String(fx.team_b_name) : String(fx.team_a_name);
+
+      await app.handleInboundMessage(
+        createTextMessage(organizerJid, centralGroupJid, `!claimwo ${fixtureId} ${otherTeamName} Lawan absen`)
+      );
+
+      // Attempt to overwrite roster AFTER team has played -> MUST be blocked
+      const postPlayUpdate = await app.handleInboundMessage(
+        createTextMessage(
+          organizerJid,
+          centralGroupJid,
+          '!roster LockTeam1 GK: HackerGK | Inti: H1, H2, H3, H4'
+        )
+      );
+      expect(postPlayUpdate.handled).toBe(true);
+      expect(postPlayUpdate.commandResult?.success).toBe(false);
+      expect(postPlayUpdate.replyText).toContain('SUDAH TERKUNCI');
+
+      // Verify existing roster is completely intact
+      const playersInDb = await db.execute({
+        sql: `SELECT nickname_raw FROM players WHERE team_id = ? AND status = 'ACTIVE' ORDER BY roster_slot ASC`,
+        args: [lockTeamId],
+      });
+      const nicknames = playersInDb.rows.map((r: any) => String(r.nickname_raw));
+      expect(nicknames).toContain('GK1New');
+      expect(nicknames).toContain('P1New');
+      expect(nicknames).not.toContain('HackerGK');
+
+      // Viewing roster (!roster LockTeam1) must STILL work
+      const viewAfterPlay = await app.handleInboundMessage(
+        createTextMessage(regularUserJid, centralGroupJid, '!roster LockTeam1')
+      );
+      expect(viewAfterPlay.commandResult?.success).toBe(true);
+      expect(viewAfterPlay.replyText).toContain('ROSTER RESMI TIM: LOCKTEAM1');
+      expect(viewAfterPlay.replyText).toContain('GK1New');
+
+      // Also verify another team that hasn't played yet (if any) or check REPORT_PENDING blocks LockTeam2 before COMPLETED
+      const f2Res = await db.execute({
+        sql: `SELECT f.id, ta.team_name as team_a_name, tb.team_name as team_b_name
+              FROM fixtures f
+              JOIN teams ta ON f.team_a_id = ta.id
+              JOIN teams tb ON f.team_b_id = tb.id
+              WHERE f.status = 'SCHEDULED'
+              LIMIT 1`,
+      });
+      if (f2Res.rows.length > 0) {
+        const fx2Id = String(f2Res.rows[0].id);
+        const fx2TeamA = String(f2Res.rows[0].team_a_name);
+        await db.execute({
+          sql: `UPDATE fixtures SET status = 'REPORT_PENDING' WHERE id = ?`,
+          args: [fx2Id],
+        });
+        const pendingUpdate = await app.handleInboundMessage(
+          createTextMessage(
+            organizerJid,
+            centralGroupJid,
+            `!roster ${fx2TeamA} GK: X1 | Inti: X2, X3, X4, X5`
+          )
+        );
+        expect(pendingUpdate.commandResult?.success).toBe(false);
+        expect(pendingUpdate.replyText).toContain('SUDAH TERKUNCI');
+      }
+    });
   });
 });

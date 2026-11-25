@@ -75,6 +75,13 @@ import {
 } from '../reports/manual-parser.js';
 import type { ManualReportSessionManager, MatchedScorerDetail, PendingManualReport } from './manual-report-session.js';
 import type { WoClaimSessionManager, PendingWoClaim } from './wo-claim-session.js';
+import {
+  checkTeamCanModifyRoster,
+  formatGantiSlotListPrompt,
+  GantiSessionManager,
+  getTeamRosterSlots,
+  setTournamentKoTransferOpen,
+} from './ko-roster-transfer.js';
 import type { RosterExtractor } from '../ai/extractors/roster.js';
 import type {
   ApproverType,
@@ -93,6 +100,7 @@ export interface TournamentCommandDeps {
   manualReportSession: ManualReportSessionManager;
   matchdayService?: MatchdayService;
   woClaimSession?: WoClaimSessionManager;
+  gantiSessionManager?: GantiSessionManager;
   sender?: WhatsAppSender;
   rosterExtractor?: RosterExtractor;
   providerRouter?: import('../ai/router.js').ProviderRouter;
@@ -1150,7 +1158,7 @@ export function registerTournamentCommands(
     const teamsRes = await db.execute({
       sql: `
         SELECT t.id, t.team_name, t.registration_status,
-               (SELECT COUNT(*) FROM players p WHERE p.team_id = t.id) as player_count
+               (SELECT COUNT(*) FROM players p WHERE p.team_id = t.id AND p.status = 'ACTIVE') as player_count
         FROM teams t
         WHERE t.tournament_id = ?
         ORDER BY t.created_at ASC
@@ -2253,6 +2261,66 @@ export function registerTournamentCommands(
       return {
         success: false,
         responseText: `⛔ Hanya Panitia atau delegasi resmi dari *${officialTeamName}* yang berhak mendaftarkan roster tim ini.`,
+      };
+    }
+
+    // Lock roster modifications once the team has played or has active/submitted match data.
+    // Prevents mid-tournament roster swaps after Round 1 starts and protects historical
+    // player_game_stats / goalkeeper_reports from ON DELETE CASCADE in DELETE FROM players.
+    const playedCheck = await db.execute({
+      sql: `
+        SELECT
+          EXISTS(
+            SELECT 1 FROM fixtures
+            WHERE tournament_id = ? AND (team_a_id = ? OR team_b_id = ?)
+              AND status IN ('IN_PROGRESS', 'REPORT_PENDING', 'DISPUTED', 'COMPLETED', 'WALKOVER')
+          ) AS has_played_fixture,
+          EXISTS(
+            SELECT 1 FROM games g
+            JOIN fixtures f ON g.fixture_id = f.id
+            WHERE f.tournament_id = ? AND (f.team_a_id = ? OR f.team_b_id = ?)
+              AND g.status IN ('IN_PROGRESS', 'REPORT_PENDING', 'DISPUTED', 'COMPLETED', 'WALKOVER')
+          ) AS has_played_game,
+          EXISTS(
+            SELECT 1 FROM report_versions rv
+            JOIN fixtures f ON rv.fixture_id = f.id
+            WHERE f.tournament_id = ? AND (f.team_a_id = ? OR f.team_b_id = ?)
+          ) AS has_report_version,
+          EXISTS(
+            SELECT 1 FROM player_game_stats WHERE team_id = ?
+          ) AS has_player_stats,
+          EXISTS(
+            SELECT 1 FROM goalkeeper_reports WHERE team_id = ?
+          ) AS has_gk_stats
+      `,
+      args: [
+        tournamentId, teamId, teamId,
+        tournamentId, teamId, teamId,
+        tournamentId, teamId, teamId,
+        teamId,
+        teamId,
+      ],
+    });
+    const playedRow = playedCheck.rows[0] as unknown as Record<string, unknown> | undefined;
+    const hasPlayed = Boolean(
+      Number(playedRow?.has_played_fixture ?? 0) > 0 ||
+      Number(playedRow?.has_played_game ?? 0) > 0 ||
+      Number(playedRow?.has_report_version ?? 0) > 0 ||
+      Number(playedRow?.has_player_stats ?? 0) > 0 ||
+      Number(playedRow?.has_gk_stats ?? 0) > 0
+    );
+
+    if (hasPlayed) {
+      return {
+        success: false,
+        responseText: [
+          `🔒 *ROSTER TIM ${officialTeamName.toUpperCase()} SUDAH TERKUNCI*`,
+          `──────────────────────────────`,
+          `Perintah ubah \`!roster\` dinonaktifkan karena tim *${officialTeamName}* sudah pernah bertanding atau memiliki riwayat pertandingan/laporan.`,
+          ``,
+          `📌 Perubahan pemain hanya diperbolehkan sebelum tim memainkan pertandingan pertamanya (Round 1).`,
+          `💡 Untuk melihat susunan pemain yang sudah terdaftar, gunakan: \`!roster ${officialTeamName}\``,
+        ].join('\n'),
       };
     }
 
@@ -4009,5 +4077,258 @@ export function registerTournamentCommands(
     allowedInGroup: true,
     description: 'Mengunci paksa laporan tanpa konsensus 3 pihak (darurat, Admin only)',
     handler: overrideLockHandler,
+  });
+
+  // ============================================================================
+  // KO Roster Transfer Window (!bukaganti, !tutupganti) & Interactive !ganti
+  // ============================================================================
+  const makeTransferToggleHandler = (open: boolean) => async (ctx: CommandContext) => {
+    const tRes = await db.execute(`
+      SELECT id, name, status
+      FROM tournaments
+      WHERE status NOT IN ('COMPLETED', 'ARCHIVED')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    if (tRes.rows.length === 0) {
+      return {
+        success: false,
+        responseText: '⚠️ Belum ada turnamen aktif di sistem.',
+      };
+    }
+
+    const tournamentId = String(tRes.rows[0].id);
+    const actorId = ctx.delegateId || ctx.message.sender_normalized_address || 'ORGANIZER';
+
+    try {
+      const { tournamentName } = await setTournamentKoTransferOpen(db, tournamentId, open, actorId);
+      if (open) {
+        return {
+          success: true,
+          responseText: [
+            `🔓 *JENDELA PERGANTIAN PEMAIN KO DIBUKA*`,
+            `──────────────────────────────`,
+            `🏆 *Turnamen:* ${tournamentName}`,
+            `✅ Delegasi tim yang lolos fase Knockout kini dapat mengganti pemain menggunakan perintah *!ganti*.`,
+            ``,
+            `📌 *Aturan Penting:*`,
+            `• Tim bebas mengganti hingga seluruh susunan pemain (Format 5+3: Slot 1–8).`,
+            `• Tim yang **sudah memulai / memiliki laporan pertandingan KO pertamanya** otomatis terkunci permanen dan tidak bisa mengganti lagi.`,
+            `• Ketik *!tutupganti* untuk menutup jendela transfer ini.`,
+          ].join('\n'),
+        };
+      }
+
+      return {
+        success: true,
+        responseText: [
+          `🔒 *JENDELA PERGANTIAN PEMAIN KO DITUTUP*`,
+          `──────────────────────────────`,
+          `🏆 *Turnamen:* ${tournamentName}`,
+          `🚫 Pergantian pemain fase Knockout via *!ganti* kini telah ditutup oleh Panitia.`,
+        ].join('\n'),
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        responseText: `⚠️ Gagal mengubah status jendela pergantian pemain: ${err.message || String(err)}`,
+      };
+    }
+  };
+
+  router.registerCommand({
+    command: 'bukaganti',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Membuka jendela pergantian pemain fase Knockout (!ganti) — Admin only',
+    handler: makeTransferToggleHandler(true),
+  });
+
+  router.registerCommand({
+    command: 'bukatransfer',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Alias dari !bukaganti — membuka jendela pergantian pemain KO (Admin only)',
+    handler: makeTransferToggleHandler(true),
+  });
+
+  router.registerCommand({
+    command: 'tutupganti',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Menutup jendela pergantian pemain fase Knockout — Admin only',
+    handler: makeTransferToggleHandler(false),
+  });
+
+  router.registerCommand({
+    command: 'tutuptransfer',
+    requiredRole: 'ORGANIZER',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Alias dari !tutupganti — menutup jendela pergantian pemain KO (Admin only)',
+    handler: makeTransferToggleHandler(false),
+  });
+
+  const gantiHandler = async (ctx: CommandContext) => {
+    if (!deps.gantiSessionManager) {
+      return {
+        success: false,
+        responseText: '⚠️ Layanan pergantian pemain interaktif belum aktif.',
+      };
+    }
+
+    const tRes = await db.execute(`
+      SELECT id, name, status
+      FROM tournaments
+      WHERE status NOT IN ('COMPLETED', 'ARCHIVED')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    if (tRes.rows.length === 0) {
+      return {
+        success: false,
+        responseText: '⚠️ Belum ada turnamen aktif di sistem.',
+      };
+    }
+    const tournamentId = String(tRes.rows[0].id);
+
+    // Resolve delegate identity if not already in ctx
+    let currentDelegateId = ctx.delegateId;
+    if (!currentDelegateId && ctx.message?.sender_raw_address) {
+      try {
+        const res = await deps.identityResolver.resolveIdentity(
+          ctx.message.sender_raw_address,
+          ctx.message.chat_id
+        );
+        if (res.status === 'VERIFIED' && res.delegate) {
+          currentDelegateId = res.delegate.id;
+          ctx.delegateId = res.delegate.id;
+        }
+      } catch (err) {
+        console.warn('[Ganti] Identity resolve error:', err);
+      }
+    }
+
+    const argTeam = ctx.rawArgs.trim();
+    let teamId: string | null = null;
+    let teamName: string | null = null;
+
+    if (ctx.isOrganizer && argTeam) {
+      // Organizer explicitly specifying a team: !ganti <Nama Tim>
+      let teamRes = await db.execute({
+        sql: `SELECT id, team_name FROM teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?) LIMIT 1`,
+        args: [tournamentId, argTeam],
+      });
+      if (teamRes.rows.length === 0) {
+        teamRes = await db.execute({
+          sql: `SELECT id, team_name FROM teams WHERE tournament_id = ? AND LOWER(team_name) LIKE LOWER(?) ORDER BY LENGTH(team_name) ASC LIMIT 1`,
+          args: [tournamentId, `%${argTeam}%`],
+        });
+      }
+      if (teamRes.rows.length === 0) {
+        return {
+          success: false,
+          responseText: `⚠️ Tim *${argTeam}* tidak ditemukan di turnamen ini.`,
+        };
+      }
+      teamId = String(teamRes.rows[0].id);
+      teamName = String(teamRes.rows[0].team_name);
+    } else if (currentDelegateId) {
+      const delTeamRes = await db.execute({
+        sql: `SELECT id, team_name FROM teams WHERE tournament_id = ? AND delegate_id = ? LIMIT 1`,
+        args: [tournamentId, currentDelegateId],
+      });
+      if (delTeamRes.rows.length > 0) {
+        teamId = String(delTeamRes.rows[0].id);
+        teamName = String(delTeamRes.rows[0].team_name);
+      }
+    }
+
+    if (!teamId || !teamName) {
+      return {
+        success: false,
+        responseText: ctx.isOrganizer
+          ? '⚠️ Sebutkan nama tim untuk dibantu mengganti pemain: `!ganti <Nama Tim>`'
+          : '⛔ Perintah *!ganti* hanya dapat digunakan oleh delegasi tim resmi yang sudah terverifikasi (atau Panitia dengan `!ganti <Nama Tim>`).',
+      };
+    }
+
+    // Check eligibility (Pre-Round 1 OR KO window open + team qualified + KO not started yet)
+    const eligibility = await checkTeamCanModifyRoster(db, tournamentId, teamId, teamName);
+    if (!eligibility.allowed) {
+      return {
+        success: false,
+        responseText: eligibility.message,
+      };
+    }
+
+    const slots = await getTeamRosterSlots(db, tournamentId, teamId);
+    const promptText = formatGantiSlotListPrompt(teamName, eligibility.phase, slots);
+
+    let promptKey = `ganti-slot-${randomUUID()}`;
+    if (deps.sender) {
+      promptKey = ctx.message.raw_message
+        ? await deps.sender.sendQuote(ctx.message.chat_id, promptText, ctx.message.raw_message)
+        : await deps.sender.sendText(ctx.message.chat_id, promptText);
+    }
+
+    const starterAddress = ctx.message.sender_normalized_address || ctx.message.sender_raw_address;
+    deps.gantiSessionManager.registerSession({
+      id: randomUUID(),
+      tournamentId,
+      tournamentName: String(tRes.rows[0].name),
+      teamId,
+      teamName,
+      starterAddress,
+      starterDelegateId: currentDelegateId ?? null,
+      chatId: ctx.message.chat_id,
+      step: 'WAIT_SLOT',
+      slots,
+      promptMessageKey: promptKey,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    });
+
+    if (deps.sender) {
+      return {
+        success: true,
+        metadata: { promptMessageKey: promptKey },
+      };
+    }
+
+    return {
+      success: true,
+      responseText: promptText,
+      metadata: { promptMessageKey: promptKey },
+    };
+  };
+
+  router.registerCommand({
+    command: 'ganti',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Mengganti pemain roster tim secara interaktif (Pra-Round 1 atau Jendela KO via !bukaganti)',
+    handler: gantiHandler,
+  });
+
+  router.registerCommand({
+    command: 'gantipemain',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Alias dari !ganti — mengganti pemain roster tim secara interaktif',
+    handler: gantiHandler,
+  });
+
+  router.registerCommand({
+    command: 'koroster',
+    requiredRole: 'ANY',
+    allowedInDm: true,
+    allowedInGroup: true,
+    description: 'Alias dari !ganti — mengganti pemain roster tim pada fase Knockout',
+    handler: gantiHandler,
   });
 }

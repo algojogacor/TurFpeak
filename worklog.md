@@ -3417,3 +3417,63 @@ emotron-super-vl-120b.
 - **`test/whatsapp/gateway-connection.test.ts`**:
   - Status: `REPORTED / PENDING_APPROVAL`
   - Deskripsi: Test pada file tersebut mencoba memanggil `net.Server.listen(socketPath)` menggunakan path file di `AppData/Local/Temp/fpgw-*/gw.sock`. Pada lingkungan Windows OS (Win32), binding Unix domain socket file path menghasilkan error OS `EACCES: permission denied` karena Windows membutuhkan named pipe syntax (`\\\\?\\pipe\\...`). Modul aplikasi utama tidak terdampak karena berjalan normal di Linux/VM staging. Sesuai prinsip *Surgical Changes* dan AGENTS.md §11, file di luar scope tidak dimodifikasi secara sepihak.
+
+
+---
+
+## 2026-11-25 — Session 17: Roster Mutation Lock Once Team Has Played (`!roster` Guard)
+### 1. Tujuan
+- Menonaktifkan perubahan/penimpaan roster melalui `!roster` ketika suatu tim sudah pernah bermain (atau memiliki riwayat pertandingan/laporan aktif), sekaligus mencegah risiko penghapusan statistik `player_game_stats` dan `goalkeeper_reports` akibat `DELETE FROM players` + `ON DELETE CASCADE`.
+- Tetap mengizinkan perubahan roster selama tim belum bermain Round 1 (termasuk setelah `!draw` selama fixture masih `SCHEDULED`), dan tetap mengizinkan mode lihat roster (`!roster <Nama Tim>`).
+
+### 2. Perubahan Konkret
+- **`src/application/tournament-commands.ts`** (`rosterHandler`):
+  - Menambahkan pengecekan status pertandingan tim (`playedCheck`) tepat setelah validasi otorisasi dan sebelum validasi/penghapusan roster:
+    - Memeriksa `EXISTS` pada `fixtures` (`status IN ('IN_PROGRESS', 'REPORT_PENDING', 'DISPUTED', 'COMPLETED', 'WALKOVER')`), `games` (`status IN ('IN_PROGRESS', 'REPORT_PENDING', 'DISPUTED', 'COMPLETED', 'WALKOVER')`), `report_versions`, `player_game_stats`, dan `goalkeeper_reports`.
+    - Jika salah satu bernilai ada, perubahan `!roster` ditolak dengan pesan `ROSTER TIM ... SUDAH TERKUNCI` dan mengarahkan ke mode lihat `!roster <Nama Tim>`.
+- **`tests/integration/competition_commands.test.ts`**:
+  - Menambahkan integration test `allows !roster replacement before Round 1 is played, but locks !roster updates once the team has played (preserving view and stats)` yang menguji:
+    1. Update `!roster` setelah `!draw` saat fixture masih `SCHEDULED` tetap berhasil.
+    2. Update `!roster` setelah tim bermain (`WALKOVER` / `COMPLETED` / `REPORT_PENDING`) ditolak (`success: false`, mengandung `SUDAH TERKUNCI`).
+    3. Data pemain lama di `players` tetap utuh dan mode lihat `!roster <Nama Tim>` tetap berfungsi.
+
+### 3. Verifikasi Empiris
+- `npx tsc --noEmit`: Exit code 0 (bersih).
+- `npx vitest run tests/integration/competition_commands.test.ts`: **18/18 tests PASS**.
+- `npx vitest run tests/`: **25 test files PASS, 423/423 tests PASS**.
+
+
+---
+
+## 2026-11-25 — Session 18: KO Phase Roster Replacement Window & Interactive `!ganti` System
+### 1. Tujuan
+- Mengimplementasikan sistem pergantian pemain fase Knockout sesuai kesepakatan `/grill-me` (keputusan `D-041`):
+  - Jendela pergantian KO dibuka/ditutup manual oleh Panitia (`!bukaganti` / `!tutupganti`).
+  - Hard-lock otomatis per tim: begitu tim memulai, mengirim bukti, atau menerima WO match KO pertamanya, `!ganti` terkunci permanen untuk tim tersebut (tidak dapat dipaksa oleh Panitia).
+  - Interaksi `!ganti` 2 langkah wajib-reply pesan bot (pilih slot `1–8`, termasuk slot cadangan kosong, lalu ketik nickname baru), boleh mengganti 100% roster dalam format 5+3, dengan dukungan Panitia (`!ganti <Nama Tim>`).
+  - Menjaga seluruh histori statistik babak grup pemain yang diganti (`status = 'REPLACED'`) agar tetap terhitung di `!awards` tanpa terkena `ON DELETE CASCADE`, serta mempertahankan Pasal 2.7 lintas tim.
+
+### 2. Perubahan Konkret
+- **`migrations/007_ko_roster_replacement.sql`**:
+  - Menambah status `'REPLACED'` pada `players` dan mengubah keunikan slot menjadi *partial unique index* `idx_players_active_team_slot` (`WHERE status != 'REPLACED'`) dengan `PRAGMA foreign_keys = OFF/ON` di luar transaksi agar `player_game_stats` dan `goalkeeper_reports` tetap utuh.
+- **`src/shared/types/index.ts` & `src/shared/schemas/index.ts`**:
+  - Menambah `'REPLACED'` ke `PlayerStatus`/`playerStatusSchema` dan `ko_transfer_open?: boolean` ke `TournamentConfig`/`tournamentConfigSchema`.
+- **`src/stats/aggregator.ts` & `src/reports/validation.ts`**:
+  - `aggregator.ts`: memfilter `p.status IN ('ACTIVE', 'REPLACED')` sehingga statistik babak grup pemain yang diganti tetap masuk perhitungan `!awards`.
+  - `validation.ts`: memfilter `status != 'REPLACED'` pada pencarian slot tersedia untuk pemain `INELIGIBLE`.
+- **`src/application/ko-roster-transfer.ts`**:
+  - Modul baru berisi `getTournamentKoTransferOpen`, `setTournamentKoTransferOpen`, `checkTeamCanModifyRoster`, `getTeamRosterSlots`, `formatGantiSlotListPrompt`, dan `GantiSessionManager`.
+- **`src/application/tournament-commands.ts` & `src/index.ts`**:
+  - Registrasi `!bukaganti`/`!bukatransfer`, `!tutupganti`/`!tutuptransfer`, dan `!ganti`/`!gantipemain`/`!koroster` (otomatis terdaftar di `!help`).
+  - Memperbaiki hitungan `player_count` di `!teams` (`AND p.status = 'ACTIVE'`).
+  - Menghubungkan `gantiSessionManager.handleReply` pada jalur pesan masuk di `FlashPeakApp.handleInboundMessage`.
+- **`flash-peak-tms/DECISIONS.md` & `flash-peak-tms/COMPETITION_RULES.md`**:
+  - Mendokumentasikan keputusan `D-041` dan pembaruan Pasal 2.9.
+- **`tests/migration.test.ts` & `tests/integration/ko_roster_transfer.test.ts`**:
+  - Menambah tes ketahanan data migrasi `007` dan integration test penuh untuk seluruh alur `!bukaganti`, `!tutupganti`, `!ganti`, Pasal 2.7, `!awards`, re-aktivasi pemain lama, dan hard-lock KO.
+
+### 3. Verifikasi Empiris
+- `npx tsc --noEmit`: Exit code 0 (bersih).
+- `npm run build`: Exit code 0 (bersih).
+- `npx vitest run tests/migration.test.ts tests/integration/ko_roster_transfer.test.ts`: **6/6 tests PASS** (2 file).
+- `npx vitest run tests/`: **26 test files PASS, 426/426 tests PASS**.
