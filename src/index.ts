@@ -369,9 +369,36 @@ export class FlashPeakApp {
     // reply and the status feature was unreachable.
     const isKoGameCaption = rawMsgText.toLowerCase().startsWith('!kogame');
     const hasPhoto = Boolean(mediaBuffer);
-    if (isKoGameCaption && hasPhoto) {
-      const fixtureArg = rawMsgText.slice('!kogame'.length).trim().split(/\s+/)[0] || '';
-      const koRes = await this.handleKoGameEvidenceMessage(message, mediaBuffer, fixtureArg);
+    let shouldRouteToKo = isKoGameCaption && hasPhoto;
+    if (!shouldRouteToKo && hasPhoto && !rawMsgText.startsWith('!')) {
+      const koStageRes = await this.db.execute(`
+        SELECT
+          EXISTS(
+            SELECT 1 FROM fixtures f
+            JOIN tournaments t ON f.tournament_id = t.id
+            WHERE t.status NOT IN ('COMPLETED', 'ARCHIVED')
+              AND f.stage = 'KNOCKOUT'
+              AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+          ) AS has_active_ko,
+          EXISTS(
+            SELECT 1 FROM fixtures f
+            JOIN tournaments t ON f.tournament_id = t.id
+            WHERE t.status NOT IN ('COMPLETED', 'ARCHIVED')
+              AND f.stage = 'GROUP'
+              AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
+          ) AS has_active_group
+      `);
+      const sr = koStageRes.rows[0] as unknown as Record<string, unknown> | undefined;
+      if (Number(sr?.has_active_ko ?? 0) > 0 && Number(sr?.has_active_group ?? 0) === 0) {
+        shouldRouteToKo = true;
+      }
+    }
+
+    if (shouldRouteToKo) {
+      const fixtureArg = isKoGameCaption
+        ? rawMsgText.slice('!kogame'.length).trim().split(/\s+/)[0] || ''
+        : '';
+      const koRes = await this.handleKoGameEvidenceMessage(message, mediaBuffer, fixtureArg, !isKoGameCaption);
       if (koRes.handled) {
         return {
           handled: true,
@@ -936,12 +963,13 @@ export class FlashPeakApp {
   public async handleKoGameEvidenceMessage(
     message: NormalizedMessage,
     mediaBuffer: Buffer | null | undefined,
-    explicitFixtureId?: string
+    explicitFixtureId?: string,
+    autoRouted = false
   ): Promise<{ handled: boolean; replyText?: string; mentions?: string[] }> {
     const caption = (message.caption || message.text_body || '').trim();
     const normCaption = caption.toLowerCase();
 
-    if (!normCaption.startsWith('!kogame')) {
+    if (!autoRouted && !normCaption.startsWith('!kogame')) {
       return { handled: false };
     }
     if (!mediaBuffer) {
