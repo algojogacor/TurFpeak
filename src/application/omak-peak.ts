@@ -352,7 +352,7 @@ export class OmakPeakService {
     userMessage: string,
     chatId: string,
     senderLabel?: string
-  ): Promise<{ replyText: string; rateLimited: boolean; retryAfterSeconds?: number }> {
+  ): Promise<{ replyText: string; rateLimited: boolean; retryAfterSeconds?: number; mentions?: string[] }> {
     const trimmed = userMessage.trim();
     if (!trimmed) {
       return { replyText: OMAK_PEAK_INTRO, rateLimited: false };
@@ -437,12 +437,22 @@ export class OmakPeakService {
       // Gunakan smartTruncate dengan batas pengaman 5.000 karakter (setara ~1.500-1.800 token)
       // agar analisa panjang tetap tuntas dan utuh, namun mencegah runaway loop/spam.
       const finalText = smartTruncate(text, 5000);
+      // Extract WhatsApp mentions for any @<id> in finalText matching a delegate_whatsapp in context
+      const mentionsSet = new Set<string>();
+      for (const td of context.teams_and_delegates) {
+        if (!td.delegate_whatsapp) continue;
+        const idPart = td.delegate_whatsapp.replace(/@.*$/, '');
+        if (idPart && finalText.includes(`@${idPart}`)) {
+          mentionsSet.add(td.delegate_whatsapp);
+        }
+      }
+      const mentions = mentionsSet.size > 0 ? Array.from(mentionsSet) : undefined;
       // Record into rolling memory AFTER a successful response. The current
       // turn is not in the snapshot above, so the model never sees its own
       // in-progress answer (avoids self-referential noise).
       const label = (senderLabel && senderLabel.trim()) || senderRawAddress;
       this.memory.record(chatId, label, trimmed, finalText);
-      return { replyText: finalText, rateLimited: false };
+      return { replyText: finalText, rateLimited: false, mentions };
     } catch (err) {
       if (err instanceof AllProvidersFailedError) {
         return {

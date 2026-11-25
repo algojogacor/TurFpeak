@@ -504,6 +504,20 @@ export function registerTournamentCommands(
     const tournamentId = String(tRes.rows[0].id ?? tRes.rows[0][0]);
     const tournamentName = String(tRes.rows[0].name ?? tRes.rows[0][1]);
 
+    const wantsSpecificGroup = /\b(?:grup|group)\s*[a-z0-9]+\b/i.test(rawFilter);
+    let stageFilterSql = '';
+    let orderBySql = 'ORDER BY g.group_code ASC, f.round_code ASC';
+    if (!wantsSpecificGroup) {
+      const koExistsRes = await db.execute({
+        sql: `SELECT EXISTS(SELECT 1 FROM fixtures WHERE tournament_id = ? AND stage = 'KNOCKOUT') AS has_ko`,
+        args: [tournamentId],
+      });
+      if (Number((koExistsRes.rows[0] as any)?.has_ko ?? 0) > 0) {
+        stageFilterSql = `AND f.stage = 'KNOCKOUT'`;
+        orderBySql = 'ORDER BY f.created_at ASC';
+      }
+    }
+
     const fixturesRes = await db.execute({
       sql: `
         SELECT 
@@ -524,8 +538,8 @@ export function registerTournamentCommands(
         JOIN teams tb ON f.team_b_id = tb.id
         LEFT JOIN teams tl ON f.left_side_team_id = tl.id
         LEFT JOIN games gm ON gm.fixture_id = f.id
-        WHERE f.tournament_id = ?
-        ORDER BY g.group_code ASC, f.round_code ASC
+        WHERE f.tournament_id = ? ${stageFilterSql}
+        ${orderBySql}
       `,
       args: [tournamentId],
     });

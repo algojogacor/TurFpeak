@@ -88,10 +88,18 @@ export function registerAiNativeCommands(
         ctx.message.chat_id,
         ctx.message.push_name || undefined
       );
+      const metadata: Record<string, unknown> = {};
+      if (res.rateLimited) {
+        metadata.rateLimited = true;
+        metadata.retryAfterSeconds = res.retryAfterSeconds;
+      }
+      if (res.mentions && res.mentions.length > 0) {
+        metadata.mentions = res.mentions;
+      }
       return {
         success: !res.rateLimited,
         responseText: res.replyText,
-        metadata: res.rateLimited ? { rateLimited: true, retryAfterSeconds: res.retryAfterSeconds } : undefined,
+        metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       };
     },
   });
