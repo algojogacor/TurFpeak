@@ -16,8 +16,8 @@
 ## 2. Roster
 
 1. Minimum roster is five players: one goalkeeper and four outfield players.
-2. Up to five substitutes may be registered.
-3. Maximum roster is ten.
+2. Up to three substitutes may be registered (Format 5+3).
+3. Maximum active roster is eight (database slots 9–10 are reserved internally for unregistered/`INELIGIBLE` player tracking).
 4. Registering only five players is permitted.
 5. Every match lineup must contain five eligible players, including one goalkeeper.
 6. Only registered roster members may play.
@@ -59,8 +59,8 @@ Proposed order:
 7. Playoff match or organizer procedure announced before it is needed.
 
 ### 3.3 Knockout
-- All rounds before Grand Final: BO3.
-- Grand Final: BO5.
+- All rounds before Grand Final: BO3 (7 minutes per game).
+- Grand Final: BO5 (5 minutes per game).
 - BO3: first to two game wins.
 - BO5: first to three game wins.
 - Each game score is recorded separately.

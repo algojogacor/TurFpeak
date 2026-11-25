@@ -3477,3 +3477,25 @@ emotron-super-vl-120b.
 - `npm run build`: Exit code 0 (bersih).
 - `npx vitest run tests/migration.test.ts tests/integration/ko_roster_transfer.test.ts`: **6/6 tests PASS** (2 file).
 - `npx vitest run tests/`: **26 test files PASS, 426/426 tests PASS**.
+
+
+---
+
+## 2026-11-25 — Session 19: Rules/AI Alignment (`5+3`, KO Durations, `!rule`, Disable `!quiz` AI)
+### 1. Tujuan
+- Menyelaraskan dokumentasi (`COMPETITION_RULES.md`, `DECISIONS.md`), teks `!rule`, dan prompt AI (`RULES_SUMMARY` di `omak-peak.ts`) dengan implementasi S1 (Format `5+3` maks 8 pemain, aturan `!drawknockout` 2 pot UCL, jendela `!ganti`, sanksi `INELIGIBLE`, dan penangguhan GK/Best GK).
+- Menetapkan durasi match fase Knockout sesuai keputusan Panitia (`D-042`): QF & SF (BO3) **7 menit**, Grand Final (BO5) **5 menit** (Babak Grup tetap 8 menit).
+- Menonaktifkan pemanggilan AI pada `!quiz` agar kuota AI tidak boros oleh chat biasa selama 15 detik sesi kuis.
+
+### 2. Perubahan Konkret
+- **`flash-peak-tms/COMPETITION_RULES.md` & `flash-peak-tms/DECISIONS.md`**:
+  - Menyesuaikan format roster menjadi `5+3` (maks 8 pemain aktif; slot 9–10 DB khusus tracking `INELIGIBLE`) pada Pasal 2 & `D-012`.
+  - Menambah keputusan `D-042` (durasi KO BO3 7 menit, Final BO5 5 menit, dan `!quiz` deterministik tanpa LLM).
+- **`src/application/ai-native-commands.ts`**:
+  - Menghapus `providerRouter` dari konstruksi `QuizSessionManager` agar `!quiz` murni memakai pencocokan keyword deterministik (0 panggilan LLM).
+- **`src/application/omak-peak.ts` & `src/application/tournament-commands.ts`**:
+  - Memperbarui `RULES_SUMMARY` di `omak-peak.ts` dan isi pesan `!rule` agar lengkap & konsisten 100% dengan seluruh mekanisme aktif (5+3, Pasal 2.7, `INELIGIBLE`, `!drawknockout` 2 pot, `!ganti`, durasi 8m/7m/5m, pelaporan foto langsung KO, dan penangguhan GK).
+
+### 3. Verifikasi Empiris
+- `npx tsc --noEmit`: Exit code 0 (bersih).
+- `npx vitest run tests/`: **26 test files PASS, 426/426 tests PASS**.

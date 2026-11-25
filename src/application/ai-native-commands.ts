@@ -68,7 +68,6 @@ export function registerAiNativeCommands(
     new QuizSessionManager({
       db: deps.db,
       durationMs: 15_000,
-      providerRouter: deps.providerRouter,
     });
 
   // -------------------------------------------------------------------------

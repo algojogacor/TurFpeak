@@ -477,18 +477,20 @@ export class OmakPeakService {
 // =============================================================================
 
 const RULES_SUMMARY = `Aturan inti Gojiha Tournament (Flash Peak):
-- Game: Flash Peak (4v4 arcade, ~5 menit per match, third-person single-character control, no offside/fouls).
-- Roster: 5 starters (1 GK + 4 outfield), maks 5 subs (total maks 10). Karakter in-game harus unik per tim (no duplicate character).
-- Group Stage: round-robin 1 game per fixture. Win=3pts, Draw=1pt, Loss=0pts. Top 2 per group lolos KO.
-- Knockout: BO3 (first to 2 wins) sampai final; Grand Final BO5 (first to 3 wins). Tied KO game di-replay, skor replay masuk ke series score.
-- Pelaporan Skor: Tim pemenang cukup kirim 1 screenshot skor akhir (scoreboard utama). Kewajiban kartu statistik kiper DITANGGUHKAN sementara demi kemudahan pelaporan.
+- Game: Flash Peak (5v5 arcade: 1 GK + 4 outfield, third-person single-character control, no offside/fouls).
+- Roster: Format 5+3 (1 GK + 4 Inti + maks 3 Cadangan = total maks 8 pemain; min 5 pemain). Karakter in-game harus unik per tim (no duplicate character). 1 pemain hanya boleh membela 1 tim (Pasal 2.7). Pemain tidak terdaftar/gelap yang tertangkap berstatus INELIGIBLE dan terkena diskualifikasi kelayakan roster.
+- Pergantian Pemain (!ganti): Roster bebas diubah sebelum tim main Round 1. Setelah Round 1, !roster dikunci. Saat transisi ke Knockout, jika panitia membuka jendela transfer (!bukaganti), tim KO boleh mengganti hingga seluruh 8 slot via !ganti sampai match KO pertamanya dimulai (setelah main KO pertama, terkunci permanen). Statistik grup pemain lama tetap dihitung di !awards.
+- Group Stage: round-robin 1 game per fixture (durasi 8 menit). Win=3pts, Draw=1pt, Loss=0pts. Top 2 per group lolos KO.
+- Knockout & Drawing (!drawknockout): Undian Dua Pot ala UCL (Pot 1 Juara Grup vs Pot 2 Runner-up, proteksi 1 grup, tim segrup dipisah Upper & Lower Halves sehingga hanya bisa bertemu lagi di Grand Final). Bagan mengalir (Fixed Bracket Tree).
+- Format & Durasi Knockout: QF & SF = BO3 (first to 2 wins, 7 menit/game). Grand Final = BO5 (first to 3 wins, 5 menit/game). Jika 1 game KO seri (draw), game tersebut di-replay sampai ada pemenang.
+- Pelaporan Skor: Cukup kirim 1 screenshot scoreboard utama hasil akhir di grup (di fase KO bisa langsung kirim foto atau pakai caption !kogame). Kewajiban kartu statistik kiper DITANGGUHKAN sementara.
 - Room host: tim sisi kiri default (rekomendasi / host_team_name); kalau nggak bisa host dan lawan mau, match jalan; kalau lawan nolak, lawan kena forfeit.
 - Double room-card unavailable: Group Stage = double walkover (0 pts each, no stats); Knockout = double loss (kedua tim kalah, pasangan ronde berikutnya bye).
 - Sistem Matchday & Waktu Tanding:
-  • Seluruh pertandingan grup telah dijadwalkan per ronde (Ronde 1, Ronde 2, Ronde 3) sejak fase undian (!draw / !schedule).
+  • Seluruh pertandingan grup telah dijadwalkan per ronde sejak fase undian (!draw / !schedule).
   • Tiap ronde/matchday berdurasi 24 jam dengan batas cutoff pukul 19:59 WIB.
-  • Jam kickoff spesifik TIDAK ditentukan kaku oleh panitia, melainkan bebas disepakati bersama oleh delegasi kedua tim (fleksibel) selama diselesaikan sebelum batas cutoff 19:59 WIB.
-- Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff otomatis dinyatakan Double Walkover (D-031 babak grup, 0 poin untuk kedua tim) atau Kalah Ganda (D-032 babak KO).
+  • Jam kickoff spesifik bebas disepakati bersama delegasi kedua tim selama selesai sebelum 19:59 WIB.
+- Cutoff harian: 19:59 WIB — fixture yang belum selesai pas cutoff otomatis dinyatakan Double Walkover (D-031 babak grup, 0 poin) atau Kalah Ganda (D-032 babak KO).
 - Best Goalkeeper Award: DITANGGUHKAN sementara untuk season ini atas keputusan panitia. Penghargaan aktif: Golden Boot, Top Assist, Best Defender.`;
 
 function formatRoundLabel(roundCode: string | null | undefined): string {
