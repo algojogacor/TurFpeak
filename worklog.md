@@ -1,5 +1,208 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-26] Sesi 29: Integrasi Hermes Agent (`hermes.exe`) dengan Endpoint Colab Inkling-2-Mini
+
+### Konteks Sesi
+- User meminta alternatif agent AI selain OpenCode yang sudah terpasang di laptop.
+- Ditemukan **Hermes Agent** (`D:\hermes\.hermes\hermes-agent\venv\Scripts\hermes.exe`) yang berbasis Nous Research.
+- Menghubungkan Hermes Agent langsung ke endpoint Colab GPU Tesla T4 via Cloudflare Tunnel.
+
+### Perubahan Konkret & Setup
+1. **Penyediaan Ulang Server Colab GPU:**
+   - Memprovision sesi Colab baru `inkling` dengan GPU Tesla T4 (`colab new -s inkling --gpu T4`).
+   - Menjalankan `llama-server` dengan model `Inkling-2-Mini-Uncensored-AD-IQ2_M.gguf` (8.67 GB), 100% layer di GPU (`-ngl 99`), FlashAttention (`-fa on`), context 32k.
+   - Tunnel Cloudflare baru aktif: `https://blast-opened-because-hey.trycloudflare.com`.
+2. **Konfigurasi Hermes Agent:**
+   - Mengubah `D:\hermes\.hermes\config.yaml`:
+     - Provider diset ke `custom:colab`.
+     - Ditambahkan entry `custom_providers`:
+       - `name: colab`
+       - `base_url: https://blast-opened-because-hey.trycloudflare.com/v1`
+       - `model: inkling-2-mini-uncensored`
+       - `context_length: 65536` (memenuhi syarat validasi internal Hermes).
+3. **Konfigurasi Aider:**
+   - Memperbarui `C:\Users\Arya Rizky\.aider.conf.yml` dengan endpoint baru.
+
+### Verifikasi Empiris
+1. **Health Check:**
+   - `curl -s https://blast-opened-because-hey.trycloudflare.com/health` mengembalikan `{"status":"ok"}`.
+2. **Eksekusi Hermes Agent:**
+   - Menjalankan perintah `hermes chat -q "Siapa kamu dan apa fungsi utamamu?"`.
+   - Hermes sukses terinisialisasi, memproses seluruh schema tool/MCP, dan merespon dengan benar:
+     > *"Aku Hermes Agent — asisten AI yang jalan di dalam project ini (TurFpeak). Fungsi utamaku: Jadi coding partner... strategic advisor... bekerja otonom..."*
+   - Status exit code: 0, sesi disimpan di `20261126_143853_4454ea`.
+
+## [2026-11-26] Sesi 28: Migrasi Model ke Varian Ringan AD-IQ2_M (100% GPU VRAM, 32k Context, ~30 tok/s)
+
+### Konteks Sesi
+- User meminta beralih ke varian model yang lebih ringan dari seri `AtomicChat/Inkling-2-Mini-Uncensored-GGUF` untuk mengatasi bottleneck CPU offloading yang menyebabkan throttling 1.34 tok/s dan timeout pada OpenCode saat menggunakan varian 12.4 GB (`AD-IQ3_S.gguf`).
+- Menyiapkan varian `Inkling-2-Mini-Uncensored-AD-IQ2_M.gguf` (8.67 GB).
+
+### Perubahan Konkret & Setup
+1. **Penyediaan Runtime GPU Colab:**
+   - Memprovision sesi Colab baru `inkling` dengan GPU Tesla T4 15.3 GB VRAM (`colab new -s inkling --gpu T4`).
+2. **Download Model Ringan & Setup Server:**
+   - Mengunduh model `Inkling-2-Mini-Uncensored-AD-IQ2_M.gguf` (8.67 GB) via `huggingface_hub.hf_hub_download` langsung ke storage Colab.
+   - Menjalankan `llama-server` dengan 100% GPU offload (`-ngl 99`), context window `32768` (32k), FlashAttention (`-fa on`), dan KV cache terkompresi `q4_0` (`-ctk q4_0 -ctv q4_0`).
+   - Meluncurkan Cloudflare Quick Tunnel mengarah ke port 8000.
+3. **Pembaruan Konfigurasi OpenCode:**
+   - Memperbarui `C:\Users\Arya Rizky\.config\opencode\opencode.json`:
+     - `baseURL`: `https://caught-enough-covered-thickness.trycloudflare.com/v1`
+     - Context limit dinaikkan menjadi `32768` (32k).
+
+### Verifikasi Empiris
+1. **Alokasi VRAM (Tesla T4 15360 MiB):**
+   - VRAM terpakai: **11.881 MiB / 15.360 MiB** (100% layer model di GPU VRAM, 0 layer di CPU).
+   - Menyisakan ~3.479 MiB VRAM bebas untuk dynamic KV cache.
+2. **Uji Kecepatan & Latensi:**
+   - Inisialisasi awal graph tensor selesai, dilanjutkan pengujian inferensi chat completion:
+     - `eval time = 2138.78 ms / 64 tokens` -> **29.46 token/detik**.
+     - Waktu pengujian end-to-end dari Windows via Cloudflare Tunnel: **3.4 detik** untuk 64 token (sebelumnya butuh 83+ detik saat CPU offloaded).
+   - Endpoint publik `https://caught-enough-covered-thickness.trycloudflare.com/health` mengembalikan `{"status":"ok"}`.
+
+## [2026-11-26] Sesi 27: Setup Colab CLI & Deployment Inkling-2-Mini Uncensored (16k Context) via Cloudflare Tunnel
+
+### Konteks Sesi
+- User meminta instalasi dan konfigurasi Colab CLI (`google-colab-cli`) pada sistem lokal (Windows).
+- Menghubungkan akun Google Colab dan memverifikasi batas kuota/entitlement Google AI Pro.
+- Menyiapkan dan mendeploy model AI `AtomicChat/Inkling-2-Mini-Uncensored-GGUF` di Google Colab GPU (Nvidia Tesla T4 16 GB VRAM) untuk digunakan sebagai coding agent pada OpenCode via endpoint kompatibel OpenAI.
+- Mengoptimalkan context window menjadi 20.480 token (20k context) dengan kuantisasi KV cache Q4_0 dan 44 layer di GPU VRAM untuk menjaga kecepatan inferensi tetap tinggi dan stabil tanpa timeout.
+
+### Perubahan Konkret & Setup
+1. **Instalasi Colab CLI:**
+   - Menginstal `google-colab-cli v0.8.0` melalui `uv tool install google-colab-cli`.
+   - Melakukan otorisasi OAuth dan memvalidasi akses hardware (T4 GPU eligible).
+2. **Setup Server di Colab VM:**
+   - Memprovision runtime GPU T4 (`colab new -s inkling --gpu T4`).
+   - Mengunduh model `Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf` (12.42 GB) dari Hugging Face.
+   - Mengunduh binary pre-built `llama.cpp` CUDA versi `b12755` (`cudart-llama-b12755-bin-ubuntu-cuda-12.8-x64`).
+   - Mengonfigurasi `llama-server` dengan parameter optimal: `-ngl 45` (45 layer di GPU, sisa di RAM), `-c 16384` (16k context window), `-ctk q8_0 -ctv q8_0` (kompresi KV cache 50%), `-fa on` (FlashAttention), `--jinja`, dan port 8000.
+   - Menghubungkan tunnel publik HTTPS via `cloudflared`.
+   - Mengonfigurasi `C:\Users\Arya Rizky\.config\opencode\opencode.json` dengan provider `inkling` (`@ai-sdk/openai-compatible`) mengarah ke URL Cloudflare tunnel dan model `inkling-2-mini-uncensored`.
+
+### Verifikasi Empiris
+1. **Pemeriksaan Health & Endpoint:**
+   - `GET /health` mengembalikan `200 {"status":"ok"}`.
+   - `GET /v1/models` mengembalikan model ID `inkling-2-mini-uncensored` dengan context length `16384`.
+2. **Uji Inferensi Chat Completion:**
+   - Uji inferensi lokal Colab menghasilkan kecepatan **~23.80 token/detik** dengan waktu ke token pertama **~2.18 detik**.
+   - Uji request publik dari mesin lokal melalui `https://empire-parents-explains-oils.trycloudflare.com/v1/chat/completions` berhasil mengembalikan respon penalaran (`reasoning_content`) dengan HTTP 200 OK.
+
+
+## [2026-11-25] Sesi 26: Jadwal Cron Pause-Resume Cutoff 26 Nov 2026 (Opsi 2) & Dokumen Backlog Next Season
+
+### Perubahan Konkret
+1. **VM (`forfh`) — Cron Opsi 2 (26 Nov 2026):**
+   - Membuat skrip `/home/azureuser/flashpeak-tms/scripts/pause_tournament_1958.ts` untuk mem-pause turnamen (`ACTIVE` → `DRAW_READY`) pada pukul **19:58 WIB** (`12:58 UTC`).
+   - Memperbarui `crontab` dengan 2 jadwal *one-shot* untuk **26 Nov 2026**:
+     - `58 12 26 11 *` (`19:58 WIB`) → `pause_tournament_1958.ts` (melewati auto-cutoff `19:59 WIB`).
+     - `0 13 26 11 *` (`20:00 WIB`) → `resume_tournament_2000.ts` (mengembalikan status ke `ACTIVE`).
+   - Terverifikasi lewat `crontab -l` (exit code 0).
+2. **Dokumentasi Backlog Season 2:**
+   - Membuat `docs/NEXT_SEASON_IDEAS.md` yang mendokumentasikan akar masalah cutoff saat pergantian fase (Group → Knockout & antar-ronde KO), rancangan solusi *explicit per-round `cutoff_at`* + kontrol admin via WA + perbaikan pelacakan ronde aktif, serta catatan evaluasi Season 1 (aturan spectator, pengiriman multi-screenshot BO3/BO5, normalisasi rating OCR).
+
+---
+
+## [2026-11-25] Sesi 25: Backfill `player_game_stats` Quarter Final 4 (Team Zodiac vs 7Sins•BlueLock Venom)
+
+### Konteks Sesi
+- Pertandingan QF 4 (*Team Zodiac* vs *7Sins•BlueLock Venom*, fixture `7b55dccd-72bf-4539-9fb5-74ad6a5b704d`) diproses pada pukul 20:27 WIB sebelum patch `recordKoPlayerGameStats` dipasang, sehingga Game 1 (`8–3`) dan Game 2 (`4–0`) belum memiliki baris di `player_game_stats`.
+
+### Perubahan & Verifikasi Database VM (`forfh`)
+1. Memverifikasi ulang screenshot Game 1 (`9e2edc7d-0a26-4cec-b842-30f904d86274.jpg`) & Game 2 (`b7cbd9fd-ed2f-4476-b27d-52d9abb971d7.jpg`) secara visual dan menormalisasi nilai rating Game 1 (`100/99/72/...` menjadi `10.0/9.9/7.2/...`).
+2. Menyisipkan `report_sessions` (`DRAFT_READY`), `report_versions` (`LOCKED`), dan **15 baris** `player_game_stats` (`7` baris di Game 1, `8` baris di Game 2 — termasuk `TZ・ϻartysυpp` +10 gol & +1 assist, `TZ・Տhυki✦` +2 gol & +2 assist, `TZ・Ҡurøko✦` +2 assist & +43 defense, `TZ・Ҡurøna✦` +1 assist & +35 defense, `7SB_7+#3K+$;` +2 gol & +55 defense, `7SB_NAGIII` +1 gol). Pemain non-roster `7SB_Ayeshaa` pada Game 1 (0 gol, 1 assist) dilewati sesuai Pasal 2.12 (kalah tanpa hak award/statistik).
+3. Mencatat `audit_events` (`KO_STATS_BACKFILLED`) dan memverifikasi seluruh 4 match QF siap ke Semifinal.
+
+---
+
+## [2026-11-25] Sesi 24: Backfill Server Game Kekalahan Astra Lumina Nova 3–4 Raikage (`2–0` ➜ `2–1`)
+
+### Konteks Sesi
+- Pada QF 1 (*Astra Lumina Nova* vs *Raikage*, fixture `622461cb-ba38-4d70-9fd2-ff80dc69a7af`), delegasi mengirim 2 screenshot kemenangan sekaligus (`5–3` dan `4–3`), sehingga bot langsung mengunci series `2–0`. Screenshot kekalahan `3–4` (`media_assets` `267e5bca-e651-4e64-afca-b52379b9d96e.jpg`) yang dikirim 40 detik kemudian terabaikan oleh Guard `SERIES_ALREADY_COMPLETE`.
+- Atas instruksi Panitia, game kekalahan `3–4` beserta seluruh statistik pemainnya dimasukkan langsung dari sisi server VM (`forfh`).
+
+### Perubahan & Verifikasi Database VM (`forfh`)
+1. Menggeser game `4–3` (`7610f63d-e9a8-4ffd-bc0c-fe2ae2e19fea`) ke `game_number = 3` (pada `games` dan `ko_game_evidence`).
+2. Menambahkan Game 2 (`Astra Lumina Nova 3 — 4 Raikage`, pemenang `Raikage` `98f99a18-ef84-4cd9-a1ee-c9606f6a64bf`), menautkan `ko_game_evidence`, `report_sessions`, `report_versions` (`LOCKED`), serta 8 baris `player_game_stats` (`ATL_Preman✧` 1G/2A/6D, `ATL_LEAK✧` 2G, `ATL_C I N O X✧` 11D, `ATL_Missouri` 9D, `KGE.POTATO` 3G/1A, `KGE.SERINA` 1G/1A, `KGE.Kaell` 1A/18D, `KGE.RAKEN` 11D).
+3. Memperbarui series `fe8cfd24-42e8-4daf-adb1-d4712bb21b17` menjadi `team_a_game_wins = 2`, `team_b_game_wins = 1`, `status = 'COMPLETED'`, dan mencatat `audit_events` (`KO_SERIES_CORRECTED`).
+4. Verifikasi SQLite langsung mengonfirmasi: `SERIES: (2, 1, 'COMPLETED')` dan `GAMES: [(1, 5, 3, 8 stats), (2, 3, 4, 8 stats), (3, 4, 3, 8 stats)]`.
+
+---
+
+## [2026-11-25] Sesi 23: Penegasan Aturan Pemain Lineup vs Spectator pada `!rule`, Omak Peak (`!ai`), dan Dokumen Regulasi
+
+### Konteks Sesi
+- Menyusul protes delegasi Elite 8 terkait keberadaan *spectator* non-roster pada pertandingan Quarter Final 2 melawan The Apostles Dominion, Panitia (Arya) menetapkan dan mengumumkan klarifikasi resmi bahwa seluruh aturan kelayakan roster berlaku khusus untuk **pemain yang bertanding di lineup (5v5)**, **bukan penonton (*spectator*)**, karena menonton tidak memengaruhi jalannya maupun hasil pertandingan, serta menambahkan batas ketertiban room (maksimal 1–2 spectator per tim / kesepakatan di lobby).
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/application/tournament-commands.ts`:
+   - Memperbarui teks perintah `!rule` / `!rules` / `!regulasi` pada bagian 1 (*Tim, Roster & Pergantian Pemain*) agar memberi highlight tegas pada:
+     - *Pasal 2.7* & *Pemain Gelap (`INELIGIBLE`)* serta kecocokan *Nickname in-game*: berlaku khusus bagi **pemain di lineup 5v5**, **BUKAN** penonton/spectator.
+     - Menambahkan poin khusus `👀 *Penting — Pemain Lineup vs Spectator:*` yang menjelaskan bahwa aturan kelayakan roster hanya untuk pemain lineup 5v5 karena menonton tidak memengaruhi pertandingan, serta ketentuan ketertiban room (maks 1–2 spectator per tim atau sesuai kesepakatan lobby; Host berhak meminta penonton di luar kesepakatan keluar sebelum kickoff).
+2. `src/application/omak-peak.ts`:
+   - Menyelaraskan `RULES_SUMMARY` pada `OmakPeakService` dengan penegasan Lineup 5v5 vs Spectator agar jawaban `!ai` konsisten dengan `!rule`.
+3. `flash-peak-tms/COMPETITION_RULES.md` & `flash-peak-tms/DECISIONS.md`:
+   - Memperbarui §2.6–2.8, §2.12, menambahkan §2.13, dan mencatat keputusan **D-043** tertanggal 25 Nov 2026.
+
+### Bukti Verifikasi Empiris
+1. **Pemeriksaan Tipe & Tes Lokal**:
+   - `npx tsc --noEmit` → exit code 0 (0 errors).
+   - `npx vitest run tests/integration/competition_commands.test.ts tests/unit/ai_native.test.ts` → **2/2 files, 91/91 tests passed**.
+2. **Deployment VM (`forfh`)**:
+   - `scp src/application/tournament-commands.ts` & `src/application/omak-peak.ts` ke `/home/azureuser/flashpeak-tms/src/application/` → sukses.
+   - `ssh forfh "cd /home/azureuser/flashpeak-tms && npx tsc --noEmit && pm2 restart flashpeak-bot"` → exit code 0, PID `3689328` online, log konfirmasi `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)`.
+
+---
+
+## [2026-11-25] Sesi 22: Hotfix Knockout Side-Swap Detection & Real-time Player Stats Writeback + Remediasi QF 2 (Elite 8 vs The Apostles Dominion)
+
+### Konteks Sesi & Investigasi Insiden
+- **Laporan Masalah**:
+  Pada pertandingan Quarter Final 2 (*Elite 8* vs *The Apostles Dominion*, fixture `4a806452-e884-411d-b000-124888680fe1`, series `3af0b730-1c47-4e8b-823a-b3605d9b3140`), delegasi **The Apostles Dominion** mengirim screenshot skor Game 1 (4-1) dan Game 2 (8-5) di grup WhatsApp. Namun, bot mencatat **Elite 8 menang 2-0** alih-alih The Apostles Dominion.
+- **Model AI yang Digunakan**:
+  `GROQ (qwen/qwen3.8-27b)` pada task `EXTRACT_MATCH`.
+- **Akar Masalah (Root Cause)**:
+  1. Model vision AI (`GROQ qwen/qwen3.8-27b`) mengekstrak skor dan nama pemain dari gambar **100% akurat**: sisi kiri (pemain `XII...` / The Apostles Dominion) mencetak skor `4` (Game 1) dan `8` (Game 2), sedangkan sisi kanan (pemain `E8...` / Elite 8) mencetak skor `1` dan `5`.
+  2. Sesuai `MAIN_MATCH_PROMPT` §3, ekstraktor selalu memetakan **sisi kiri layar ke `team_a`** dan **sisi kanan layar ke `team_b`**.
+  3. Di game Flash Peak, klien game selalu meletakkan **tim pengambil screenshot di sisi KIRI**. Karena delegasi The Apostles Dominion yang mengirim bukti, maka The Apostles Dominion berada di kiri.
+  4. Namun di tabel `fixtures`, jadwal resmi terdaftar sebagai `team_a = Elite 8` vs `team_b = The Apostles Dominion`.
+  5. Handler knockout `handleKoGameEvidenceMessage` di `src/index.ts` sebelumnya langsung mengambil `extraction.summary_data.team_a_score` (kiri) sebagai `teamAScore` dan `team_b_score` (kanan) sebagai `teamBScore` **tanpa mencocokkan roster** (berbeda dengan pipeline fase grup di `evidence-batch-processor.ts`), dan juga melewati penulisan `player_game_stats`.
+
+### Perubahan Konkret (Surgical Changes)
+1. `src/index.ts`:
+   - Memperbarui `handleKoGameEvidenceMessage`:
+     - Memuat roster aktif (`ACTIVE`) untuk `teamAId` dan `teamBId` dan menyertakan `expected_roster` pada konteks `matchExtractor.extract()`.
+     - Menggunakan `matchPlayerToRoster` dari `src/reports/validation.ts` untuk menghitung skor kecocokan pemain sisi kiri dan kanan terhadap `rosterA` dan `rosterB` (`normalScore` vs `invertedScore`).
+     - Jika `invertedScore > normalScore`, sistem otomatis membalik (`isSidesSwapped = true`) orientasi skor dan daftar pemain (`extractedA`, `extractedB`, `playersForA`, `playersForB`).
+     - Menambahkan fallback: jika kedua skor pencocokan roster bernilai `0` (misal OCR nama tidak terbaca), sistem mengecek `teams.delegate_id` milik pengirim foto; jika pengirim berasal dari `teamBId`, maka sisi otomatis dibalik.
+   - Menambahkan method `recordKoPlayerGameStats()` di `FlashPeakTMS` yang membuat `report_sessions` (`DRAFT_READY`) + `report_versions` (`LOCKED`) dan menulis statistik individu pemain ke `player_game_stats` setelah hasil game knockout tercatat, agar klasemen Top Scorer / Top Assist (`!awards`) terbarui real-time.
+2. `tests/integration/ko_sideswap.test.ts`:
+   - Menambahkan 2 pengujian integrasi end-to-end (`handleInboundMessage` dengan `!kogame`):
+     - Verifikasi side-swap berbasis roster (screenshot kiri milik Team B `XIIㆍﾑoryst⚚` skor 4, kanan milik Team A `E8ㆍTikaGemoy` skor 1 $\rightarrow$ tercatat `Elite 8 1 — 4 The Apostles`, series `0 — 1`, dan `player_game_stats` tercatat).
+     - Verifikasi fallback orientasi berbasis identitas delegasi Team B saat daftar pemain hasil ekstraksi kosong (`Elite 8 5 — 8 The Apostles`).
+
+### Remediasi Database VM (`forfh`)
+- Memperbaiki fixture QF 2 (`4a806452-e884-411d-b000-124888680fe1`) & series (`3af0b730-1c47-4e8b-823a-b3605d9b3140`):
+  - Game 1 (`190db915-62df-4335-a324-e70a970c6003`): Elite 8 `1 — 4` The Apostles Dominion.
+  - Game 2 (`0ea84fd5-1fa8-419b-9238-6a6e40e0e0a1`): Elite 8 `5 — 8` The Apostles Dominion.
+  - Series: `team_a_game_wins = 0`, `team_b_game_wins = 2`, `status = 'COMPLETED'`, `winner_team_id = '4a69e5ba-9799-42ea-86a2-7bf1d374ea7f'` (The Apostles Dominion).
+  - Menyisipkan 16 baris `player_game_stats` (termasuk Aoryst +10 gol $\rightarrow$ 27 gol, Simon +4 assist $\rightarrow$ 17 assist, TikaGemoy +6 gol $\rightarrow$ 8 gol) serta mencatat audit event `KO_SERIES_CORRECTED`.
+
+### Bukti Verifikasi Empiris
+1. **Pemeriksaan Tipe TypeScript (Lokal & VM)**:
+   - `npx tsc --noEmit` (lokal & VM) $\rightarrow$ exit code 0 (0 errors).
+   - `npm run build` (lokal) $\rightarrow$ exit code 0.
+2. **Pengujian Integrasi & Regresi**:
+   - `npx vitest run tests/integration/ko_sideswap.test.ts` $\rightarrow$ **2/2 passed**.
+   - `npx vitest run tests/integration/fix2_audit_regression.test.ts` $\rightarrow$ **8/8 passed**.
+   - `npx vitest run` (sebelum penambahan `ko_sideswap.test.ts`) $\rightarrow$ 28/29 files (449/452 tests) passed; 1 kegagalan (`test/whatsapp/gateway-connection.test.ts`) merupakan error `EACCES` listen Unix socket path `.sock` yang spesifik di lingkungan Windows.
+3. **Deployment VM (`forfh`)**:
+   - `scp src/index.ts forfh:/home/azureuser/flashpeak-tms/src/index.ts` $\rightarrow$ sukses.
+   - `ssh forfh "cd /home/azureuser/flashpeak-tms && npx tsc --noEmit && pm2 restart flashpeak-bot"` $\rightarrow$ PID `3687319` online.
+   - Log PM2 memverifikasi `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)` dan `[WA] Bot siap memproses turnamen.`
+
+---
+
 ## [2026-11-24] Sesi: Hotfix !approve Authorization & Fallback Scoping, Message Key Inbound Binding & WA Log Diagnostics
 
 ### Konteks Sesi & Investigasi Insiden
@@ -3499,3 +3702,127 @@ emotron-super-vl-120b.
 ### 3. Verifikasi Empiris
 - `npx tsc --noEmit`: Exit code 0 (bersih).
 - `npx vitest run tests/`: **26 test files PASS, 426/426 tests PASS**.
+
+
+---
+
+## 2026-11-25 — Session 20: MiniMax Key Audit, Raikage Roster Investigation, & Cron Verification
+### 1. Tujuan
+- Melakukan audit kunci API MiniMax di lingkungan VM `forfh` (`kontrakpaham/.env`), mengecek keaktifan kunci dan katalog model MiniMax.
+- Menginvestigasi pesan WhatsApp dan keluhan tim Raikage mengenai roster 7 pemain serta mekanisme penambahan pemain ke-8.
+- Memverifikasi keberadaan dan kesiapan one-shot cron untuk mengembalikan turnamen ke `ACTIVE` pada 20:00 WIB (13:00 UTC).
+- Mematikan background task IDE yang menggantung.
+
+### 2. Perubahan & Temuan Konkret
+- **MiniMax Key Audit**:
+  - Ditemukan 1 kunci `MINIMAX_API_KEY` di `/home/azureuser/kontrakpaham/.env`.
+  - Berdasarkan audit riwayat, kunci tersebut merupakan token relay/proxy pihak ketiga (`api.iamhc.cn` / `api.hcnsec.cn`).
+  - Uji HTTP langsung: `api.hcnsec.cn` mengembalikan `HTTP 401: Invalid token` dan endpoint resmi MiniMax global mengembalikan `1004 login fail`. Status: Kunci sudah nonaktif/expired, penambahan adapter MiniMax diskip sesuai arahan user.
+- **Raikage Roster Investigation**:
+  - Di database `local.sqlite`, tim Raikage memiliki 7 pemain aktif (Slot 1–5 Inti, Slot 6–7 Cadangan, Slot 8 kosong).
+  - Delegasi Raikage (`224425463005391@lid`) mencoba menggunakan `!roster raikage=...` yang ditolak karena roster terkunci setelah Round 1 grup.
+  - Diverifikasi bahwa fitur `!ganti` di fase Knockout (`ko_transfer_open: true`) sudah mendukung pengisian slot kosong (Slot 8) secara langsung.
+- **Cron Verification**:
+  - Ditemukan entri crontab di VM: `0 13 25 11 * cd /home/azureuser/flashpeak-tms && npx tsx scripts/resume_tournament_2000.ts >> /home/azureuser/flashpeak-tms/logs/resume_2000.log 2>&1`.
+  - Terverifikasi skrip siap dieksekusi tepat pada 20:00:00 WIB (13:00 UTC) untuk me-resume `Gojiha Cup S1` dari `DRAW_READY` ke `ACTIVE`.
+- **Background Task Management**:
+  - Background task `task-948` (perintah pemeriksaan journal mode sqlite3 yang menggantung di background) dibatalkan dan dimatikan secara bersih.
+
+### 3. Verifikasi Empiris
+- `crontab -l`: Memastikan jadwal cron `0 13 25 11 *` terdaftar aktif.
+- `lsof local.sqlite`: Database dibuka hanya oleh proses bot PM2 (PID 3626158).
+- `manage_task (list & kill)`: `task-948` berhasil di-kill, antrean background task bersih (0 running).
+
+
+---
+
+## 2026-11-25 — Session 21: QF Series Correction (Kazekage vs Helix Moonbreaker 2-1) & Knockout Player Stats
+### 1. Tujuan
+- Memperbaiki hasil series QF Kazekage vs Helix Moonbreaker di database dari 2-0 menjadi 2-1 sesuai kenyataan (Game 1: 2-5 Helix, Game 2: 7-4 Kazekage, Game 3: 7-4 Kazekage).
+- Menginput seluruh statistik individu pemain (gol, assist, operan, rating, defense) dari ketiga game tersebut ke tabel `player_game_stats` agar masuk ke leaderboard `!awards` (Top Scorer & Top Assist).
+- Menghubungkan metadata via `report_sessions` dan `report_versions` berstatus `LOCKED` agar integritas relasional database terjaga.
+
+### 2. Perubahan & Eksekusi Konkret
+- **Database `local.sqlite` on VM**:
+  - `games`: Game 1 diupdate menjadi 2-5 (Winner: Helix), Game 2 diupdate menjadi 7-4 (Winner: Kazekage), Game 3 ditambahkan dengan skor 7-4 (Winner: Kazekage).
+  - `series`: Updated `team_a_game_wins = 2`, `team_b_game_wins = 1`, `status = 'COMPLETED'`, `winner_team_id = Kazekage`.
+  - `ko_game_evidence`: Ketiga bukti screenshot (ID `f93d632f`, `5179c355`, `d0a8c1ee`) diset status `APPLIED` untuk Game 1, 2, dan 3.
+  - `report_sessions` & `report_versions`: Dibuat 3 sesi dan draf resmi untuk masing-masing game.
+  - `player_game_stats`: Berhasil menginput 24 baris data statistik pemain (8 pemain x 3 game).
+  - `audit_events`: Mencatat mutasi koreksi `KO_SERIES_CORRECTED`.
+
+### 3. Verifikasi Empiris
+- Query `series`: `team_a_game_wins = 2, team_b_game_wins = 1, status = 'COMPLETED', winner = Kazekage`.
+- Query `games`: 3 game berstatus `COMPLETED` (Game 1: 2-5, Game 2: 7-4, Game 3: 7-4).
+- Query `player_game_stats`:
+  - `HX • Damengg~`: Bertambah 6 gol $\rightarrow$ Total 13 gol (Rank 2 Golden Boot).
+  - `HX • Zeref`: Bertambah 7 gol & 4 assist $\rightarrow$ Total 12 gol (Rank 3 Golden Boot) & 11 assist (Rank 2 Top Assist).
+  - `KGE.KYRO`: Bertambah 10 gol $\rightarrow$ Total 11 gol (Rank 4 Golden Boot).
+  - `KGE.Floww`: Bertambah 6 gol & 4 assist $\rightarrow$ Total 10 gol (Rank 5 Golden Boot) & 10 assist (Rank 3 Top Assist).
+
+
+
+---
+
+## 2026-11-26 — Session 22: Semifinal Data Repair (ATL vs KGE 2-1 & Apostles vs Zodiac 1-2 + Draw Game)
+### 1. Tujuan
+- Menginvestigasi sengketa laporan match Semifinal di log WA VM (`20:30 WIB` ke atas) secara menyeluruh beserta seluruh bukti media (`flashpeak-media-data/private/match_evidence/`).
+- Memperbaiki database `/home/azureuser/flashpeak-tms/local.sqlite` agar kedua series Semifinal dan seluruh statistik pemain (`player_game_stats`, `ko_game_evidence`, `series`, `games`, `audit_events`) mencerminkan seluruh game yang benar-benar dimainkan, termasuk aturan Panitia (Arya): jika BO3 imbang `1W-1L-1D`, tambah 1 game penentu.
+
+### 2. Perubahan & Eksekusi Konkret
+- **Backup DB**: Membuat backup konsisten sebelum mutasi di `/home/azureuser/flashpeak-tms/local.sqlite.bak-2026-11-26-sf-fix`.
+- **Semifinal 1 — Astra Lumina Nova vs Kazekage (`24b7f6bc`, series `b79ff5b0`)**:
+  - Memindahkan game & bukti `ATL 1 - 2 KGE` (`f8766c2a`, asset `3502e27a`, yang sebelumnya nyasar masuk ke `fe808008`) menjadi **Game 2** di `24b7f6bc`, dan menggeser `ATL 7 - 6 KGE` (`f67bdce8`) ke **Game 3**.
+  - Menginput 8 baris `player_game_stats` untuk Game 2 (`1-2`), termasuk `KGE.DINGZ` +2 gol, `ATL_Preman✧` +1 gol, dll.
+  - Memperbarui `series b79ff5b0` menjadi `2 - 1` (`COMPLETED`, pemenang `Astra Lumina Nova`).
+- **Semifinal 2 — The Apostles Dominion vs Team Zodiac (`fe808008`, series `d8011e6d`)**:
+  - Menggantikan Game 1 palsu (foto nyasar `ATL 1-2 KGE`) dan memperbaiki 4 game sesungguhnya:
+    - Game 1 (`6d298008` / `cca32bc1`): **6 - 0** (`The Apostles Dominion` menang; +8 `player_game_stats`).
+    - Game 2 (`8603ee0b`): **5 - 6** (`Team Zodiac` menang; +8 `player_game_stats`).
+    - Game 3 (`aea1cfc7`): **3 - 3** (`is_draw = 1`, `COMPLETED`; +8 `player_game_stats`).
+    - Game 4 Penentu (`6aa35d19`): **4 - 7** (`Team Zodiac` menang; memperbarui `game_number = 4`, memperbaiki rating skala 100->10, dan menginput ulang seluruh 8 `player_game_stats` termasuk 4 pemain Team Zodiac yang sebelumnya gagal match karena OCR salah baca prefix `TZ・` menjadi `XIIㆍ`).
+  - Memperbarui `series d8011e6d` menjadi `1 - 2` (`COMPLETED`, pemenang `Team Zodiac`).
+- **Audit Events**: Menambahkan 2 baris `SEMIFINAL_DATA_REPAIR` pada tabel `audit_events`.
+- **Bug Kode Teridentifikasi (REPORTED / PENDING_APPROVAL — belum diubah karena scope hanya perbaikan DB)**:
+  1. `src/index.ts:1054-1071`: Fallback pencarian fixture KO mengambil fixture KO lain yang tersisa bila tim pengirim sudah `COMPLETED`, tanpa memvalidasi kecocokan roster hasil ekstraksi terhadap tim di fixture tersebut.
+  2. `src/index.ts:395`: Ketika seluruh fixture KO `COMPLETED`, foto susulan tidak masuk `handleKoGameEvidenceMessage` dan jatuh ke pipeline grup.
+  3. OCR Groq pada game `4-7` membaca prefix `TZ・` sebagai `XIIㆍ` dan rating skala `0-100` alih-alih `0.0-10.0`.
+
+### 3. Verifikasi Empiris
+- `PRAGMA integrity_check`: `ok`.
+- `SELECT COUNT(*) FROM player_game_stats WHERE rating > 10`: `0`.
+- Query `series` & `games` Semifinal:
+  - `24b7f6bc` (`Astra Lumina Nova vs Kazekage`): `2 - 1` (`5-4`, `1-2`, `7-6`), 8 stat baris per game.
+  - `fe808008` (`The Apostles Dominion vs Team Zodiac`): `1 - 2` (`6-0`, `5-6`, `3-3 draw`, `4-7`), 8 stat baris per game.
+- `npx tsx` menjalankan `calculateTournamentAwards` + `formatAwardsAnnouncement`:
+  - `XIIㆍﾑoryst⚚`: **44 Gol** (`27 + 5 + 5 + 3 + 4 = 44`) — Rank 1 Golden Boot.
+  - `TZ・ϻartysυpp`: **26 Gol** (`11 + 0 + 6 + 2 + 7 = 26`).
+  - `KGE.DINGZ`: **16 Gol** (`14 + 2 = 16`).
+
+
+---
+
+## 2026-11-26 — Session 23: Systematic KO Routing Guards, Roster Mismatch Check, Rating Normalization & Tier 5 Matching
+### 1. Tujuan
+- Memperbaiki secara sistematis celah kode yang menyebabkan insiden Semifinal malam ini:
+  1. Screenshot susulan tim yang series-nya sudah `COMPLETED` nyasar ke series aktif tim lain (cross-fixture hijacking).
+  2. Foto susulan setelah seluruh fixture ronde KO selesai jatuh ke jalur grup tanpa respons jelas.
+  3. Rating skala `0–100` dari OCR masuk mentah ke `player_game_stats` pada jalur KO (`recordKoPlayerGameStats`).
+  4. Kegagalan pencocokan pemain ketika OCR tertukar membaca prefix clan tim lawan (`XIIㆍMartysupp` vs `TZ・ϻartysυpp`) atau variasi Unicode confusable.
+
+### 2. Perubahan Konkret
+- **`src/reports/validation.ts`**:
+  - Mengekstrak helper bersama `normalizePlayerRating` (mengonversi rating `> 10` dan `<= 100` ke skala `0.0–10.0`, dipakai ulang oleh `validateMatchReport` Team A & Team B serta `src/index.ts`).
+  - Menambahkan Tier 5 fallback pada `matchPlayerToRoster` (`toConfusableKey` + `stripLeadingClanPrefix`) dengan ambang batas ketat `>= 0.80` dan margin `>= 0.15` agar variasi Unicode lookalike (`ø/υ/ϻ/ҡ/տ/ł`) dan salah baca prefix clan tetap cocok tanpa mengorbankan penolakan nama ambigu.
+- **`src/index.ts`**:
+  - Memperluas gate `shouldRouteToKo` agar memeriksa keberadaan fixture KO (`has_any_ko`) ketika fase grup sudah selesai, sehingga foto setelah ronde KO selesai tetap ditangani oleh pipeline KO.
+  - Mengunci resolusi fixture di `handleKoGameEvidenceMessage`: delegasi non-panitia hanya boleh mengirim ke fixture milik timnya sendiri (baik via `!kogame <fixture_id>` maupun implisit); jika timnya sudah tidak punya fixture KO aktif, sistem memeriksa `MAIN_MATCH_SUMMARY` lalu menjawab dengan status series tim tersebut yang sudah selesai (`!kores` hint) tanpa pernah mengambil alih fixture tim lain.
+  - Menambahkan guard pasca-ekstraksi di `handleKoGameEvidenceMessage`: jika kedua roster memiliki pemain terdaftar dan `>= 2` pemain terekstrak dari foto namun `0` pemain cocok ke kedua tim (`normalScore === 0 && invertedScore === 0`), foto ditolak sebelum `applyKoGameEvidence`.
+  - Menggunakan `normalizePlayerRating` di `recordKoPlayerGameStats`.
+- **`tests/integration/ko_routing_guards.test.ts` & `tests/unit/reports.test.ts`**:
+  - Menambahkan 5 integration test (blokir cross-fixture hijacking, blokir explicit ID tim lain, blokir mismatch roster pasca-ekstraksi, routing pasca-ronde selesai vs foto non-match, dan normalisasi rating `0–100` + matching prefix OCR tertukar) serta 2 unit test pada `reports.test.ts`.
+
+### 3. Verifikasi Empiris
+- `npx tsc --noEmit`: Exit code 0 (bersih).
+- `npm run build`: Exit code 0 (bersih).
+- `npx vitest run tests/`: **28 test files PASS, 435/435 tests PASS** (termasuk `tests/integration/ko_routing_guards.test.ts`, `tests/integration/ko_sideswap.test.ts`, `tests/integration/fix2_audit_regression.test.ts`, dan `tests/unit/reports.test.ts`).

@@ -93,12 +93,15 @@ import {
   formatAwardsAnnouncement,
 } from './whatsapp/formatters.js';
 import { recalculateAndPersistGroupStandings } from './competition/standings.js';
+import { matchPlayerToRoster, normalizePlayerRating } from './reports/validation.js';
 import type {
   UUID,
   ApproverType,
   ApprovalDecision,
   ReportVersion,
   ReportSession,
+  Player,
+  ExtractedPlayerStats,
 } from './shared/types/index.js';
 
 export interface FlashPeakAppConfig {
@@ -378,8 +381,7 @@ export class FlashPeakApp {
             JOIN tournaments t ON f.tournament_id = t.id
             WHERE t.status NOT IN ('COMPLETED', 'ARCHIVED')
               AND f.stage = 'KNOCKOUT'
-              AND f.status NOT IN ('COMPLETED', 'WALKOVER', 'CANCELLED')
-          ) AS has_active_ko,
+          ) AS has_any_ko,
           EXISTS(
             SELECT 1 FROM fixtures f
             JOIN tournaments t ON f.tournament_id = t.id
@@ -389,7 +391,7 @@ export class FlashPeakApp {
           ) AS has_active_group
       `);
       const sr = koStageRes.rows[0] as unknown as Record<string, unknown> | undefined;
-      if (Number(sr?.has_active_ko ?? 0) > 0 && Number(sr?.has_active_group ?? 0) === 0) {
+      if (Number(sr?.has_any_ko ?? 0) > 0 && Number(sr?.has_active_group ?? 0) === 0) {
         shouldRouteToKo = true;
       }
     }
@@ -1021,10 +1023,11 @@ export class FlashPeakApp {
     // and an ambiguous implicit resolution is rejected with a chooser list instead of
     // silently defaulting to the oldest series.
     let fixtureId = '';
+    const teamId = resolved.status === 'VERIFIED' && resolved.team ? resolved.team.id : null;
     const explicitArg = (explicitFixtureId || '').trim();
     if (explicitArg) {
       const validRes = await this.db.execute({
-        sql: `SELECT id FROM fixtures WHERE id = ? LIMIT 1`,
+        sql: `SELECT id, team_a_id, team_b_id FROM fixtures WHERE id = ? LIMIT 1`,
         args: [explicitArg],
       });
       if (validRes.rows.length === 0) {
@@ -1033,10 +1036,18 @@ export class FlashPeakApp {
           replyText: `⚠️ ID fixture *"${explicitArg}"* tidak ditemukan. Kirim foto dengan caption *!kogame <fixture_id>* menggunakan ID fixture yang benar (lihat *!schedule*).`,
         };
       }
+      const fRow = validRes.rows[0] as unknown as Record<string, unknown>;
+      const fTeamA = String(fRow.team_a_id ?? fRow[1]);
+      const fTeamB = String(fRow.team_b_id ?? fRow[2]);
+      if (!isOrg && teamId && teamId !== fTeamA && teamId !== fTeamB) {
+        return {
+          handled: true,
+          replyText: `⚠️ Tim Anda bukan peserta pada fixture *"${explicitArg}"*. Anda hanya dapat mengirim bukti untuk pertandingan tim Anda sendiri.`,
+        };
+      }
       fixtureId = explicitArg;
     }
     if (!fixtureId) {
-      const teamId = resolved.status === 'VERIFIED' && resolved.team ? resolved.team.id : null;
       if (teamId) {
         const fRes = await this.db.execute({
           sql: `SELECT f.id FROM fixtures f
@@ -1047,6 +1058,50 @@ export class FlashPeakApp {
         });
         if (fRes.rows.length > 0) fixtureId = String(fRes.rows[0].id);
       }
+    }
+    if (!fixtureId && !isOrg && teamId) {
+      // A verified delegate whose own team has no active KO fixture must NEVER
+      // fall back to another team's active KO fixture (prevents cross-match hijacking).
+      if (autoRouted && this.classifier) {
+        const preCheck = await this.classifier.classify(
+          { mime_type: 'image/jpeg', base64: mediaBuffer.toString('base64') },
+          { caption }
+        );
+        if (preCheck.screen_type !== 'MAIN_MATCH_SUMMARY') {
+          return { handled: false };
+        }
+      }
+
+      const lastKoRes = await this.db.execute({
+        sql: `SELECT f.round_code, f.status, ta.team_name AS team_a_name, tb.team_name AS team_b_name,
+                     s.team_a_game_wins, s.team_b_game_wins
+              FROM fixtures f
+              JOIN tournaments t ON f.tournament_id = t.id
+              LEFT JOIN series s ON s.fixture_id = f.id
+              JOIN teams ta ON f.team_a_id = ta.id
+              JOIN teams tb ON f.team_b_id = tb.id
+              WHERE f.stage = 'KNOCKOUT' AND t.status NOT IN ('COMPLETED', 'ARCHIVED')
+                AND (f.team_a_id = ? OR f.team_b_id = ?)
+              ORDER BY f.created_at DESC LIMIT 1`,
+        args: [teamId, teamId],
+      });
+      if (lastKoRes.rows.length > 0) {
+        const r = lastKoRes.rows[0] as unknown as Record<string, unknown>;
+        const teamAName = String(r.team_a_name ?? '');
+        const teamBName = String(r.team_b_name ?? '');
+        const roundCode = String(r.round_code ?? 'KNOCKOUT');
+        const status = String(r.status ?? 'COMPLETED');
+        const winsA = Number(r.team_a_game_wins ?? 0);
+        const winsB = Number(r.team_b_game_wins ?? 0);
+        return {
+          handled: true,
+          replyText: `ℹ️ Series knockout tim Anda (*${teamAName}* vs *${teamBName}*, ${roundCode}) sudah berstatus *${status}* (${winsA}–${winsB}). Foto ini tidak dicatat otomatis; jika ada game yang tertinggal atau perlu koreksi, hubungi Panitia via *!kores*.`,
+        };
+      }
+      return {
+        handled: true,
+        replyText: '⚠️ Tim Anda tidak memiliki pertandingan knockout aktif saat ini.',
+      };
     }
     if (!fixtureId) {
       // FIX2-KO-004 (audit temuan 3.2 High): never default silently to the oldest
@@ -1084,6 +1139,15 @@ export class FlashPeakApp {
     }
 
     if (!fixtureId) {
+      if (autoRouted && this.classifier) {
+        const preCheck = await this.classifier.classify(
+          { mime_type: 'image/jpeg', base64: mediaBuffer.toString('base64') },
+          { caption }
+        );
+        if (preCheck.screen_type !== 'MAIN_MATCH_SUMMARY') {
+          return { handled: false };
+        }
+      }
       return {
         handled: true,
         replyText: '⚠️ Tidak ada pertandingan knockout aktif yang menunggu hasil. Pastikan fase knockout sudah dimulai (*!startknockout*) dan sertakan ID fixture di caption bila ada beberapa pertandingan aktif: `!kogame <fixture_id>`.',
@@ -1139,6 +1203,37 @@ export class FlashPeakApp {
       }
     }
 
+    // Query active registered players for both teams
+    const playersRes = await this.db.execute({
+      sql: `SELECT id, tournament_id, team_id, nickname_raw, nickname_nfc, nickname_search_key, position, roster_slot, roster_type, status
+            FROM players
+            WHERE team_id IN (?, ?) AND status = 'ACTIVE'`,
+      args: [ctxInfo.teamAId, ctxInfo.teamBId],
+    });
+
+    const expectedRoster: Array<{ nickname: string; team_id?: string }> = playersRes.rows.map((row: any) => ({
+      nickname: String(row.nickname_raw ?? row[3]),
+      team_id: String(row.team_id ?? row[2]),
+    }));
+
+    const registeredPlayers: Player[] = playersRes.rows.map((row: any) => ({
+      id: String(row.id ?? row[0]),
+      tournament_id: String(row.tournament_id ?? row[1]),
+      team_id: String(row.team_id ?? row[2]),
+      nickname_raw: String(row.nickname_raw ?? row[3]),
+      nickname_nfc: String(row.nickname_nfc ?? row[4]),
+      nickname_search_key: String(row.nickname_search_key ?? row[5]),
+      position: String(row.position ?? row[6]) as Player['position'],
+      roster_slot: Number(row.roster_slot ?? row[7]),
+      roster_type: String(row.roster_type ?? row[8]) as Player['roster_type'],
+      status: String(row.status ?? row[9]) as Player['status'],
+      created_at: '',
+      updated_at: '',
+    }));
+
+    const rosterA = registeredPlayers.filter((p) => p.team_id === ctxInfo.teamAId);
+    const rosterB = registeredPlayers.filter((p) => p.team_id === ctxInfo.teamBId);
+
     // Extract the score with trusted context
     const extraction = await this.matchExtractor.extract(
       { mime_type: 'image/jpeg', base64 },
@@ -1147,25 +1242,74 @@ export class FlashPeakApp {
           fixture_id: fixtureId,
           team_a_name: ctxInfo.teamAName,
           team_b_name: ctxInfo.teamBName,
-          expected_roster: [],
+          expected_roster: expectedRoster,
         },
         correlation_id: `ko-evidence-${fixtureId}`,
       }
     );
 
-    // The extractor reports scores from the perspective of the screenshot's
-    // left/right team. Orient to fixture team_a/team_b using the same
-    // convention as the BO1 processor: team_a_name match on the left side.
-    // The extraction schema provides team_a_score/team_b_score already mapped
-    // to the trusted_context team order.
-    const extractedA = extraction.summary_data.team_a_score;
-    const extractedB = extraction.summary_data.team_b_score;
-    if (extractedA === null || extractedA === undefined || extractedB === null || extractedB === undefined) {
+    const rawLeftScore = extraction.summary_data.team_a_score;
+    const rawRightScore = extraction.summary_data.team_b_score;
+    if (rawLeftScore === null || rawLeftScore === undefined || rawRightScore === null || rawRightScore === undefined) {
       return {
         handled: true,
         replyText: '⚠️ Skor tidak terbaca dari screenshot. Kirim ulang screenshot skor akhir yang jelas, atau minta Panitia mencatat via *!kores <fixture_id> <game_no> <skor_a>-<skor_b>*.',
       };
     }
+
+    // Determine side orientation (Left is Team A vs Left is Team B).
+    // In Flash Peak, the uploader's team is always on the left side of the screen.
+    const leftExtractedPlayers = extraction.summary_data.team_a_players || [];
+    const rightExtractedPlayers = extraction.summary_data.team_b_players || [];
+
+    let leftMatchesA = 0;
+    let leftMatchesB = 0;
+    for (const p of leftExtractedPlayers) {
+      if (matchPlayerToRoster(p, rosterA)) leftMatchesA++;
+      if (matchPlayerToRoster(p, rosterB)) leftMatchesB++;
+    }
+
+    let rightMatchesA = 0;
+    let rightMatchesB = 0;
+    for (const p of rightExtractedPlayers) {
+      if (matchPlayerToRoster(p, rosterA)) rightMatchesA++;
+      if (matchPlayerToRoster(p, rosterB)) rightMatchesB++;
+    }
+
+    const normalScore = leftMatchesA + rightMatchesB;
+    const invertedScore = leftMatchesB + rightMatchesA;
+
+    const totalExtractedPlayers = leftExtractedPlayers.length + rightExtractedPlayers.length;
+    if (
+      rosterA.length > 0 &&
+      rosterB.length > 0 &&
+      totalExtractedPlayers >= 2 &&
+      normalScore === 0 &&
+      invertedScore === 0
+    ) {
+      return {
+        handled: true,
+        replyText: `⚠️ Pemain pada screenshot tidak cocok dengan roster *${ctxInfo.teamAName}* maupun *${ctxInfo.teamBName}*. Pastikan screenshot berasal dari pertandingan yang benar (atau hubungi Panitia via *!kores*).`,
+      };
+    }
+
+    let isSidesSwapped = false;
+    if (invertedScore > normalScore) {
+      isSidesSwapped = true;
+    } else if (normalScore === 0 && invertedScore === 0 && delegateId) {
+      const teamRes = await this.db.execute({
+        sql: `SELECT id FROM teams WHERE delegate_id = ? LIMIT 1`,
+        args: [delegateId],
+      });
+      if (teamRes.rows.length > 0 && String((teamRes.rows[0] as any).id ?? (teamRes.rows[0] as any)[0]) === ctxInfo.teamBId) {
+        isSidesSwapped = true;
+      }
+    }
+
+    const extractedA = isSidesSwapped ? rawRightScore : rawLeftScore;
+    const extractedB = isSidesSwapped ? rawLeftScore : rawRightScore;
+    const playersForA = isSidesSwapped ? rightExtractedPlayers : leftExtractedPlayers;
+    const playersForB = isSidesSwapped ? leftExtractedPlayers : rightExtractedPlayers;
 
     try {
       const outcome = await applyKoGameEvidence(this.db, {
@@ -1179,8 +1323,30 @@ export class FlashPeakApp {
         extractionJson: JSON.stringify({
           raw: extraction.raw_extraction,
           summary: extraction.summary_data,
+          isSidesSwapped,
         }),
       });
+
+      // Record player stats for this knockout game so awards are cumulative in real-time
+      if (
+        outcome.seriesOutcome?.game?.id &&
+        (outcome.status === 'GAME_APPLIED' || outcome.status === 'SERIES_COMPLETE')
+      ) {
+        try {
+          await this.recordKoPlayerGameStats(
+            fixtureId,
+            outcome.seriesOutcome.game.id,
+            ctxInfo.teamAId,
+            ctxInfo.teamBId,
+            rosterA,
+            rosterB,
+            playersForA,
+            playersForB
+          );
+        } catch (statsErr) {
+          console.error('[KO-Evidence] Failed to record player stats for KO game:', statsErr);
+        }
+      }
 
       // Grand Final completed via the delegate photo pipeline -> tournament over.
       if (
@@ -1279,6 +1445,71 @@ export class FlashPeakApp {
         replyText: `⚠️ Gagal memproses bukti game knockout: ${err.message || String(err)}`,
       };
     }
+  }
+
+  /**
+   * Persists individual player game stats for a knockout match so cumulative
+   * awards (!awards) reflect knockout goals, assists, ratings, etc. in real-time.
+   */
+  private async recordKoPlayerGameStats(
+    fixtureId: string,
+    gameId: string,
+    teamAId: string,
+    teamBId: string,
+    rosterA: Player[],
+    rosterB: Player[],
+    playersForA: ExtractedPlayerStats[],
+    playersForB: ExtractedPlayerStats[]
+  ): Promise<void> {
+    const sessionId = randomUUID();
+    const versionId = randomUUID();
+    const now = new Date().toISOString();
+
+    await this.db.execute({
+      sql: `INSERT INTO report_sessions (
+              id, fixture_id, game_id, submitting_team_id, status,
+              last_message_at, debounce_due_at, session_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'DRAFT_READY', ?, ?, ?, ?, ?)`,
+      args: [sessionId, fixtureId, gameId, teamAId, now, now, now, now, now],
+    });
+
+    await this.db.execute({
+      sql: `INSERT INTO report_versions (
+              id, report_session_id, fixture_id, version_number, status,
+              extraction_json, validated_data_json, provenance, created_by, created_at
+            ) VALUES (?, ?, ?, 1, 'LOCKED', '{}', '{}', 'AI', 'ko_pipeline', ?)`,
+      args: [versionId, sessionId, fixtureId, now],
+    });
+
+    const writeStats = async (players: ExtractedPlayerStats[], roster: Player[], teamId: string) => {
+      for (const p of players) {
+        const matched = matchPlayerToRoster(p, roster);
+        if (!matched) continue;
+        const statId = randomUUID();
+        await this.db.execute({
+          sql: `INSERT OR REPLACE INTO player_game_stats (
+                  id, game_id, player_id, team_id, rating, goals, assists, passes, defense_raw,
+                  source_report_version_id, is_award_eligible, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          args: [
+            statId,
+            gameId,
+            matched.id,
+            teamId,
+            p.rating !== undefined ? normalizePlayerRating(p.rating).value : null,
+            p.goals ?? 0,
+            p.assists ?? 0,
+            p.passes ?? 0,
+            p.defense ?? 0,
+            versionId,
+            now,
+          ],
+        });
+      }
+    };
+
+    await writeStats(playersForA, rosterA, teamAId);
+    await writeStats(playersForB, rosterB, teamBId);
   }
 
   /**

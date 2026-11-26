@@ -85,11 +85,73 @@ export function computeSimilarity(str1: string, str2: string): number {
 }
 
 /**
+ * Normalizes a player rating onto the canonical 0.0-10.0 scale.
+ * Converts 0-100 OCR readings (e.g. 98 -> 9.8, 100 -> 10.0) and rejects negatives / >100.
+ */
+export function normalizePlayerRating(
+  rating: number | null | undefined
+): { value: number | null; isValid: boolean } {
+  if (rating === null || rating === undefined) {
+    return { value: null, isValid: true };
+  }
+  if (typeof rating !== 'number' || Number.isNaN(rating)) {
+    return { value: null, isValid: false };
+  }
+  let normalized = rating;
+  if (normalized > 10.0 && normalized <= 100.0) {
+    normalized = Number((normalized / 10).toFixed(1));
+  }
+  if (normalized < 0 || normalized > 10.0 || Number.isNaN(normalized)) {
+    return { value: null, isValid: false };
+  }
+  return { value: normalized, isValid: true };
+}
+
+/**
+ * Maps common stylized/Unicode lookalikes used in Flash Peak nicknames
+ * (e.g. ø->o, υ->u, ϻ->m, ҡ->k, տ->s, ł->l) to ASCII before stripping.
+ * Used only in Tier 5 matching so `cleanSearchKey` remains backward-compatible.
+ */
+function toConfusableKey(nick: string): string {
+  const map: Record<string, string> = {
+    'ø': 'o', 'Ø': 'o',
+    'υ': 'u', 'Υ': 'u',
+    'ϻ': 'm', 'Ϻ': 'm',
+    'ҡ': 'k', 'Ҡ': 'k', 'қ': 'k', 'Қ': 'k', 'к': 'k', 'К': 'k',
+    'տ': 's', 'Տ': 's',
+    'ł': 'l', 'Ł': 'l', 'λ': 'l', 'Λ': 'l',
+    'Ẋ': 'x', 'ẋ': 'x', 'х': 'x', 'Х': 'x',
+    'α': 'a', 'Α': 'a', '∆': 'a',
+  };
+  let mapped = '';
+  for (const ch of nick.normalize('NFKD')) {
+    mapped += map[ch] ?? ch;
+  }
+  return mapped.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Strips a leading short clan tag + separator (e.g. "TZ・", "XIIㆍ", "ATL_")
+ * when both the tag (<= 4 alnum chars) and remaining core (>= 4 alnum chars) are clear.
+ */
+function stripLeadingClanPrefix(nick: string): string {
+  const m = nick.trim().match(/^([^\s・ㆍ•·._-]{1,6})\s*[・ㆍ•·._-]\s*(.+)$/);
+  if (!m) return '';
+  const tagAlnum = toConfusableKey(m[1]!);
+  const coreAlnum = toConfusableKey(m[2]!);
+  if (tagAlnum.length >= 1 && tagAlnum.length <= 4 && coreAlnum.length >= 4) {
+    return coreAlnum;
+  }
+  return '';
+}
+
+/**
  * Tiered Player-to-Roster Matcher (Zero False Positives & OCR Resilient)
  * - Tier 1: Exact raw string match.
  * - Tier 2: NFC normalized match.
  * - Tier 3: Clean alphanumeric key match (ignores clan tags, bullets, decorative symbols, and spacing).
  * - Tier 4: Safe fuzzy match (threshold >= 0.75 + safety gap >= 0.15 over runner-up teammate).
+ * - Tier 5: Confusable-aware & clan-prefix-tolerant safe fuzzy match (threshold >= 0.80 + gap >= 0.15).
  */
 export function matchPlayerToRoster(
   raw: RawPlayerMatchStat,
@@ -142,6 +204,36 @@ export function matchPlayerToRoster(
 
     if (best.score >= 0.75 && gap >= 0.15) {
       return best.player;
+    }
+  }
+
+  // 5. Confusable-aware & clan-prefix-tolerant fallback (e.g. OCR reading "TZ・ϻartysυpp" as "XIIㆍMartysupp")
+  // Strictly requires >= 0.80 similarity and >= 0.15 safety margin over runner-up.
+  if (roster.length > 0) {
+    const rawCore = stripLeadingClanPrefix(raw.nickname_raw);
+    const rawConfusable = toConfusableKey(raw.nickname_raw);
+    if (rawCore.length >= 4 || rawConfusable.length >= 4) {
+      const scored = roster
+        .map((p) => {
+          const pCore = stripLeadingClanPrefix(p.nickname_raw);
+          const pConfusable = toConfusableKey(p.nickname_raw);
+          const coreScore =
+            rawCore.length >= 4 && pCore.length >= 4
+              ? computeSimilarity(rawCore, pCore)
+              : 0;
+          const fullScore =
+            rawConfusable.length >= 4 && pConfusable.length >= 4
+              ? computeSimilarity(rawConfusable, pConfusable)
+              : 0;
+          return { player: p, score: Math.max(coreScore, fullScore) };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const best = scored[0];
+      const runnerUpScore = scored.length > 1 ? scored[1].score : 0;
+      if (best.score >= 0.80 && best.score - runnerUpScore >= 0.15) {
+        return best.player;
+      }
     }
   }
 
@@ -494,14 +586,10 @@ export async function validateMatchReport(
     if (defenseRaw < 0 || !Number.isInteger(defenseRaw)) {
       errors.push(`Team A player "${p.nickname_raw}" has invalid defense: ${defenseRaw}`);
     }
-    let normalizedRating = p.rating ?? null;
-    if (normalizedRating !== null && normalizedRating !== undefined) {
-      if (normalizedRating > 10.0 && normalizedRating <= 100.0) {
-        normalizedRating = Number((normalizedRating / 10).toFixed(1));
-      }
-      if (normalizedRating < 0 || normalizedRating > 10.0 || isNaN(normalizedRating)) {
-        errors.push(`Team A player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
-      }
+    const ratingCheck = normalizePlayerRating(p.rating);
+    const normalizedRating = ratingCheck.value;
+    if (!ratingCheck.isValid) {
+      errors.push(`Team A player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
     }
 
     // Map goalkeeper DEFENSE to saves if registered as GK and saves not explicitly specified
@@ -602,14 +690,10 @@ export async function validateMatchReport(
     if (defenseRaw < 0 || !Number.isInteger(defenseRaw)) {
       errors.push(`Team B player "${p.nickname_raw}" has invalid defense: ${defenseRaw}`);
     }
-    let normalizedRating = p.rating ?? null;
-    if (normalizedRating !== null && normalizedRating !== undefined) {
-      if (normalizedRating > 10.0 && normalizedRating <= 100.0) {
-        normalizedRating = Number((normalizedRating / 10).toFixed(1));
-      }
-      if (normalizedRating < 0 || normalizedRating > 10.0 || isNaN(normalizedRating)) {
-        errors.push(`Team B player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
-      }
+    const ratingCheck = normalizePlayerRating(p.rating);
+    const normalizedRating = ratingCheck.value;
+    if (!ratingCheck.isValid) {
+      errors.push(`Team B player "${p.nickname_raw}" has invalid rating: ${p.rating}`);
     }
 
     // Map goalkeeper DEFENSE to saves if registered as GK

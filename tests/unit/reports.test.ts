@@ -33,6 +33,7 @@ import {
 import {
   validateMatchReport,
   matchPlayerToRoster,
+  normalizePlayerRating,
   cleanSearchKey,
   computeSimilarity,
   resolveOrRegisterIneligiblePlayer,
@@ -1184,6 +1185,82 @@ describe('Reports, Approvals & Manual Mode (Fase 5)', () => {
       // 'TZ・Ҡurøka✦' is equidistant to both Kuroko (ko vs ka) and Kurona (na vs ka) -> gap = 0
       const ambiguousMatch = matchPlayerToRoster({ nickname_raw: 'TZ・Ҡurøka✦' }, closeRoster);
       expect(ambiguousMatch).toBeNull();
+    });
+
+    it('matches confusable Unicode & OCR-swapped clan prefix via Tier 5 without sacrificing ambiguity guard', () => {
+      const zodiacRoster = [
+        {
+          id: 'tz-kuroko',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・Ҡurøko✦',
+          nickname_nfc: 'TZ・Ҡurøko✦',
+          nickname_search_key: 'tzurko',
+          position: 'OUTFIELD' as const,
+          roster_slot: 1,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+        {
+          id: 'tz-kurona',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・Ҡurøna✦',
+          nickname_nfc: 'TZ・Ҡurøna✦',
+          nickname_search_key: 'tzurna',
+          position: 'OUTFIELD' as const,
+          roster_slot: 2,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+        {
+          id: 'tz-marty',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・ϻartysυpp',
+          nickname_nfc: 'TZ・ϻartysυpp',
+          nickname_search_key: 'tzartyspp',
+          position: 'OUTFIELD' as const,
+          roster_slot: 3,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+        {
+          id: 'tz-shuki',
+          tournament_id: 't1',
+          team_id: 'team-tz',
+          nickname_raw: 'TZ・Տhυki✦',
+          nickname_nfc: 'TZ・Տhυki✦',
+          nickname_search_key: 'tzhki',
+          position: 'OUTFIELD' as const,
+          roster_slot: 4,
+          roster_type: 'STARTER' as const,
+          status: 'ACTIVE' as const,
+          created_at: '',
+          updated_at: '',
+        },
+      ];
+
+      expect(matchPlayerToRoster({ nickname_raw: 'XIIㆍMartysupp' }, zodiacRoster)?.id).toBe('tz-marty');
+      expect(matchPlayerToRoster({ nickname_raw: 'XIIㆍKuroko⚚' }, zodiacRoster)?.id).toBe('tz-kuroko');
+      expect(matchPlayerToRoster({ nickname_raw: 'XIIㆍShuki⚚' }, zodiacRoster)?.id).toBe('tz-shuki');
+      // Ambiguous even after confusable/prefix normalization
+      expect(matchPlayerToRoster({ nickname_raw: 'XIIㆍKuroka⚚' }, zodiacRoster)).toBeNull();
+    });
+
+    it('normalizes 0-100 OCR player ratings to canonical 0.0-10.0 scale', () => {
+      expect(normalizePlayerRating(100)).toEqual({ value: 10.0, isValid: true });
+      expect(normalizePlayerRating(98)).toEqual({ value: 9.8, isValid: true });
+      expect(normalizePlayerRating(9.1)).toEqual({ value: 9.1, isValid: true });
+      expect(normalizePlayerRating(null)).toEqual({ value: null, isValid: true });
+      expect(normalizePlayerRating(-1)).toEqual({ value: null, isValid: false });
+      expect(normalizePlayerRating(105)).toEqual({ value: null, isValid: false });
     });
 
     it('strictly rejects unregistered players', () => {

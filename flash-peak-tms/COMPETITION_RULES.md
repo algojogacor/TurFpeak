@@ -20,16 +20,17 @@
 3. Maximum active roster is eight (database slots 9–10 are reserved internally for unregistered/`INELIGIBLE` player tracking).
 4. Registering only five players is permitted.
 5. Every match lineup must contain five eligible players, including one goalkeeper.
-6. Only registered roster members may play.
-7. A player may represent only one team in the tournament.
-8. Registered in-game nicknames must match the nickname used in the game.
+6. Only registered roster members may play in the match lineup.
+7. A player may represent only one team in the tournament (applies strictly to players playing in the 5v5 match lineup, NOT spectators).
+8. Registered in-game nicknames must match the nickname used by players playing in the game lineup.
 9. Nickname changes during matches are prohibited. Roster replacements via `!roster` are locked once a team begins Round 1. During the Group-to-Knockout transition, if the organizer opens the KO replacement window (`!bukaganti`), KO-qualified teams may replace up to their full 5+3 roster via `!ganti` until that team's first Knockout match starts/is reported (hard-locked per team thereafter). Replaced players' Group Stage statistics remain eligible for individual awards, and Rule 2.7 (one team per player) continues to apply.
 10. Any discrepancy is referred to organizer review. A default score must not be applied automatically until the relevant evidence and rule are reviewed.
 11. **Karakter Unik / Larangan Karakter Kembar (No Duplicate Characters):** Dalam satu tim, setiap pemain dilarang menggunakan karakter in-game yang sama dalam satu pertandingan (misalnya: dilarang menggunakan double Ford, double Moco, double Rafael, dll). Setiap pemain di tim wajib menggunakan karakter yang berbeda.
 12. **Pemain Tidak Terdaftar / Pemain Gelap (Unregistered Player):**
-    - Setiap tim wajib hanya memainkan pemain yang telah terdaftar resmi di roster turnamen.
+    - Setiap tim wajib hanya memainkan pemain yang telah terdaftar resmi di roster turnamen pada lineup pertandingan (5v5).
     - **Jika Tim yang Memainkan Pemain Tidak Terdaftar MENANG atau SERI:** Kemenangan atau hasil seri tersebut otomatis **DIBATALKAN**. Pertandingan dinyatakan kalah Walkover (**WO 0–3**) untuk tim pelanggar (kemenangan WO 3–0 untuk tim lawan yang sah), dengan persetujuan 2 pihak (Panitia dan Tim Lawan) melalui `!approve`.
     - **Jika Tim yang Memainkan Pemain Tidak Terdaftar KALAH:** Skor asli pertandingan di lapangan **TETAP BERLAKU** (misalnya 7–1 tetap dicatat 7–1, tidak dipotong menjadi WO 3–0) demi menjamin keadilan tim pemenang yang sah agar selisih gol (GD) dan jumlah gol (GF) mereka tidak dirugikan. Namun, pemain tidak terdaftar tersebut ditetapkan berstatus `INELIGIBLE` (`is_award_eligible = 0`, tidak berhak atas penghargaan/statistik individu), dilarang bermain di match berikutnya, dan tim yang melanggar mendapatkan peringatan/teguran resmi panitia.
+13. **Pemain Lineup vs Spectator (Penonton):** Seluruh ketentuan kelayakan roster (Pasal 2.6, 2.7, 2.8, dan 2.12) berlaku **khusus untuk pemain yang turun bermain di lineup (5v5)**, **BUKAN** untuk penonton (*spectator*), karena spectator tidak memengaruhi jalannya maupun hasil pertandingan. Untuk menjaga ketertiban dan kelancaran room, spectator dibatasi maksimal 1–2 orang per tim (diutamakan pemain cadangan, delegasi, atau panitia) atau sesuai kesepakatan kedua tim sebelum room dimulai; Host berhak meminta spectator di luar kesepakatan keluar sebelum kickoff dimulai.
 
 ## 3. Competition format
 
