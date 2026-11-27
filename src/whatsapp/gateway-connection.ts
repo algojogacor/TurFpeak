@@ -56,17 +56,38 @@ export class GatewayConnection extends EventEmitter {
     this.stub = {
       user: { id: 'gateway' },
       sendMessage: async (to, content, opts) => {
-        // text + quoted + mentions travel in one envelope; the gateway
+        // text / image + quoted + mentions travel in one envelope; the gateway
         // executes them against the single Baileys owner.
         const rid = `fp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const line = {
-          t: 'send',
-          rid,
-          to,
-          text: String(content.text ?? ''),
-          quoted: opts?.quoted as unknown,
-          mentions: content.mentions as string[] | undefined,
-        };
+        const delKey = content.delete as { id?: string; fromMe?: boolean; participant?: string } | undefined;
+        const line = delKey?.id
+          ? {
+              t: 'delete',
+              rid,
+              to,
+              messageId: String(delKey.id),
+              fromMe: delKey.fromMe,
+              participant: delKey.participant,
+            }
+          : content.image
+            ? {
+                t: 'send_image',
+                rid,
+                to,
+                b64: Buffer.from(content.image as Uint8Array).toString('base64'),
+                mime: content.mimetype ? String(content.mimetype) : 'image/jpeg',
+                caption: content.caption ? String(content.caption) : undefined,
+                quoted: opts?.quoted as unknown,
+                mentions: content.mentions as string[] | undefined,
+              }
+            : {
+                t: 'send',
+                rid,
+                to,
+                text: String(content.text ?? ''),
+                quoted: opts?.quoted as unknown,
+                mentions: content.mentions as string[] | undefined,
+              };
         const ack = await this.roundtrip({ ...line });
         if (!ack.ok) throw new Error(ack.err ?? 'gateway send failed');
         return { key: { id: ack.id } };

@@ -433,3 +433,29 @@ describe('WhatsAppConnection (Lifecycle & Anti-ban Backoff)', () => {
     vi.useRealTimers();
   });
 });
+
+describe('WhatsAppSender deleteMessage', () => {
+  it('enqueues and sends a delete payload with message key', async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: 'DEL_ACK_1' } });
+    const sender = new WhatsAppSender(() => ({ sendMessage } as unknown as WASocket), {
+      minIntervalMs: 1,
+    });
+
+    const resultId = await sender.deleteMessage('120363000000000000@g.us', 'MSG_ORIG_123');
+    expect(resultId).toBe('DEL_ACK_1');
+    expect(sendMessage).toHaveBeenCalledWith('120363000000000000@g.us', {
+      delete: {
+        remoteJid: '120363000000000000@g.us',
+        fromMe: true,
+        id: 'MSG_ORIG_123',
+      },
+    });
+  });
+
+  it('rejects when socket is disconnected', async () => {
+    const sender = new WhatsAppSender(() => null, { minIntervalMs: 1 });
+    await expect(
+      sender.deleteMessage('120363000000000000@g.us', 'MSG_ORIG_123')
+    ).rejects.toThrow('WhatsApp socket is not connected');
+  });
+});

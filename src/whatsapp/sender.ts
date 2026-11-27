@@ -118,6 +118,44 @@ export class WhatsAppSender {
   }
 
   /**
+   * Sends an image message with optional caption.
+   */
+  public async sendImage(
+    chatId: string,
+    image: Buffer,
+    options?: SendOptions & { caption?: string; mimetype?: string }
+  ): Promise<string> {
+    return this.enqueue(async () => {
+      const sock = this.socketProvider();
+      if (!sock) {
+        throw new Error('WhatsApp socket is not connected');
+      }
+
+      const content: Record<string, any> = {
+        image,
+        mimetype: options?.mimetype || 'image/jpeg',
+      };
+      if (options?.caption) {
+        content.caption = options.caption;
+      }
+      if (options?.mentions && options.mentions.length > 0) {
+        content.mentions = options.mentions;
+      }
+
+      const sendOptions: Record<string, any> = {};
+      if (options?.quoted) {
+        sendOptions.quoted = options.quoted;
+      }
+      if (options?.ephemeralExpiration) {
+        sendOptions.ephemeralExpiration = options.ephemeralExpiration;
+      }
+
+      const res = await sock.sendMessage(chatId, content as any, sendOptions);
+      return res?.key?.id || randomUUID();
+    });
+  }
+
+  /**
    * Sends a text message quoting a specific previous message.
    */
   public async sendQuote(
@@ -156,6 +194,34 @@ export class WhatsAppSender {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
+  }
+
+  /**
+   * Revokes (Delete for Everyone) a previously sent message.
+   */
+  public async deleteMessage(
+    chatId: string,
+    messageId: string,
+    options?: { fromMe?: boolean; participant?: string }
+  ): Promise<string> {
+    return this.enqueue(async () => {
+      const sock = this.socketProvider();
+      if (!sock) {
+        throw new Error('WhatsApp socket is not connected');
+      }
+
+      const key: Record<string, any> = {
+        remoteJid: chatId,
+        fromMe: options?.fromMe ?? true,
+        id: messageId,
+      };
+      if (options?.participant) {
+        key.participant = options.participant;
+      }
+
+      const res = await sock.sendMessage(chatId, { delete: key } as any);
+      return res?.key?.id || messageId;
+    });
   }
 
   /**

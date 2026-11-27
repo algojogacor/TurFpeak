@@ -15,6 +15,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Client } from '@libsql/client';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import pino from 'pino';
@@ -171,6 +173,7 @@ export class FlashPeakApp {
   private aiMaxRetries: number;
   private aiRetryDelayMs: number;
   private pollTimer: NodeJS.Timeout | null = null;
+  private isProcessingOutbox = false;
   private isPolling = false;
   private lastMatchdayCheck = 0;
   private logger: pino.Logger;
@@ -1719,25 +1722,59 @@ export class FlashPeakApp {
    * Processes pending outbound broadcast messages from outbox_messages table.
    */
   public async processOutboxMessages(): Promise<number> {
-    if (!this.sender) return 0;
+    if (!this.sender || this.isProcessingOutbox) return 0;
+    this.isProcessingOutbox = true;
     let sentCount = 0;
     try {
       const res = await this.db.execute({
-        sql: `SELECT id, chat_id, message_text FROM outbox_messages WHERE status = 'PENDING' ORDER BY created_at ASC LIMIT 5`,
+        sql: `SELECT id, chat_id, message_text, media_path, media_mime, mentions_json FROM outbox_messages WHERE status = 'PENDING' ORDER BY created_at ASC LIMIT 5`,
       });
       for (const row of res.rows) {
         const id = String(row.id);
         const chatId = String(row.chat_id) || this.centralGroupJid;
-        const text = String(row.message_text);
+        const text = row.message_text ? String(row.message_text) : '';
+        const mediaPath = row.media_path ? String(row.media_path) : null;
+        const mediaMime = row.media_mime ? String(row.media_mime) : 'image/jpeg';
+        let mentions: string[] | undefined;
+        if (row.mentions_json) {
+          try {
+            const parsed = JSON.parse(String(row.mentions_json));
+            if (Array.isArray(parsed)) mentions = parsed.map(String);
+          } catch {
+            // ignore malformed mentions_json
+          }
+        }
         if (!chatId) continue;
+        // Atomically claim the row BEFORE sending so overlapping ticks or processes
+        // can never send the same outbox message twice (especially for slow image uploads).
+        const claimRes = await this.db.execute({
+          sql: `UPDATE outbox_messages SET status = 'SENT', sent_at = ? WHERE id = ? AND status = 'PENDING'`,
+          args: [new Date().toISOString(), id],
+        });
+        if ((claimRes.rowsAffected ?? 0) === 0) continue;
         try {
-          await this.sender.sendText(chatId, text);
+          let waMessageId: string;
+          if (mediaPath) {
+            const baseDir = path.resolve(process.cwd());
+            const resolvedPath = path.resolve(baseDir, mediaPath);
+            if (!resolvedPath.startsWith(baseDir + path.sep)) {
+              throw new Error('Invalid outbox media_path outside workspace');
+            }
+            const imgBuffer = fs.readFileSync(resolvedPath);
+            waMessageId = await this.sender.sendImage(chatId, imgBuffer, {
+              caption: text || undefined,
+              mimetype: mediaMime,
+              mentions,
+            });
+          } else {
+            waMessageId = await this.sender.sendText(chatId, text, { mentions });
+          }
           await this.db.execute({
-            sql: `UPDATE outbox_messages SET status = 'SENT', sent_at = ? WHERE id = ?`,
-            args: [new Date().toISOString(), id],
+            sql: `UPDATE outbox_messages SET wa_message_id = ? WHERE id = ?`,
+            args: [waMessageId, id],
           });
           sentCount++;
-          this.logger.info({ id, chatId }, '[FlashPeakApp] Outbox message sent successfully');
+          this.logger.info({ id, chatId, waMessageId }, '[FlashPeakApp] Outbox message sent successfully');
         } catch (sendErr) {
           console.error(`[FlashPeakApp] Failed to send outbox message ${id}:`, sendErr);
           await this.db.execute({
@@ -1748,6 +1785,8 @@ export class FlashPeakApp {
       }
     } catch {
       // Table might not exist yet before migration
+    } finally {
+      this.isProcessingOutbox = false;
     }
     return sentCount;
   }

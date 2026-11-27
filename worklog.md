@@ -1,5 +1,52 @@
 # Worklog — Flash Peak TMS (TurFpeak)
 
+## [2026-11-28] Sesi 32: Penyimpanan `wa_message_id` di `outbox_messages` & Dukungan `delete` (Delete for Everyone)
+- **Tujuan**: Menambahkan penyimpanan WhatsApp `messageId` (`wa_message_id`) untuk setiap pesan keluar dari `outbox_messages` serta dukungan revoke (`delete`) di `wa-gateway` dan `WhatsAppSender`.
+- **Perubahan Konkret**:
+  - `migrations/010_outbox_wa_message_id.sql`: Menambahkan kolom `wa_message_id TEXT` pada tabel `outbox_messages`.
+  - `wa-gateway` (`/home/azureuser/wa-gateway/src/{protocol.ts,baileys.ts,index.ts}`): Menambahkan request `{ t: 'delete', rid, to, messageId, fromMe?, participant? }` yang memanggil `sock.sendMessage(to, { delete: key })`.
+  - `src/whatsapp/gateway-connection.ts`: Meneruskan `content.delete` pada `stub.sendMessage` sebagai request `t: 'delete'` ke `wa-gateway`.
+  - `src/whatsapp/sender.ts`: Menambahkan method `deleteMessage(chatId, messageId, options?)` pada `WhatsAppSender`.
+  - `src/index.ts`: Menyimpan nilai `waMessageId` yang dikembalikan `sendImage`/`sendText` ke kolom `outbox_messages.wa_message_id` dan mencatatnya di log.
+  - `tests/unit/whatsapp.test.ts`: Menambahkan 2 unit test untuk `WhatsAppSender.deleteMessage`.
+- **Verifikasi Empiris**:
+  - Lokal: `npx tsc --noEmit; npx vitest run tests/unit/whatsapp.test.ts tests/migration.test.ts` → exit code `0`, `Test Files 2 passed (2)`, `Tests 23 passed (23)`.
+  - VM `forfh`: `wa-gateway` build (`npm run build`) dan `flashpeak-tms` typecheck (`npx tsc --noEmit`) lulus; `wa-gateway` (`PID 3941300`) & `flashpeak-bot` (`PID 3941313`) online; `local.sqlite` terverifikasi memiliki migrasi `010_outbox_wa_message_id.sql` dan kolom `wa_message_id` pada `outbox_messages`.
+
+## [2026-11-27] Sesi 31: Perbaikan Bug Spam Outbox (`processOutboxMessages` Reentrancy & Atomic Claim)
+- **Tujuan**: Mendiagnosis penyebab bot mengirim pesan gambar poster secara berulang/spam ke grup WhatsApp saat mengirim poster Juara 2 & Juara 3, lalu memperbaiki akar masalahnya dan deploy ke VM `forfh`.
+- **Akar Masalah**:
+  - `pollTimer` (`setInterval` di `src/index.ts`) memanggil `processOutboxMessages()` di setiap tick tanpa lock reentrancy (`isProcessingOutbox`).
+  - `processOutboxMessages()` sebelumnya mengeksekusi `UPDATE outbox_messages SET status = 'SENT'` *setelah* `await this.sender.sendImage(...)` selesai (~2.5–3 detik untuk upload gambar). Akibatnya, tick berikutnya membaca baris `'PENDING'` yang sama berulang kali dan menumpuk pengiriman duplikat di antrean `WhatsAppSender`.
+- **Perubahan Konkret**:
+  - `src/index.ts`:
+    - Menambahkan field `private isProcessingOutbox = false;` pada `FlashPeakApp`.
+    - Menambahkan guard reentrancy (`if (!this.sender || this.isProcessingOutbox) return 0;`) dan blok `try ... finally { this.isProcessingOutbox = false; }` pada `processOutboxMessages()`.
+    - Melakukan atomic claim `UPDATE outbox_messages SET status = 'SENT', sent_at = ? WHERE id = ? AND status = 'PENDING'` (memeriksa `rowsAffected === 0`) *sebelum* memanggil `sendImage`/`sendText`, serta rollback ke `status = 'FAILED'` pada blok `catch` jika pengiriman gagal.
+- **Verifikasi Empiris**:
+  - Lokal: `npx tsc --noEmit; npx vitest run tests/unit/whatsapp.test.ts tests/migration.test.ts` → exit code `0`, `Test Files 2 passed (2)`, `Tests 21 passed (21)` (`tests/migration.test.ts` 4, `tests/unit/whatsapp.test.ts` 17).
+  - VM `forfh`: `scp src/index.ts forfh:/home/azureuser/flashpeak-tms/src/index.ts` → exit code `0`; `ssh forfh "cd /home/azureuser/flashpeak-tms && npx tsc --noEmit && pm2 restart flashpeak-bot && sleep 3 && pm2 logs flashpeak-bot --nostream --lines 12"` → exit code `0`, `flashpeak-bot` online (`PID 3936252`), log `flashpeak-bot-out-24.log` menunjukkan `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)` dan `[WA] Bot siap memproses turnamen.`.
+
+## [2026-11-27] Sesi 30: Fitur Outbound Pengiriman Gambar (`send_image`) di `wa-gateway` & `outbox_messages`
+
+### Perubahan Konkret
+1. **VM `wa-gateway` (`/home/azureuser/wa-gateway/src/`):**
+   - `protocol.ts`: Menambahkan tipe request `send_image` (`to`, `b64`, `mime`, `caption`, `quoted`, `mentions`).
+   - `baileys.ts`: Menambahkan `BaileysOwner.sendImage(to, buffer, opts)`.
+   - `index.ts`: Menangani request `send_image` dan mengembalikan `ack` standar.
+   - `npm run build` (`tsc -p tsconfig.json`) lulus.
+2. **Flash Peak TMS (`D:\Projects\TurFpeak` & VM):**
+   - [migrations/008_outbox_media.sql](file:///d:/Projects/TurFpeak/migrations/008_outbox_media.sql): Menambahkan kolom `media_path TEXT` dan `media_mime TEXT` pada `outbox_messages`.
+   - [src/whatsapp/gateway-connection.ts](file:///d:/Projects/TurFpeak/src/whatsapp/gateway-connection.ts): Mendukung pengiriman `content.image` lewat pesan socket `send_image`.
+   - [src/whatsapp/sender.ts](file:///d:/Projects/TurFpeak/src/whatsapp/sender.ts): Menambahkan `WhatsAppSender.sendImage(chatId, image, options)`.
+   - [src/index.ts](file:///d:/Projects/TurFpeak/src/index.ts): Memperbarui `processOutboxMessages()` agar mendeteksi `media_path`, memvalidasi path di dalam direktori kerja, dan mengirim gambar beserta caption via `sendImage`.
+
+### Bukti Verifikasi Empiris
+- **Lokal:** `npx tsc --noEmit` lulus (0 error); `npx vitest run tests/unit/whatsapp.test.ts tests/migration.test.ts` → **2/2 files, 21/21 tests passed**.
+- **VM (`forfh`):** `npx tsc --noEmit` lulus, `wa-gateway` (PID `3934365`) & `flashpeak-bot` (PID `3934387`) restart sukses, log startup mencatat `[DB] Applied 1 migration(s): 008_outbox_media.sql` dan `[WA] ✅ BERHASIL TERHUBUNG KE WHATSAPP! (Gateway transport active)`.
+
+---
+
 ## [2026-11-26] Sesi 29: Integrasi Hermes Agent (`hermes.exe`) dengan Endpoint Colab Inkling-2-Mini
 
 ### Konteks Sesi
